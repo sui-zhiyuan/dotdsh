@@ -1,0 +1,11 @@
+{
+  "name": "dotdsh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "My dsh (DeepSeek Harness) plugin store and dotfiles framework",
+  "scripts": {
+    "gen": "uv run scripts/gen_applist.py",
+    "sync": "uv run scripts/sync_home.py",
+    "book": "mdbook build"
+  }
+}

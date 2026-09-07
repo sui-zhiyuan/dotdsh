@@ -1,0 +1,25 @@
+# dotdsh: runtime preferences template — synced to $DSH_HOME/settings.yaml
+# (never overwritten when the target already exists).
+# Runtime settings are managed by dsh-settings-file and hot-reload. Everything
+# below is an example; uncomment and fill in as needed.
+# Red line: never commit real credentials/secrets (apiKeyEnv stores only the
+# environment variable name, never the key itself).
+#
+# locale:
+#   preference: zh
+#
+# agent-default-model:
+#   provider: deepseek-official
+#   model: deepseek-v4-pro
+#   reasoningEffort: max
+#
+# ui-conversation:
+#   busyEnter: queue
+#
+# llm-pi-ai:
+#   providers:
+#     example:
+#       apiKeyEnv: EXAMPLE_API_KEY
+#
+# permission:
+#   defaultPreset: workspace-write

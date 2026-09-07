@@ -1,0 +1,17 @@
+# dotdsh app list — the plugin store's shelf manifest.
+#
+# Each entry maps to a package under node_src/<id>/ (the store package itself
+# lives at node_src/dotdsh/, on the same level).
+# Entries with enabled: false generate no patch row and are not installed
+# by sync_home.py.
+# After editing, regenerate the store patch:
+#   uv run scripts/gen_applist.py
+# To sync into your dsh home and install:
+#   uv run scripts/sync_home.py
+version: 1
+apps:
+  - id: hello-world
+    package: "@dsh-external/dotdsh-hello-world"
+    enabled: true
+    config:
+      greeting: "Hello from dotdsh"

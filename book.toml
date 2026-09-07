@@ -1,0 +1,8 @@
+[book]
+title = "dotdsh"
+authors = ["suine"]
+language = "en"
+src = "doc/src"
+
+[build]
+build-dir = "target/book"

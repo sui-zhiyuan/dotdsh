@@ -1,0 +1,13 @@
+# dotdsh: profile-level user patch layer (profile dotdsh).
+# Applied after every bundle layer; any row inserted by the plugin store can be
+# overridden or disabled here by id.
+#
+# Example: disable the hello-world plugin — uncomment:
+# - id: hello-world
+#   disabled: true
+#
+# Example: change the greeting (config is replaced wholesale, not deep-merged) — uncomment:
+# - id: hello-world
+#   config:
+#     greeting: "Hi there"
+[]

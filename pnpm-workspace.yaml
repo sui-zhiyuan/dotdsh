@@ -1,0 +1,4 @@
+# pnpm workspace: every package under node_src/ is a sibling — the plugin store
+# (@dsh-external/dotdsh) is one of them, on the same level as individual plugins.
+packages:
+  - node_src/*

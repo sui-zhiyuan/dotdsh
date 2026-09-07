@@ -1,0 +1,7 @@
+# Build artifacts: all project output goes into target/<language>/
+target/
+
+# Dependencies and runtime artifacts
+node_modules/
+*.log
+.DS_Store
