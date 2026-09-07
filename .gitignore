@@ -3,5 +3,7 @@ target/
 
 # Dependencies and runtime artifacts
 node_modules/
+# Package build output (compiled from src/*.ts; rebuilt by sync_home.py / prepublishOnly)
+node_src/**/lib/
 *.log
 .DS_Store

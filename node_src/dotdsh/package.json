@@ -3,16 +3,25 @@
   "version": "0.1.0",
   "description": "dotdsh plugin store: one dsh patch layer driven by applist.yaml, inserting my plugin list into the dsh plugin tree",
   "type": "module",
-  "main": "index.js",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "exports": {
-    ".": "./index.js",
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
+    "lib/index.js",
+    "lib/index.d.ts",
     "cordis.patch.yml"
   ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm build"
+  },
   "license": "MIT",
   "dsh": {
     "bundle": {
@@ -21,5 +30,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
   }
 }

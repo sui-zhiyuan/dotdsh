@@ -6,6 +6,7 @@
   "scripts": {
     "gen": "uv run scripts/gen_applist.py",
     "sync": "uv run scripts/sync_home.py",
+    "build": "pnpm -r build",
     "book": "mdbook build"
   }
 }

@@ -10,9 +10,10 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 
 ## Plugins
 
+- [x] Migrate plugin sources to TypeScript (tsc → in-package `lib/`, gitignored; auto-built by sync/prepublishOnly; on `feature/typescript`)
+- [ ] Add a CI clean-build check (lib/ is untracked, so CI must verify `pnpm build` passes on a clean tree)
 - [ ] Create an SSH plugin for remote-server development: keep one long-lived SSH connection per host on the backend (HTTP keep-alive style) — auto-connect on first use, auto-recycle idle connections on timeout, avoid per-command TCP handshakes and re-auth
 - [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation bundle to de-fragment micro-features)
-- [ ] Introduce a TypeScript build step when plugins grow; output must go to `target/node`
 
 ## Home config
 

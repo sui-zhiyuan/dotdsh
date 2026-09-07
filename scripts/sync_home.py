@@ -15,9 +15,11 @@ Usage:
 Notes:
     Plugins are written into the profile's package.json as pnpm `link:` dependencies
     (the repo is the source of truth — editing repo sources takes effect immediately),
-    then `dsh plugin --profile dotdsh install` finishes the job. `dsh plugin add <path>`
-    is deliberately not used: pnpm 12 on Node 26 fails to parse directory arguments as
-    local packages (it treats them as registry names and errors out).
+    then `dsh plugin --profile dotdsh install` finishes the job. Before installing, the
+    workspace packages are rebuilt with `pnpm -r build` so the gitignored lib/ output
+    always matches the TypeScript sources. `dsh plugin add <path>` is deliberately not
+    used: pnpm 12 on Node 26 fails to parse directory arguments as local packages (it
+    treats them as registry names and errors out).
 """
 from __future__ import annotations
 
@@ -163,9 +165,9 @@ def resolve_dsh(explicit: str | None) -> list[str]:
     )
 
 
-def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
+def run(cmd: list[str], *, env: dict[str, str] | None = None, cwd: str | None = None) -> None:
     print("+", " ".join(cmd))
-    subprocess.run(cmd, check=True, env=env)
+    subprocess.run(cmd, check=True, env=env, cwd=cwd)
 
 
 def main() -> None:
@@ -184,13 +186,21 @@ def main() -> None:
 
     if args.dry_run:
         print("\n[--dry-run] would:")
+        print(f" - build workspace packages (pnpm -r build in {ROOT})")
         for src, dst, exists in copies:
             print(f" - copy {src.relative_to(ROOT)} -> {dst}" + (" (exists, skip)" if exists else ""))
         print(" - edit profile package.json: write link: dependencies and dsh.profile.bundles")
         print(f" - dsh plugin --profile {PROFILE_NAME} install")
         return
 
-    # 1. Copy the controlled files (only when absent; --force overwrites)
+    # 1. Build the workspace packages so the gitignored lib/ output matches src/*.ts
+    if not (ROOT / "node_modules" / ".pnpm").is_dir():
+        raise SystemExit(
+            "workspace dependencies are not installed: run `pnpm install` at the repo root first"
+        )
+    run(["pnpm", "-r", "build"], cwd=str(ROOT))
+
+    # 2. Copy the controlled files (only when absent; --force overwrites)
     for src, dst, exists in copies:
         if exists and not args.force:
             print(f"Skip (exists): {dst}")
@@ -199,7 +209,7 @@ def main() -> None:
         shutil.copy2(src, dst)
         print(f"Copy: {src.relative_to(ROOT)} -> {dst}" + (" (--force overwrite)" if exists else ""))
 
-    # 2. Write link: dependencies (store package + each plugin) and append the store to dsh.profile.bundles
+    # 3. Write link: dependencies (store package + each plugin) and append the store to dsh.profile.bundles
     changes = plan_manifest_changes(profile_dir, apps, args.force)
     if changes:
         for line in changes:
@@ -207,7 +217,7 @@ def main() -> None:
     else:
         print("manifest: no changes")
 
-    # 3. Finish the install (pnpm install + the harness's bundle reconciliation)
+    # 4. Finish the install (pnpm install + the harness's bundle reconciliation)
     env = dict(os.environ)
     env["DSH_HOME"] = str(home)
     run([*dsh_cmd, "plugin", "--profile", PROFILE_NAME, "install"], env=env)
