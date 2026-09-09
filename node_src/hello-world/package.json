@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dotdsh-hello-world",
   "version": "0.1.0",
-  "description": "dotdsh example plugin: registers the hello_world tool, demonstrating how applist.yaml config reaches a plugin",
+  "description": "dotdsh example plugin: registers the hello_world tool, demonstrating how the root cordis.patch.yml config reaches a plugin",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

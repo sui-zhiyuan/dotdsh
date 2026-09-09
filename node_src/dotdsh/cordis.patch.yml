@@ -1,7 +1,0 @@
-# GENERATED FILE — produced by scripts/gen_applist.py from applist.yaml. Do not edit by hand.
-# After changing the app list, regenerate: uv run scripts/gen_applist.py
-- insert:
-  - id: hello-world
-    name: '@dsh-external/dotdsh-hello-world'
-    config:
-      greeting: Hello from dotdsh

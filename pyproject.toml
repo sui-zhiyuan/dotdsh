@@ -1,0 +1,22 @@
+[project]
+name = "dotdsh-tooling"
+version = "0.1.0"
+description = "dotdsh tooling workspace: the dotdsh_dev dev-loop CLI (uv run python -m dotdsh_dev)"
+requires-python = ">=3.11"
+dependencies = [
+    "dotdsh-dev",
+]
+
+[tool.uv]
+# The root is an environment aggregator, not a Python package: uv installs
+# only its dependencies (the workspace members below) and never builds the
+# root itself, so no build backend and no root package are needed.
+package = false
+
+[tool.uv.workspace]
+members = [
+    "py_src/dotdsh-dev",
+]
+
+[tool.uv.sources]
+dotdsh-dev = { workspace = true }

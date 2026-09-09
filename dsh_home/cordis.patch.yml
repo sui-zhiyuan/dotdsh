@@ -1,7 +1,0 @@
-# dotdsh: home-level shared patch layer — synced to $DSH_HOME/cordis.patch.yml.
-# It applies to every profile on this machine and overrides each profile's own
-# cordis.patch.yml. It changes nothing by default; uncomment and edit as needed.
-# Example: disable the hello-world plugin row for all profiles:
-# - id: hello-world
-#   disabled: true
-[]

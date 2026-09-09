@@ -3,6 +3,10 @@ target/
 
 # Dependencies and runtime artifacts
 node_modules/
+__pycache__/
+.venv/
+# pnpm project-local store (created by `dsh plugin install` runs)
+.pnpm-store/
 # Package build output (compiled from src/*.ts; rebuilt by sync_home.py / prepublishOnly)
 node_src/**/lib/
 *.log

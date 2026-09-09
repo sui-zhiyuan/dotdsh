@@ -1,4 +1,5 @@
-# pnpm workspace: every package under node_src/ is a sibling — the plugin store
-# (@dsh-external/dotdsh) is one of them, on the same level as individual plugins.
+# pnpm workspace: one pure plugin package per directory under node_src/.
+# There is no store package and no generator — the plugin rows live in the
+# root cordis.patch.yml, and dotdsh_dev links these packages into a profile.
 packages:
   - node_src/*

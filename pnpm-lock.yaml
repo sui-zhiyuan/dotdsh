@@ -8,12 +8,6 @@ importers:
 
   .: {}
 
-  node_src/dotdsh:
-    devDependencies:
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-
   node_src/hello-world:
     dependencies:
       '@deepseek-ai/cordis':
