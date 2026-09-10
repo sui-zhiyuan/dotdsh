@@ -63,6 +63,35 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   namespace and field-name agreement it checks against `client/index.js` is a name-level check —
   what the page does with an adopted section stays the browser half's own check, and whether dsh
   resolves and persists a section is settled by loading the page once
+- [x] Build the git workflow as one node-only plugin (`node_src/git-flow`): `/git-start` and
+  `/git-complete`, the `tools/pre-execute` branch guard, the system-prompt contract and state
+  context, a bundled `git-commit` skill, and worktree isolation for parallel sessions. Two
+  committed checks cover the parts that fail silently — the ignore guard (including an assertion
+  that git *does* stage a gitlink without it, so the premise cannot rot) and the merge semantics
+  (asserting the rebase really happened, by reading the parents of the resulting merge commit back
+  out of git). Design rationale in [Design decisions](./design.md)
+- [ ] Let the model open a feature branch. `/git-start` is a human command, so when the guard
+  refuses — the parallel-session case, where it will not pick a branch over another session's work
+  — the model can only ask the human to type it. A `git_start` tool would close that gap; it needs
+  its own decision about naming (who chooses the name when the model calls it) because the whole
+  value of the deny path is that a branch is not opened on a guess
+- [ ] Decide whether stacked feature branches should be replayed. `/git-complete` replays the branch
+  being finished, with `--onto` and an explicit upstream so only that branch's own commits move. A
+  branch cut *from* another feature is detected by nothing today: after its parent merges, its
+  branch point is stale and it will be replayed on the next `/git-complete` — but the human is not
+  told that this is why
+- [ ] Reconsider a `commit-msg` hook alongside the skill. The skill shapes the message before it is
+  written, which is the right instrument for a convention; a hook is the right one for a rule a
+  human must not be able to talk past (a missing `Refs:` on a repo that requires one). Adding it
+  means an installer, because `.git/hooks` is unversioned
+- [ ] Record multi-session liveness authoritatively. The ledger judges a session by whether its
+  owning *process* is alive, which is wrong in both directions: two sessions share one harness
+  process (a closed session keeps its record, so new sessions get an unneeded worktree), and a
+  restart kills every pid at once (sessions that are still open read as dead — see the note in
+  [Design decisions](./design.md) for why an abandoned branch is therefore reported rather than
+  stored). The harness's own session registry would answer the real question; the ledger is the
+  fallback that needs no service. Worth doing when a second use for the ledger appears, since the
+  current error is bounded in one direction and merely noisy in the other
 
 ## Home config
 

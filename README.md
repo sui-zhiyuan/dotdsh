@@ -20,6 +20,101 @@
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase. Both are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases` |
+| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start` and `/git-complete` commands, a pre-write guard that opens a branch instead of letting an edit land on the integration branch, a system-prompt contract plus a live state context, a bundled `git-commit` skill (Conventional Commits 1.0.0), and git-worktree isolation for parallel sessions |
+
+## The git-flow workflow
+
+Two slash commands, and one invariant that holds whether or not anyone remembers to use them.
+
+```
+/git-start [<name>]   open a feature branch for this session
+/git-complete         replay it if the integration branch moved, merge it, remove its worktree, delete it
+```
+
+`/git-start` names the branch from what the session is working on — the first line of the opening
+prompt, with a leading verb dropped, so "add the login redirect" becomes `feature/login-redirect`.
+When the intent yields no name, it **asks** rather than inventing one. That "asks" path covers more
+than an empty prompt, and the rule is worth knowing because it is not obvious: the slug rules are a
+Latin-script heuristic, so a prompt written in another script is not slugged at all. A
+predominantly Chinese prompt that merely *mentions* a Latin word would otherwise name the branch
+after that word — observed in practice, where the opening prompt for this very plugin (Chinese, with
+`github` in it) produced `feature/github`. A wrong-but-plausible name is worse than a question:
+nobody notices it is wrong, and the branch keeps the name long after the session is gone. A Latin
+sentence that mentions a foreign word still names a branch (`add support for 中文 filenames` →
+`feature/support-filenames`); a non-Latin sentence asks.
+
+`/git-complete` merges with `--no-ff` so the branch point stays
+visible in history, and when the integration branch has moved since that branch point it replays
+the feature onto the new tip first:
+
+```
+git rebase --onto <integration> <merge-base> <branch>
+```
+
+That replay is the whole reason this is not just `git merge`: a merge commit whose second parent
+never sat on the first is a history that reviewing, bisecting and `git log --first-parent` all get
+wrong, and no flag fixes it after the fact. A conflict aborts the replay and reports; nothing is
+resolved automatically and nothing is force-pushed.
+
+### The guard
+
+`tools/pre-execute` runs before a tool dispatches and can genuinely stop it, so an edit aimed at the
+integration branch opens a feature branch first. When other sessions are live, the arriving session
+is **isolated in a worktree** and the write that triggered the start is redirected into it — allowing
+that write would defeat the isolation on its first use. Set `guard: block` to always refuse instead,
+or `guard: off` to disable it.
+
+Two sessions sharing one checkout is the shape the guard actually has to catch, and it is not the
+same question as "are other sessions live". The first session opens a feature branch in that
+checkout, so the second no longer sees the integration branch — it sees the first session's branch —
+and would write onto it without ever triggering the branch rule. The guard therefore also refuses
+when another live session is in *this* working tree, and it decides that by asking git which branch
+is really checked out rather than trusting the ledger: a record whose branch is not the one in the
+tree is stale, and a stale record must not block a tree nobody is using.
+
+### Parallel sessions and worktrees
+
+When `/git-start` finds other live sessions in the same repository, this session is isolated in a
+worktree under `<repo>/.dsh/worktrees/<name>` and its file edits are required to stay there. Work
+stays under the repository — never in `$DSH_HOME` — so the harness's workspace-write sandbox keeps
+covering it without repeated authorization prompts.
+
+Before the worktree exists, the plugin adds `worktreeRoot` to the tracked `.gitignore` with a
+comment explaining it, and then **verifies with `git check-ignore`** rather than trusting the write.
+The reason is worth stating because the failure is silent: a `git worktree` inside the repository
+is a linked repository, and a `git add --all` from the main tree does not stage its thousands of
+files — it stages **one** entry, a gitlink recording a commit id that stops being reachable the
+moment `/git-complete` deletes the branch. A clone could never reproduce it, and this plugin's own
+per-step commits would commit it for you. (`node_src/git-flow/test/verify-ignore.mjs` asserts that
+failure really happens without the guard, so the guard's premise cannot rot unnoticed.) A rule that
+another rule overrides — a later `!` line, a parent directory's ignore — makes the guard refuse to
+create the worktree at all, rather than leave one that only looks protected.
+
+### Configuration
+
+Every tunable, at its default, in the row's `config` in `node_src/dotdsh/cordis.patch.yml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `branchPrefix` | `feature/` | Prefix `/git-start` gives every branch it opens |
+| `integrationBranch` | `""` | Empty detects `origin/HEAD`, then `main`, then `master` |
+| `worktreeRoot` | `.dsh/worktrees` | Relative to the repository's main tree; must stay inside it |
+| `useWorktreeWhenBusy` | `true` | Isolate a session that arrives while others are live |
+| `commitUncommittedBeforeMerge` | `true` | Collect loose work into a commit before merging, instead of blocking |
+| `mergeMessage` | `Merge {branch} into {integration}` | Merge-commit subject; `{branch}` must be present |
+| `guard` | `auto-start` | `auto-start`, `block`, or `off` |
+| `guardBash` | `false` | Extend the guard to the Bash tool — see the caveat below |
+
+Two things the plugin deliberately does not do:
+
+- **It does not guard the Bash tool by default.** `bash` arguments name a command, not a path, so
+  enabling it cannot tell `git status` from a redirect and would open a feature branch for every
+  shell command a session runs. Turn it on with `guardBash: true` when the Bash tool is how files
+  actually get written.
+- **It does not commit for you after each step.** The contract is in the system prompt and the
+  `git-commit` skill tells the model how to write each message; a commit per *tool call* would be
+  noise. `commitUncommittedBeforeMerge` is the safety net that keeps loose work from being stranded
+  at `/git-complete`.
 
 The two tweaks are configured per machine rather than in this repository. Their namespace is the
 one a browser half can actually read — a client bundle never sees its row's `config` — and the

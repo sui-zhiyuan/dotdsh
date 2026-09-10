@@ -30,3 +30,41 @@
   # `- {id: ui-tweaks, disabled: true}` in that profile's own patch layer.
   - id: ui-tweaks
     name: '@dsh-external/dotdsh-ui-tweaks'
+  # One node-half package carrying the whole feature-branch workflow: the
+  # `/git-start` and `/git-complete` commands, the system-prompt contract and its
+  # live state context, the bundled `git-commit` skill, and the pre-write guard on
+  # the harness's `tools/pre-execute` waterfall.
+  #
+  # The config below is every tunable, shown at its default. `config` replaces the
+  # row's whole config (there is no deep merge), so a profile override must restate
+  # every key it wants to keep — or set only what it changes and accept the schema
+  # defaults for the rest.
+  #
+  #   branchPrefix: feature/          # prefix /git-start gives every branch it opens
+  #   integrationBranch: ""           # empty = detect origin/HEAD, then main, then master
+  #   worktreeRoot: .dsh/worktrees    # relative to the repository's main tree; ignored
+  #                                   #   before a worktree is created, with a comment
+  #   useWorktreeWhenBusy: true       # a session arriving while others are live is isolated
+  #   commitUncommittedBeforeMerge: true   # collect loose work before a merge, rather than block
+  #   mergeMessage: Merge {branch} into {integration}
+  #   guard: auto-start               # auto-start | block | off — what a write on the
+  #                                   #   integration branch does
+  #   guardBash: false                # Bash is opt-in: its arguments name a command,
+  #                                   #   not a path, so enabling it opens a branch for
+  #                                   #   every shell command, including read-only ones
+  #
+  # `guard: auto-start` only starts a branch when this session is the only live one in
+  # the repository; with other sessions present it denies and asks for an explicit
+  # `/git-start`, so a subagent can never be silently moved to a different checkout
+  # from the parent that dispatched it.
+  - id: git-flow
+    name: '@dsh-external/dotdsh-git-flow'
+    config:
+      branchPrefix: feature/
+      integrationBranch: ''
+      worktreeRoot: .dsh/worktrees
+      useWorktreeWhenBusy: true
+      commitUncommittedBeforeMerge: true
+      mergeMessage: Merge {branch} into {integration}
+      guard: auto-start
+      guardBash: false

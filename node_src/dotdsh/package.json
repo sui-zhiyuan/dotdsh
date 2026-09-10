@@ -7,6 +7,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@dsh-external/dotdsh-git-flow": "workspace:*",
     "@dsh-external/dotdsh-hello-world": "workspace:*",
     "@dsh-external/dotdsh-ui-tweaks": "workspace:*"
   },

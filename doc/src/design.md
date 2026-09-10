@@ -50,6 +50,8 @@ What is left is one command with three steps and no state: build, link, remind.
 | Paths are named `repo_*`/`dsh_*` with a `_dir`/`_file` suffix | A name should say which side a path belongs to, and whether it is a directory or a file |
 | A failed run is fixed and re-run, never rolled back | Every step is idempotent — `pnpm -r build` and `dsh plugin add` both converge — so rollback and transactions would buy nothing |
 | Browser-side tweaks share one dual-face package (`node_src/ui-tweaks`) | Small behaviour changes are cheap to write and expensive to fragment: a package per tweak multiplies rows, manifests and lockfile importers for twenty lines of code. One package owns a `tweaks` registry, each entry a reversible `install()`. The shape is dsh's own: a `dsh.client` declaration plus a browser half at `exports["./client"]`, exactly like the `dsh-client-ui-*` packages |
+| The git workflow is one node-only package (`node_src/git-flow`) using existing seams, not a new service | It needs no browser half and no service of its own: commands, a prompt section, a skill provider and the `tools/pre-execute` waterfall are all extension points dsh already ships, and each is registered on the seam the harness's own packages use. What it does own is the git logic behind two injectable seams (`Runner`, `FileAccess`), which is what lets the committed tests drive the whole branch/rebase/merge/worktree lifecycle against a scratch repository with no harness present |
+| The pre-write guard opens a branch; it never redirects the write | `PreToolDecision` has exactly `allow`/`deny`/`ask` and `exec.arguments` is deep-frozen before any listener runs, so a gate cannot rewrite a path. The denial text therefore carries the correction, and the only automatic action available is a side effect the guard performs itself |
 
 ## The browser half
 
@@ -115,6 +117,89 @@ from the locale service's published face, so the wrapper probes for it and degra
 wording rather than throwing if a future dsh renames it. The settings section extends that bank
 rather than replacing it — `statusPhrases` is appended to the shipped list, resolved at draw time,
 so a per-machine phrase joins the memes and an edit applies from the next run on.
+
+## The git-flow plugin
+
+Four decisions in `node_src/git-flow` are worth recording, because each one had a plausible
+alternative that turned out to be wrong on this harness rather than merely different.
+
+**The interception seam is narrower than it looks.** `tools/pre-execute` can allow, deny or ask —
+and that is all. Argument rewriting does not exist as a decision variant, `exec.arguments` is
+deep-frozen before the first listener runs (so that what was logged and what ran cannot diverge),
+and the README states the exclusion as deliberate. A guard therefore cannot redirect a write to a
+different path; it either lets the call through or refuses it. That is what made the guard's job
+"open the branch, then allow" rather than "rewrite the target", and it is why every denial message
+carries the correction: the message is the only channel back to the model. It also settled the
+seam choice — `ctx.tools.guard` is the synchronous alternative, and deciding this requires asking
+git a question.
+
+**Git runs from `ctx.subprocess` with an exact argv, not from `ctx.shell` with a command string.**
+`ctx.shell` is the higher-level seam and can apply a sandbox confine, which makes it the obvious
+first choice. But it takes a command *string*, so using it would mean quoting a branch name, a path
+and a commit message by hand — reintroducing exactly the class of bug that passing every argument as
+its own argv element makes impossible. The trade is stated where it is made: this plugin chooses
+argv-exactness and does not confine its git children. Every dsh consumer package goes through a
+seam; only the provider layer imports `node:child_process`, and the committed tests use that direct
+runner so a clean checkout can run them with no harness and no profile.
+
+**The `.gitignore` write does not go through `ctx.fs` either, for a related reason.** Routing it
+through `ctx.fs` would fence one file write while the git subprocesses that do the bulk of this
+plugin's file mutation stay unconfined — an inconsistency rather than a boundary. It would also be a
+hazard: `dsh-fs-sandbox` falls back to the *deployment* policy when no session policy is passed, so
+the write would be refused under a policy the session itself is not under. `FileAccess` stays a
+seam, so the decision is reversible in one place.
+
+**Two worktree locations, chosen for two different lifetimes.** A *session's* worktree lives at
+`<repo>/.dsh/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
+sandbox is rooted at the session's workspace, so work that stays under the repository needs no
+re-approval, and `$DSH_HOME` would put it outside that root. The *transient* worktree used to merge
+into an integration branch nobody has checked out goes to the OS temporary directory instead — it
+exists for seconds, no agent ever edits in it, and keeping it out of the repository means
+`/git-complete` never has to rewrite `.gitignore` and never leaves an unignored linked repository
+behind if the process dies mid-merge.
+
+**A guess is worse than a question, and the first version of the naming proved it.** Branch names
+come from the session's opening prompt, and the slug rules — lowercase, hyphenate, drop a leading
+verb, keep a few words — are an English heuristic. Applied to a prompt in another script they do not
+degrade gracefully: run against the opening prompt for this very plugin (Chinese, and mentioning
+`github` once), they produced `feature/github`. Nothing failed, which is the problem — the branch was
+created, the write was allowed, and a meaningless name had joined the repository. The naming now
+first asks which script the sentence is written in and refuses to name a non-Latin one, leaving the
+human to answer in one word. The check covering it lives in
+`node_src/git-flow/test/verify-guard.mjs` and uses that exact prompt, because the case is only
+interesting while it is the real one. The same probe is why the guard has a committed check at all:
+the guard is this plugin's only *enforcement* point — everything else is prompt text the model may or
+may not follow — and until then it was verified by a human remembering to try it.
+
+**"Another session is running" is a proxy, and it is worth being explicit about which one.** The
+plugin keeps a per-clone ledger of open branches and asks whether the owning process is still alive.
+That is not the same question as "is another session executing right now", and the difference matters
+in both directions:
+
+- An **idle** session — one that has stopped and is waiting for its human — counts as present. That
+  is deliberate: idle is not finished, its branch is unmerged, and it can resume mid-turn and write.
+  Treating it as gone would reintroduce exactly the collision a worktree exists to prevent.
+- A session that **closed while its process lives** keeps its record, because two sessions can share
+  one harness process and a pid cannot separate them. The cost is a phantom neighbour: new sessions
+  in that repository get a worktree they did not strictly need. Bounded and harmless.
+- A **restart** kills every recorded pid at once, so sessions that are still open read as dead. This
+  is why an abandoned branch is *reported* at the moment its record is dropped rather than stored as
+  durable state: a persisted "abandoned" flag would be wrong after every restart. The authoritative
+  fix is the harness's own session registry, which is on the [TODO](./todo.md) list.
+
+The one thing the ledger must not do is silently forget. A dead session's record is dropped — it
+cannot be resumed — but if its branch still exists, that branch is unmerged work, and `/git-start`
+says so. Deleting the record and the fact together is how work goes missing in a repository.
+
+Two smaller choices follow from the same "use the seam the harness uses" rule. The commit-message
+convention ships as a **bundled skill provider** — the shape `dsh-skill-badge` establishes, with the
+body read from a packaged asset through a `new URL(..., import.meta.url)` locator — rather than as a
+`pre-commit` hook, which is unversioned, needs installing per clone, and can only reject a message
+after it has been composed. And the per-session ledger lives in
+`<git-common-dir>/dsh-git-flow/state.json` rather than in the working tree: it is per-clone (the
+right scope for machine-local worktree paths) and it is never staged, so neither this plugin's own
+per-step commits nor another session's `git add --all` can sweep it into history — which keeps the
+ignore guard's job down to exactly one explainable rule.
 
 ## Constraints worth remembering
 
