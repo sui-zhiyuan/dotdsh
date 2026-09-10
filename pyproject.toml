@@ -7,6 +7,14 @@ dependencies = [
     "dotdsh-dev",
 ]
 
+# Dev tooling for the whole workspace (PEP 735 dependency group). `uv sync`
+# installs the `dev` group by default (`--no-dev` opts out), so `uv run ruff`
+# works right after a sync — no `uvx` round-trip, no separate tool cache.
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
 [tool.uv]
 # The root is an environment aggregator, not a Python package: uv installs
 # only its dependencies (the workspace members below) and never builds the
@@ -20,3 +28,17 @@ members = [
 
 [tool.uv.sources]
 dotdsh-dev = { workspace = true }
+
+# Lint/format config for every member: ruff resolves the nearest
+# pyproject.toml with a [tool.ruff] table, starting from each checked file,
+# and members deliberately define none of their own.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["py_src/dotdsh-dev/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"

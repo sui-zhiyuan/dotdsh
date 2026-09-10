@@ -13,11 +13,34 @@ Conventions for AI agents working in this repository. Human-facing documentation
 | `dsh_home/` | — | `settings.yaml` reference template only (one-time manual copy; nothing syncs it automatically) |
 | `target/` | build tools | All build artifacts (gitignored) |
 
+## Naming conventions (Python tooling)
+
+- **Ownership prefix** — every path and owned value says which side it belongs to: `repo_*` for this repository, `dsh_*` for `$DSH_HOME` configuration. Bare names like `root`, `patch`, `profile_dir` are not acceptable.
+- **Path suffix** — `_dir` for directories, `_file` for files, so a path reads as `<side>_<what>_<kind>`.
+- Examples: `repo_root_dir`, `repo_node_src_dir`, `repo_patch_file`, `repo_plugins` (data); `dsh_profile` (name), `dsh_profile_dir`, `dsh_manifest_file` (path) vs `dsh_manifest` (parsed JSON), `dsh_patch_file`, `dsh_bin_file`, `dsh_cmd` (data).
+
+## Verifying a sync without touching the real `~/.dsh`
+
+`--dry-run` alone is **not** enough: the effects wrappers return before touching the filesystem, so the write path (manifest write, patch copy) stays unverified. A stub `dsh` plus a temporary `DSH_HOME` exercises it with no network and no `~/.dsh` access:
+
+```sh
+TMP=$(mktemp -d); mkdir -p "$TMP/profiles/web"
+printf '{"name":"web-profile","dsh":{"profile":{"bundles":[],"patchReload":"live"}}}' > "$TMP/profiles/web/package.json"
+STUB=$(mktemp -d)/dsh-stub; printf '#!/bin/sh\necho "[stub dsh] $*"\n' > "$STUB"; chmod +x "$STUB"
+DSH_HOME="$TMP" uv run python -m dotdsh_dev --no-build --dsh "$STUB"
+diff -q cordis.patch.yml "$TMP/profiles/web/cordis.patch.yml"   # patch copied verbatim
+rm -rf "$TMP"
+```
+
 ## Common commands
 
 ```sh
+uv sync                                # create/refresh .venv: members + the root dev group (ruff)
 uv run python -m dotdsh_dev            # dev sync into the web profile: pnpm -r build + link install + patch copy
-uv run python -m dotdsh_dev --dry-run  # print the actions without writing anything
+uv run python -m dotdsh_dev --dry-run  # print the steps without doing them
+uv run python -m dotdsh_dev --traceback  # full traceback instead of one error line
+uv run ruff check py_src/dotdsh-dev    # lint (ruff comes from the root dev group)
+uv run ruff format py_src/dotdsh-dev   # format
 pnpm install                           # install node_src package dependencies (incl. peerDependencies)
 pnpm build                             # compile every package's src/*.ts → lib/ (tsc, in-package)
 pnpm publish                           # publish every plugin package (pnpm -r publish --access public)
@@ -25,7 +48,8 @@ mdbook build                           # build the docs
 ```
 
 - Python tooling lives in the **uv workspace** (root `pyproject.toml`, member under `py_src/`, committed `uv.lock`): one CLI module `dotdsh_dev` executed as `uv run python -m dotdsh_dev`. Never single-file PEP 723 scripts — PEP 723 cannot express multi-file tools.
-- `dotdsh_dev` locates the repo root via `find_root()`: anchored at the module's own file location, which uv's editable install resolves into the repo source tree (independent of cwd and venv location), walking up for the root markers `package.json` + `book.toml` + `pyproject.toml` (all three must be present).
+- Dev tools live in the **workspace root**, not in the member: `[dependency-groups] dev` (PEP 735, installed by `uv sync` by default) plus the single `[tool.ruff]` config; `py_src/dotdsh-dev/` stays a plain runtime package with no dev dependencies of its own.
+- `dotdsh_dev` locates the repo root via `find_repo_root()`: anchored at the module's own file location, which uv's editable install resolves into the repo source tree (independent of cwd and venv location), walking up for the root markers `package.json` + `book.toml` + `pyproject.toml` (all three must be present).
 - uv state lives under gitignored `target/` via root `uv.toml` (`cache-dir`); the project venv is `.venv/` (gitignored). No `UV_CACHE_DIR` override needed in sandboxed/CI environments.
 
 ## Output convention

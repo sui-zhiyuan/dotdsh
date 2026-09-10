@@ -18,6 +18,7 @@
 | uv / Python | uv 于 `/home/suine/.local/bin/uv`；venv 用 CPython 3.11.15；系统 Python 3.12.3 |
 | uv 缓存 | 仓库根 `uv.toml` 指定 `cache-dir = "target/python/uv-cache"`（沙箱友好） |
 | 沙箱策略 | `workspace-write`（只能写工作区；`~/.cache/uv` 不可写，故重定向缓存） |
+| 网络环境 | 用户侧 Clash Verge（mihomo）TUN，DNS 指向 `10.255.255.254`。**已开启「DNS 覆写」并把增强模式由 fake-ip 切为 redir-host**：fake-ip 时代所有域名解析到 `198.18.0.1/16`，被 DSH `web_fetch` 的 SSRF 守卫（硬编码在 `dsh-web-fetch-http`，无配置开关）判为"非公网 IP"而拒绝；切 redir-host 后 `web_fetch` 恢复。另注意：**代理节点必须在线**，否则境外流量会在 TLS 阶段被重置（表现为 `SSL_ERROR_SYSCALL`），与 DNS 模式无关 |
 
 ---
 
@@ -148,6 +149,54 @@
     `dev_sync` 入口调用，其余位置不再有同类检查；`home` 字段删除（仅留 `profile_dir`）；
     `plugins` 移出 Context，作为 `dev_sync(ctx, plugins)` 独立参数；
     main 顺序调整为"先构造 ctx 各函数，最后 list_plugins + dev_sync"。
+19. **dry-run 重构**：删除 `dev_sync` 里的 `if ctx.dry_run: return` 大分支；引入三个
+    ctx 封装 `run(cmd, ctx)` / `copy2(src, dst, ctx)` / `write_text(path, text, ctx)`，
+    各自负责"打印正常日志 / 打印错误日志并 re-raise / 非 dry-run 才真执行"；
+    此后只有这三个封装读 `ctx.dry_run`，其余逻辑一律不读。
+20. **文件拆分**：`context.py`（UserError/BIN_NAME/Context+verify）、
+    `change_wrapper.py`（run/copy2/write_text，原名 actions.py）、`__init__.py` 收敛为
+    Plugin/find_repo_root/list_plugins/plan_link_deps/dev_sync + 公共 re-export；
+    `__main__.py` 的 import 不变。依赖方向单向：change_wrapper → context，无环。
+21. **命名约定**：路径按归属前缀——仓库侧 `repo_root`/`repo_patch`/`repo_node_src`，
+    dsh 侧 `dsh_profiles`（= profile 目录，用户指定名）/`dsh_manifest_path`/`dsh_patch`；
+    `find_root`→`find_repo_root`、`resolve_profile_dir`→`resolve_dsh_profiles`、
+    `Context.dsh`→`dsh_path`；函数参数同步（`plugins_dir`→`repo_node_src` 等）。
+22. **命名规则定稿（用户裁定）**：前缀标归属——`repo_*` = 当前仓库、`dsh_*` = `$DSH_HOME` 配置；
+    路径后缀统一 `_dir`/`_file`。据此订正条目 21 的遗留：`dsh_profiles`→`dsh_profile_dir`
+    （复数是名不副实）、`repo_root`→`repo_root_dir`、`repo_patch`→`repo_patch_file`、
+    `repo_node_src`→`repo_node_src_dir`、`dsh_manifest_path`→`dsh_manifest_file`、
+    `dsh_patch`→`dsh_patch_file`、`Context.dsh`→`dsh_bin_file`、`Context.profile`→`dsh_profile`、
+    `Plugin.dir`→`Plugin.repo_dir`、包装器参数 `src/dst/path/cwd`→`src_file/dst_file/target_file/cwd_dir`；
+    `Context.log` 默认改为 flush 打印的 `echo()`（修掉子进程输出"超车"日志行的顺序问题）；
+    命名约定与"临时 DSH_HOME + stub dsh"真实验证法补入 AGENTS.md；
+    决策表第 4 行恢复历史原名——历史条目保持原貌，更名只由本条记录。
+23. **代码审视后的一轮收紧（用户逐条裁定，2026 会话）**——已做：
+    - 校验提前：main 解析完路径后立即 `ctx.verify()`，之后才 `list_plugins`（原先扫完目录才校验）；
+    - 异常边界：新增 `_load_json_file()`（读取/解析/非对象 → `UserError`），main 统一捕获
+      `UserError | CalledProcessError | OSError`，默认打印一行 `error: ...`，新增 `--traceback` 看完整栈；
+    - 命令可用性检查收敛到执行点：`verify()` 不再查 pnpm/dsh，由 `effects.run_cmd` 执行前
+      `shutil.which(cmd[0])` 判定（同时删掉 `resolve_dsh` 里重复的 `--dsh` 存在性校验），
+      于是 `--dry-run` 不再被工具缺失拦住；`resolve_dsh` 找不到 dsh 时不再 raise，回退裸名 `dsh` 并提示；
+    - 库层零输出：pnx 回退提示改走 `ctx.log`（原 `print(..., file=sys.stderr)`）；
+    - 构建前置检查改为 `node_modules/` + `pnpm-lock.yaml`（原探 pnpm 内部布局 `.pnpm`）；
+    - 结构化变更：新增 `LinkDepChange`/`LinkDepPlan`，`plan_link_deps` 改**纯函数**（不再就地改 dict，
+      由调用方落地）；dry-run 语义不变——只有 `write_file` 真执行时才落盘；
+    - 日志三段式：`log_line(module, level, message)`，`Context.log` 指向它；dry-run 与真跑同序同模块，
+      仅 `would ...` 与动词过去式之别；
+    - 命名/清理：`change_wrapper.py`→`effects.py`、`run/copy2/write_text`→`run_cmd/copy_file/write_file`、
+      `echo`→`log_line`、`Plugin.package`→`package_name`（`id` 改 property）、`Context.dsh_bin_file` 改 `Path`、
+      删除死参数 `run(env=)`、常量集中 `constants.py`、`_resolved_paths()` 消除 Optional 赋值、
+      `plan_link_deps` 参数改 `Mapping[str, Any]`；
+    - 配置 ruff（lint+format，line-length 100），**不加依赖、不配 CI**（用 `uvx ruff`）。
+    明确**不做**（记为设计约束）：测试套件、失败回滚/事务与原子写、退出码分级、增量构建/跳过 install、
+    patch 内容比对、link 清理判据放宽——理由：这是**部署工具**，要尽量简单可理解，失败即"修因重跑"，
+    每步幂等即可，无需回滚。
+24. **dev 工具改走 uv 的 dependency group（用户指定）**：根 `pyproject.toml` 增
+    `[dependency-groups] dev = ["ruff>=0.6"]`（PEP 735），ruff 配置由成员迁到根
+    （`src = ["py_src/dotdsh-dev/src"]`，一个配置覆盖全部成员）；成员包保持纯净（无 dev 依赖、无 ruff 配置）。
+    `uv sync` 默认安装 dev 组（`--no-dev` 可关），故命令由 `uvx ruff` 改为 `uv run ruff`。
+    验证：临时副本中 `uv lock` 成功（`Resolved 3 packages`），lock 出现
+    `[package.dev-dependencies] dev = [{ name = "ruff" }]`；仓库 `uv.lock` 由用户执行 `uv sync` 刷新。
 
 ---
 
@@ -160,9 +209,12 @@ dotdsh/
 ├── cordis.patch.yml         # 唯一手写 patch 源（insert/override 行都在这，编辑只改这里）
 ├── py_src/dotdsh-dev/       # 唯一 Python CLI（uv workspace 单成员）
 │   └── src/dotdsh_dev/
-│       ├── __init__.py      # 库层：Context(+verify)/Plugin/list_plugins/plan_link_deps/dev_sync
-│       └── __main__.py      # CLI：parse_args/resolve_profile_dir/resolve_dsh/main
-├── pyproject.toml           # workspace 根，[tool.uv] package=false
+│       ├── __init__.py      # 库层：Plugin/list_plugins/plan_link_deps/dev_sync + 公共 re-export
+│       ├── constants.py     # BIN_NAME/PATCH_FILENAME/ROOT_MARKERS
+│       ├── context.py       # UserError/log_line/Context(+verify)
+│       ├── effects.py       # run_cmd/copy_file/write_file（唯一读 dry_run 的封装）
+│       └── __main__.py      # CLI：parse_args/resolve_dsh_profile_dir/resolve_dsh/main
+├── pyproject.toml           # workspace 根：[tool.uv] package=false + [dependency-groups] dev(ruff) + [tool.ruff]
 ├── uv.toml                  # cache-dir = target/python/uv-cache
 ├── uv.lock / pnpm-lock.yaml # 均已刷新（store 包已移除）
 ├── dsh_home/settings.yaml   # 仅剩模板（一次性参考，无自动同步）
@@ -173,10 +225,14 @@ dotdsh/
 
 ### 3.1 `dotdsh_dev` 行为（`uv run python -m dotdsh_dev`）
 
-- 参数：`--profile`（默认 web）、`--no-build`、`--dry-run`、`--dsh`。
-- 流程：构造 Context → `dev_sync(ctx, plugins)` → `ctx.verify()` →（build）
-  重建 profile `package.json` 的 `link:` 依赖（新增各插件 + 清理指向本仓库的过期条目）→
-  `dsh plugin --profile <n> install` → 原地覆盖 profile 用户层 `cordis.patch.yml`。
+- 参数：`--profile`（默认 web）、`--no-build`、`--dry-run`、`--dsh`、`--traceback`。
+- 流程：构造 Context → 解析路径/命令 → **`ctx.verify()`（提前失败）** → `list_plugins` →
+  `dev_sync`（内部再 verify 一次）→（build）重建 profile `package.json` 的 `link:` 依赖
+  （新增各插件 + 清理指向本仓库的过期条目）→ `dsh plugin --profile <n> install` →
+  原地覆盖 profile 用户层 `cordis.patch.yml`（**放最后**：前面任一步失败就不动运行中的 patch 层）。
+- 失败模型：每步幂等、不做回滚——修掉原因后整体重跑即收敛（错误默认一行 `error: ...`，
+  `--traceback` 看完整栈）。
+- 日志：`ctx.log(module, level, message)` 三段式（level ∈ info/plan/error），dry-run 与真跑同序同模块。
 - 效果保证：patch 行 → 运行中 profile 热重载（`patchReload: live`）+ 重启后仍生效；
   `link:` 持久于 package.json → 重启后插件可解析；插件代码改动需重启 dsh。
 - 注意：脚本会**覆盖**目标 profile 的用户层，手工覆盖一律改仓库根 `cordis.patch.yml`。
@@ -184,8 +240,12 @@ dotdsh/
 ### 3.2 常用命令
 
 ```sh
+uv sync                                # 建/刷新 .venv：成员 + 根 dev 组（ruff）
 uv run python -m dotdsh_dev            # dev 同步进 web profile（含 pnpm -r build）
 uv run python -m dotdsh_dev --dry-run  # 只打印计划
+uv run python -m dotdsh_dev --traceback  # 失败时打印完整栈
+uv run ruff check py_src/dotdsh-dev    # lint（ruff 来自根 dev 组）
+uv run ruff format py_src/dotdsh-dev   # format
 pnpm build                             # 编译所有插件 src/*.ts → lib/
 pnpm publish                           # pnpm -r publish --access public
 mdbook build                           # 文档 → target/book/
@@ -206,7 +266,7 @@ mdbook build                           # 文档 → target/book/
 | 1 | 不用 `dsh plugin add <路径>` | pnpm 12 + Node 26 解析目录参数失败；用 `link:` + install |
 | 2 | uv workspace + `python -m`（弃 PEP 723） | PEP 723 无法表达多文件工具 |
 | 3 | 根项目 `package = false` | 根只是环境聚合器，不该被打成 wheel |
-| 4 | `find_root` 锚定模块 `__file__` | uv editable install 使 `__file__` 落在仓库源码树，cwd/venv 无关 |
+| 4 | `find_root` 锚定模块 `__file__` | uv editable install 使 `__file__` 落在仓库源码树，cwd/venv 无关（函数于条目 21 更名为 `find_repo_root`） |
 | 5 | 根标记 = package.json + book.toml + pyproject.toml | 三者只在仓库根共存，防误判 |
 | 6 | 库层零 print，错误 raise / main 打印 | 库/CLI 分层纪律 |
 | 7 | 删聚合 store + applist 生成器 | 生成链路的复杂度根源；行改手写、包改纯插件 |

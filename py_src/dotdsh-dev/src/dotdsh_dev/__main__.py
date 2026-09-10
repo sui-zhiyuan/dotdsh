@@ -5,17 +5,24 @@ Usage:
     uv run python -m dotdsh_dev                  # target profile: web
     uv run python -m dotdsh_dev --profile <name> # another profile
     uv run python -m dotdsh_dev --no-build       # skip `pnpm -r build`
-    uv run python -m dotdsh_dev --dry-run        # print the actions without writing anything
+    uv run python -m dotdsh_dev --dry-run        # print the steps without doing them
     uv run python -m dotdsh_dev --dsh <path>     # dsh executable (default: PATH lookup, then pnx)
+    uv run python -m dotdsh_dev --traceback      # full traceback instead of one error line
 
 The repo root is the nearest ancestor of this module's source location
 containing package.json, book.toml, and pyproject.toml.
+
+Naming convention (see AGENTS.md): `repo_*` for this repository, `dsh_*`
+for `$DSH_HOME` configuration; path names end in `_dir` or `_file`.
 """
+
 from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +32,7 @@ from dotdsh_dev import (
     Context,
     UserError,
     dev_sync,
-    find_root,
+    find_repo_root,
     list_plugins,
 )
 
@@ -34,47 +41,76 @@ def parse_args(ctx: Context) -> None:
     """Fill the CLI-option fields of `ctx` from argv."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--profile", default="web",
+        "--profile",
+        default="web",
         help="target profile under $DSH_HOME/profiles (default: web)",
     )
     parser.add_argument("--no-build", action="store_true", help="skip `pnpm -r build`")
-    parser.add_argument("--dry-run", action="store_true", help="print the actions without writing anything")
-    parser.add_argument("--dsh", metavar="PATH", help="dsh executable path (default: PATH lookup, then pnx)")
+    parser.add_argument("--dry-run", action="store_true", help="print the steps without doing them")
+    parser.add_argument(
+        "--dsh", metavar="PATH", help="dsh executable path (default: PATH lookup, then pnx)"
+    )
+    parser.add_argument(
+        "--traceback", action="store_true", help="print the full traceback on failure"
+    )
     args = parser.parse_args()
-    ctx.profile = args.profile
+    ctx.dsh_profile = args.profile
     ctx.build = not args.no_build
     ctx.dry_run = args.dry_run
-    ctx.dsh = args.dsh
+    ctx.traceback = args.traceback
+    ctx.dsh_bin_file = Path(args.dsh) if args.dsh else None
 
 
-def resolve_profile_dir(ctx: Context) -> None:
-    """Fill ctx.profile_dir: $DSH_HOME/profiles/<profile> when $DSH_HOME is
-    set, else ~/.dsh/profiles/<profile> (dsh's own default)."""
-    env = os.environ.get("DSH_HOME")
-    base = Path(env).expanduser().resolve() if env else (Path.home() / ".dsh").resolve()
-    ctx.profile_dir = base / "profiles" / ctx.profile
+def resolve_dsh_profile_dir(ctx: Context) -> None:
+    """Fill ctx.dsh_profile_dir: $DSH_HOME/profiles/<profile> when $DSH_HOME
+    is set, else ~/.dsh/profiles/<profile> (dsh's own default)."""
+    dsh_home = os.environ.get("DSH_HOME")
+    dsh_home_dir = (
+        Path(dsh_home).expanduser().resolve() if dsh_home else (Path.home() / ".dsh").resolve()
+    )
+    ctx.dsh_profile_dir = dsh_home_dir / "profiles" / ctx.dsh_profile
 
 
 def resolve_dsh(ctx: Context) -> None:
-    """Fill ctx.dsh_cmd: explicit --dsh path, dsh on PATH, then pnx."""
-    if ctx.dsh:
-        path = Path(ctx.dsh).expanduser().resolve()
-        if not path.is_file():
-            raise UserError(f"--dsh path does not exist: {path}")
-        ctx.dsh_cmd = [str(path)]
+    """Fill ctx.dsh_cmd: the explicit --dsh path, else dsh on PATH, else pnx,
+    else the bare name — which command is actually usable is checked when it
+    is run (see effects.run_cmd), not here."""
+    if ctx.dsh_bin_file is not None:
+        ctx.dsh_cmd = [str(ctx.dsh_bin_file.expanduser().resolve())]
         return
     found = shutil.which(BIN_NAME)
     if found:
         ctx.dsh_cmd = [found]
         return
     if shutil.which("pnx"):
-        print("note: dsh not found on PATH, falling back to pnx @deepseek-ai/dsh", file=sys.stderr)
+        ctx.log("dsh", "info", f"no {BIN_NAME} on PATH: falling back to `pnx @deepseek-ai/dsh`")
         ctx.dsh_cmd = ["pnx", "@deepseek-ai/dsh"]
         return
-    raise UserError(
-        "could not find dsh: install @deepseek-ai/dsh (npm i -g @deepseek-ai/dsh)"
-        " or pass --dsh <path>"
+    ctx.log(
+        "dsh",
+        "info",
+        f"no {BIN_NAME} on PATH: install @deepseek-ai/dsh, or pass --dsh <path>",
     )
+    ctx.dsh_cmd = [BIN_NAME]
+
+
+def _describe(error: BaseException) -> str:
+    """One-line description of `error`, for the CLI's error message."""
+    if isinstance(error, subprocess.CalledProcessError):
+        return (
+            f"command failed (exit {error.returncode}): "
+            f"{shlex.join(str(part) for part in error.cmd)}"
+        )
+    return str(error)
+
+
+def _fail(ctx: Context, error: BaseException) -> None:
+    """Report `error` as one line and exit 1, or re-raise it under
+    --traceback."""
+    if ctx.traceback:
+        raise error
+    print(f"error: {_describe(error)}", file=sys.stderr)
+    raise SystemExit(1) from error
 
 
 def main() -> None:
@@ -82,16 +118,16 @@ def main() -> None:
     try:
         # Build the context first (options + resolved paths + command)...
         parse_args(ctx)
-        ctx.root = find_root()
-        resolve_profile_dir(ctx)
-        ctx.patch_src = ctx.root / PATCH_FILENAME
+        ctx.repo_root_dir = find_repo_root()
+        resolve_dsh_profile_dir(ctx)
+        ctx.repo_patch_file = ctx.repo_root_dir / PATCH_FILENAME
         resolve_dsh(ctx)
-        # ...then enumerate plugins and sync. dev_sync verifies the context.
-        plugins = list_plugins(ctx.root / "node_src")
-        dev_sync(ctx, plugins)
-    except UserError as error:
-        print(f"error: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+        # ...verify it before doing any work, then enumerate and sync.
+        ctx.verify()
+        repo_plugins = list_plugins(ctx.repo_root_dir / "node_src")
+        dev_sync(ctx, repo_plugins)
+    except (UserError, subprocess.CalledProcessError, OSError) as error:
+        _fail(ctx, error)
 
 
 if __name__ == "__main__":

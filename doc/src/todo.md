@@ -22,3 +22,4 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 ## Languages
 
 - [x] Python tooling lives in the uv workspace (`py_src/dotdsh-dev`, run with `uv run python -m dotdsh_dev`)
+- [x] Dev tooling (ruff lint/format) lives at the workspace root: `[dependency-groups] dev` + the single `[tool.ruff]` config, installed by `uv sync`
