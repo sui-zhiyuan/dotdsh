@@ -51,6 +51,7 @@ uv run ruff check py_src/dev-apply       # lint (ruff comes from the root dev gr
 uv run ruff format py_src/dev-apply      # format
 pnpm install                             # install node_src package dependencies (incl. peerDependencies)
 pnpm build                               # compile every package's src/*.ts → lib/ (tsc, in-package)
+pnpm test                                # run each package's checks (ui-tweaks browser half; built-ins only, no harness needed)
 pnpm release                             # publish every package (pnpm -r publish --access public)
 mdbook build                             # build the docs
 ```
@@ -66,7 +67,7 @@ mdbook build                             # build the docs
 - Repo-level build artifacts go into `target/<language>/` (gitignored): `target/book` (mdbook, active), `target/node` (test/coverage reports), `target/python` (uv cache).
 - Package build output: each publishable Node package compiles `src/*.ts` into its own **`lib/`** (tsc, same pattern as dsh's own packages). `lib/` is **gitignored build output** — freshness is guaranteed at the point of use: `dev_apply` runs `pnpm -r build` before linking, and each package's `prepublishOnly` hook builds before publishing. Never point package builds into `target/`.
 - **Plugin rows are hand-maintained in `node_src/dotdsh/cordis.patch.yml`.** dsh composes that file as the bundle's patch layer, so a row change takes effect on the next dsh start. The profile's own `cordis.patch.yml` belongs to the user and is never written by this repository.
-- **A browser half (`client/index.js`) is committed source, not build output.** dsh serves those exact bytes and fails the boot when the file is missing, so it cannot live under gitignored `lib/`; nothing builds or type-checks it either (`tsc` only compiles `src/`), which is why a change there is guarded by review and the fake-DOM check in `target/node/` rather than by the build.
+- **A browser half (`client/index.js`) is committed source, not build output.** dsh serves those exact bytes and fails the boot when the file is missing, so it cannot live under gitignored `lib/`; nothing builds or type-checks it either (`tsc` only compiles `src/`), which is why a change there is guarded by review and the committed check at `node_src/ui-tweaks/test/verify-client.mjs` (`pnpm test`) rather than by the build. That check states its own boundary in its header: it proves the manifest contract, the boot-protocol registration and each tweak's decisions against a fake DOM, not that the page really broke the line or re-rendered the copy.
 
 ## dsh (DeepSeek Harness) contract cheat sheet
 
