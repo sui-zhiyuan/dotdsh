@@ -19,7 +19,24 @@
 | Package | Row id | What it does |
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
-| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase |
+| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase. Both are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases` |
+
+The two tweaks are configured per machine rather than in this repository. Their namespace is the
+one a browser half can actually read — a client bundle never sees its row's `config` — and the
+settings file provider watches its document, so an edit applies without a restart:
+
+```yaml
+ui-tweaks:
+  composerEnterNewline: true      # bare Enter breaks the line; Ctrl/Cmd+Enter sends
+  statusWording: true             # random DeepSeek meme in the running-turn status line
+  statusPhrases: ["自定义一句"]    # extra phrasing appended to the shipped bank
+```
+
+Unset fields fall back to this package's schema defaults (all three values above except the empty
+extension list), and a row `config` in the bundle patch would sit below them as the composition
+`base` layer. One caveat worth knowing: a section the schema rejects leaves the namespace
+unregistered for that whole boot — the tweaks then quietly run on their defaults, and dsh reports
+it only through its logger — so fix the document and restart.
 
 ## Prerequisites
 
@@ -62,7 +79,7 @@ uv run python -m dev_apply           # build + link-install into the web profile
 uv run ruff check py_src/dev-apply   # lint
 uv run ruff format py_src/dev-apply  # format
 mdbook build                         # docs → target/book/
-pnpm test                            # per-package checks (the ui-tweaks browser-half check)
+pnpm test                            # per-package checks (ui-tweaks: both halves — host contract + browser half)
 pnpm release                         # pnpm -r publish --access public
 ```
 

@@ -17,6 +17,12 @@
 # ui-conversation:
 #   busyEnter: queue
 #
+# ui-tweaks:
+#   composerEnterNewline: true
+#   statusWording: true
+#   statusPhrases:
+#     - 自定义一句
+#
 # agent-presets:
 #   default: standard
 #

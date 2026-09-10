@@ -47,12 +47,22 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   built-ins (no dependency, no harness, no network), and states in its header what a green run does
   not prove: the sandbox has no React, no Lexical and no locale service, so end-to-end behaviour is
   still settled by loading the page once
-- [ ] Make the status wording configurable. `STATUS_PHRASES` is a hardcoded bank in
+- [x] Make the status wording configurable. `STATUS_PHRASES` was a hardcoded bank in
   `ui-tweaks/client/index.js`, and a browser half cannot read its row's `config` (the boot graph
-  carries none — see [Design decisions](./design.md)), so per-machine wording needs a source the
-  half can actually reach: a user-layer setting read through the client's `settingsScope`/`remote`
-  face, or a page-local source (a query parameter, `localStorage`) with the bank as the fallback.
-  Decide which before the bank stops being a personal list
+  carries none — see [Design decisions](./design.md)), so per-machine wording needed a source the
+  half could actually reach. It took the first of the two candidates: the `ui-tweaks` settings
+  namespace, registered by the node half and read through `ctx.settingsScope` in the browser — the
+  channel every shipped browser preference already uses. The bank stays the shipped half and
+  `statusPhrases` is appended to it; the same namespace carries the two switches
+  (`composerEnterNewline`, `statusWording`). A page-local source (a query parameter,
+  `localStorage`) was the alternative and is still the fallback if a switch must work on a page
+  with no settings transport
+- [x] Give a node half a committed test too. `verify-host.mjs` (also run by `pnpm test`) pins what
+  `tsc` cannot: the namespace and schema that the browser half binds and reads by name, the `base`
+  layer carrying the row's config, the serialized wire schema, and the no-provider degrade. The
+  namespace and field-name agreement it checks against `client/index.js` is a name-level check —
+  what the page does with an adopted section stays the browser half's own check, and whether dsh
+  resolves and persists a section is settled by loading the page once
 
 ## Home config
 
