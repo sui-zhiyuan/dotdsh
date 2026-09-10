@@ -6,7 +6,7 @@ Usage:
     uv run python -m dotdsh_dev --profile <name> # another profile
     uv run python -m dotdsh_dev --no-build       # skip `pnpm -r build`
     uv run python -m dotdsh_dev --dry-run        # print the steps without doing them
-    uv run python -m dotdsh_dev --dsh <path>     # dsh executable (default: PATH lookup, then pnx)
+    uv run python -m dotdsh_dev --dsh <path>     # dsh executable (default: PATH lookup)
     uv run python -m dotdsh_dev --traceback      # full traceback instead of one error line
 """
 
@@ -41,9 +41,7 @@ def parse_args(ctx: Context) -> None:
     )
     parser.add_argument("--no-build", action="store_true", help="skip `pnpm -r build`")
     parser.add_argument("--dry-run", action="store_true", help="print the steps without doing them")
-    parser.add_argument(
-        "--dsh", metavar="PATH", help="dsh executable path (default: PATH lookup, then pnx)"
-    )
+    parser.add_argument("--dsh", metavar="PATH", help="dsh executable path (default: PATH lookup)")
     parser.add_argument(
         "--traceback", action="store_true", help="print the full traceback on failure"
     )
@@ -66,8 +64,8 @@ def resolve_dsh_profile_dir(ctx: Context) -> None:
 
 
 def resolve_dsh(ctx: Context) -> None:
-    """Fill ctx.dsh_cmd: --dsh path, else dsh on PATH, else pnx, else the bare
-    name; usability is checked when the command runs, not here."""
+    """Fill ctx.dsh_cmd: the --dsh path, else dsh on PATH, else fail. Whether
+    the chosen command is usable is checked when it runs, not here."""
     if ctx.dsh_bin_file is not None:
         ctx.dsh_cmd = [str(ctx.dsh_bin_file.expanduser().resolve())]
         return
@@ -75,16 +73,10 @@ def resolve_dsh(ctx: Context) -> None:
     if found:
         ctx.dsh_cmd = [found]
         return
-    if shutil.which("pnx"):
-        ctx.log("dsh", "info", f"no {BIN_NAME} on PATH: falling back to `pnx @deepseek-ai/dsh`")
-        ctx.dsh_cmd = ["pnx", "@deepseek-ai/dsh"]
-        return
-    ctx.log(
-        "dsh",
-        "info",
-        f"no {BIN_NAME} on PATH: install @deepseek-ai/dsh, or pass --dsh <path>",
+    raise UserError(
+        f"no {BIN_NAME} on PATH: install @deepseek-ai/dsh"
+        " (`pnpm add -g @deepseek-ai/dsh`), or pass --dsh <path>"
     )
-    ctx.dsh_cmd = [BIN_NAME]
 
 
 def _describe(error: BaseException) -> str:
