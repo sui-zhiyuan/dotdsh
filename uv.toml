@@ -1,0 +1,4 @@
+# Repo-level uv configuration: keep all uv state under gitignored target/,
+# per the repo output convention (target/<language>/). Sandboxed/CI
+# environments therefore need no UV_CACHE_DIR override.
+cache-dir = "target/python/uv-cache"

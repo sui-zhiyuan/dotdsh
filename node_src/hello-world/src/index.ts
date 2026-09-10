@@ -1,16 +1,25 @@
+import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
 // cordis plugin: the config from the store patch row is passed through to apply(ctx, config).
-// applist.yaml → node_src/cordis.patch.yml config → validated/defaulted by Config → apply.
+// applist.yaml → node_src/dotdsh/cordis.patch.yml config → validated/defaulted by Config → apply.
 export const name = "dotdsh-hello-world";
 export const inject = ["tools"];
 
-export const Config = z.object({
+/** Hello-world plugin configuration. */
+export interface Config {
+  /** The greeting used by the `hello_world` tool. */
+  greeting: string;
+}
+
+/** Schemastery configuration for the hello-world plugin. */
+export const Config: z<Config> = z.object({
   greeting: z.string().default("Hello from dotdsh"),
 });
 
-export function apply(ctx, config) {
+/** Register the `hello_world` tool on `ctx.tools`. */
+export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: "hello_world",
     description:

@@ -1,0 +1,16 @@
+# dotdsh plugin rows — the single hand-maintained patch source.
+#
+# `uv run python -m dotdsh_dev` copies this file verbatim to the target
+# profile's user layer ($DSH_HOME/profiles/<profile>/cordis.patch.yml),
+# where patchReload: live hot-reloads it into the running profile and the
+# next boot re-applies it. Edit rows HERE — never edit the copy in
+# $DSH_HOME, the script overwrites it.
+#
+# Row shape: a top-level YAML array of loader patch entries. `insert` adds
+# rows (id / name / config); `{id, disabled}` or `{id, config}` overrides a
+# row by id; later entries win; `config` replaces the whole config.
+- insert:
+  - id: hello-world
+    name: '@dsh-external/dotdsh-hello-world'
+    config:
+      greeting: Hello from dotdsh

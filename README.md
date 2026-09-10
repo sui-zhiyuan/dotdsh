@@ -1,41 +1,65 @@
 # dotdsh
 
-> My dsh (DeepSeek Harness) plugin store and dotfiles framework.
-> Treat dsh as an OS: `applist.yaml` is my app list, `node_src/` is my plugin store, `dsh_home/` is my home config.
+> My dsh (DeepSeek Harness) plugin set: one plugin package per `node_src/` directory, every plugin row in the root `cordis.patch.yml`, both wired into a profile by the `dotdsh_dev` dev-loop script.
 
 ## Layout
 
 | Path | Role |
 |---|---|
-| `applist.yaml` | **The app list** (the heart): declares which plugins are installed and how they are configured |
-| `node_src/` | One package per directory: `dotdsh/` is the plugin store itself, the rest are individual plugins (`hello-world` is the example) |
-| `dsh_home/` | Controlled mirror of `$DSH_HOME`: profile, home-level patch, settings templates |
+| `node_src/` | One pure plugin package per directory (TypeScript, built to gitignored `lib/`); `hello-world` is the example |
+| `cordis.patch.yml` | The single hand-maintained patch source: every plugin row (insert/override) lives here |
+| `py_src/` | uv workspace: the `dotdsh_dev` dev-loop CLI (`uv run python -m dotdsh_dev`) |
+| `dsh_home/` | `settings.yaml` reference template (one-time manual copy) |
 | `doc/src/` | mdbook documentation |
-| `scripts/` | Python tooling scripts (PEP 723, run with `uv run`) |
+
+## Prerequisites
+
+- `pnpm` and Node — for the plugin packages;
+- `uv` — for the Python tooling;
+- `dsh` on `PATH` — install it once with `pnpm add -g @deepseek-ai/dsh`. pnpm 12 refuses to
+  finish that install while any dependency's build scripts are unapproved: it names those
+  packages, so re-run with `--allow-build=<package>` for each of them. Without a global
+  install, pass `--dsh <path>` on every `dotdsh_dev` call.
 
 ## Quick start
 
 ```sh
-# 1. Generate the store's patch layer (applist.yaml → node_src/dotdsh/cordis.patch.yml)
-uv run scripts/gen_applist.py
+# 0. One-time: workspace dependencies and dev tools
+pnpm install
+uv sync
 
-# 2. Sync into your dsh home (default ~/.dsh; override with DSH_HOME) and install plugins
-uv run scripts/sync_home.py          # run --dry-run first
+# 1. Dev sync into the web profile: builds the plugins, link-installs them, and
+#    copies cordis.patch.yml to the profile's user layer.
+uv run python -m dotdsh_dev --dry-run   # inspect first
+uv run python -m dotdsh_dev
 
-# 3. Boot your profile
-dsh --profile dotdsh
+# 2. A running profile hot-reloads the patch rows immediately; restart dsh
+#    when plugin code (src/*.ts) changed.
+dsh --profile web
 ```
 
 ## Adding a plugin
 
-1. Create a package under `node_src/<id>/`;
-2. Add `{id, package, enabled, config}` to `applist.yaml`;
-3. `uv run scripts/gen_applist.py && uv run scripts/sync_home.py`.
+1. Create a package under `node_src/<id>/` (`package.json` + `src/index.ts` + `tsconfig.json`);
+2. Add its row (`id`, `name`, `config`) to the root `cordis.patch.yml`;
+3. `uv run python -m dotdsh_dev` — the row hot-reloads; restart dsh to load new plugin code.
+
+## Development
+
+```sh
+uv sync                                # refresh .venv: workspace members + the root dev group (ruff)
+uv run ruff check py_src/dotdsh-dev    # lint
+uv run ruff format py_src/dotdsh-dev   # format
+mdbook build                           # docs → target/book/
+pnpm publish                           # pnpm -r publish --access public
+```
 
 ## Documentation
 
-The mdbook bundles the project TODO list together with this README and `AGENTS.md`:
+`mdbook build` renders `doc/src/` into `target/book/`. The pages are:
 
-```sh
-mdbook build        # output to target/book/
-```
+- `doc/src/README.md` — this page: what the repository is and how to run it;
+- `doc/src/dev-cli.md` — the `dotdsh_dev` steps, failure model, modules and logging;
+- `doc/src/design.md` — why the repository is shaped this way;
+- `doc/src/todo.md` — what is planned;
+- `doc/src/AGENTS.md` — conventions for AI agents working here.

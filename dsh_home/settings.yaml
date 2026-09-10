@@ -1,5 +1,6 @@
-# dotdsh: runtime preferences template — synced to $DSH_HOME/settings.yaml
-# (never overwritten when the target already exists).
+# dotdsh: runtime preferences template — one-time reference; copy it to
+# $DSH_HOME/settings.yaml manually if you want it (nothing syncs it
+# automatically, and nothing overwrites an existing settings.yaml).
 # Runtime settings are managed by dsh-settings-file and hot-reload. Everything
 # below is an example; uncomment and fill in as needed.
 # Red line: never commit real credentials/secrets (apiKeyEnv stores only the

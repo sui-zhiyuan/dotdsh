@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dotdsh-dev"
+version = "0.1.0"
+description = "dotdsh dev-loop sync: link-install node_src plugins into a profile and copy the repo patch layer to its user layer"
+requires-python = ">=3.11"
+
+# This member stays a plain runtime package: dev tooling (the `dev` dependency
+# group) and the ruff config both live at the workspace root pyproject.toml.
