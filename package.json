@@ -2,11 +2,11 @@
   "name": "dotdsh",
   "version": "0.1.0",
   "private": true,
-  "description": "My dsh (DeepSeek Harness) plugin store: one plugin package per node_src/ directory, rows in the root cordis.patch.yml, wired into a profile by dotdsh_dev",
+  "description": "My dsh (DeepSeek Harness) plugin repo: the plugin packages under node_src/ plus the @dsh-external/dotdsh bundle that carries their patch rows; `dev_apply` builds and link-installs both",
   "scripts": {
-    "dev": "uv run python -m dotdsh_dev",
+    "apply": "uv run python -m dev_apply",
     "build": "pnpm -r build",
-    "publish": "pnpm -r publish --access public",
-    "book": "mdbook build"
+    "book": "mdbook build",
+    "release": "pnpm -r publish --access public"
   }
 }

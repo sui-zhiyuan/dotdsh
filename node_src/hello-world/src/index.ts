@@ -2,9 +2,11 @@ import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
-// cordis plugin: the config from the store patch row is passed through to apply(ctx, config).
-// applist.yaml → node_src/dotdsh/cordis.patch.yml config → validated/defaulted by Config → apply.
-export const name = "dotdsh-hello-world";
+// cordis plugin: the config on this plugin's row in the bundle patch
+// (node_src/dotdsh/cordis.patch.yml) is passed through to apply(ctx, config).
+// Row config → validated/defaulted by Config → apply(ctx, config).
+// The plugin name follows dsh's convention (package name minus scope and prefix).
+export const name = "hello-world";
 export const inject = ["tools"];
 
 /** Hello-world plugin configuration. */
@@ -23,7 +25,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: "hello_world",
     description:
-      "Say hello to the given name. The greeting comes from the dotdsh plugin store's applist.yaml configuration (config.greeting).",
+      "Say hello to the given name. The greeting comes from this plugin's row in the dotdsh bundle patch (config.greeting).",
     parameters: {
       name: {
         type: "string",

@@ -1,75 +1,72 @@
-# The `dotdsh_dev` CLI
+# The `dev_apply` CLI
 
-`uv run python -m dotdsh_dev` wires this repository into a dsh profile: it builds the
-plugin packages, link-installs them into the profile, and copies the root patch layer
-onto the profile's user layer. Plugin rows reach a running profile by hot reload; new
-plugin code needs a dsh restart. Why the tool is shaped this way:
-[Design decisions](./design.md).
+`uv run python -m dev_apply` is this repository's whole dev loop — three steps, in order:
 
-## Steps, in order
+1. **build** — `pnpm -r build` in the repo root (skipped with `--no-build`): every TypeScript
+   plugin package compiles `src/*.ts` into its own `lib/`.
+2. **link** — one `dsh plugin --profile <name> add link:<absolute path> …` covering every
+   package under `node_src/`: the `@dsh-external/dotdsh` bundle and each plugin package.
+   pnpm writes the profile's `package.json`, and dsh appends the bundle to
+   `dsh.profile.bundles` by itself; the plugin packages stay plain dependencies.
+3. **remind** — it always prints `restart dsh to load the plugin code`, without trying to
+   work out whether a restart is really needed. You know what you changed.
 
-1. **build** — `pnpm -r build` in the repo root (skipped with `--no-build`).
-2. **manifest** — rewrite the profile `package.json` `dependencies`: one
-   `link:<absolute path>` entry per `node_src/<id>/`, and stale `link:` entries that
-   point into this repository but match no package are dropped.
-3. **install** — `dsh plugin --profile <name> install`, which forwards `pnpm install`
-   in the profile directory and reconciles `dsh.profile.bundles`.
-4. **patch** — copy the root `cordis.patch.yml` verbatim over the profile's user layer,
-   **in place**: the profile's HMR watcher holds an exact-path watch on that file, and
-   an atomic rename would lose it.
+That is the whole command. It never copies a file, never writes into this repository, and
+never touches the profile's own `cordis.patch.yml` — the profile manifest is pnpm's, the
+layer list is dsh's, and the user layer is the user's.
 
-## Failure model
+## How the rows reach the profile
 
-Every step is idempotent and nothing is rolled back: when a step fails, fix its cause
-and re-run the whole sync — a re-run converges. The patch layer is copied last on
-purpose, so a failed build or install leaves the running profile's patch layer as it
-was. The CLI reports one line per failure and exits 1; `--traceback` restores the full
-stack, and a corrupt profile manifest is reported as a message rather than a traceback.
+They do not travel through this command at all. `node_src/dotdsh` is a **bundle**: dsh reads
+its `cordis.patch.yml` as one patch layer because the package is listed in
+`dsh.profile.bundles`, and `dsh plugin add` puts it there by itself. Composition order is
+bundle layers → the profile's own `cordis.patch.yml` → `$DSH_HOME/cordis.patch.yml` →
+`--patch` overlays, so a profile can still override or disable any row this repository ships.
 
-## Modules and the two invariants
+## Why a restart
 
-| File | Role |
+- Plugin **code**: Node evaluates an ES module once per process, and dsh mounts its HMR
+  plugin with `root: []` — config watching only, no module watching.
+- Plugin **rows**: bundle layers are read once at boot.
+
+Only `$DSH_HOME/profiles/<name>/cordis.patch.yml` and `$DSH_HOME/cordis.patch.yml`
+hot-reload while dsh runs, so a quick config experiment belongs there, not here.
+
+## What a restart costs (measured on this machine)
+
+| Step | Cost |
 |---|---|
-| `constants.py` | `BIN_NAME`, `PATCH_FILENAME`, `ROOT_MARKERS` |
-| `context.py` | `UserError`, `log_line`, `Context` (+ `verify()`) |
-| `effects.py` | `run_cmd`, `copy_file`, `write_file` — the only readers of `dry_run` |
-| `__init__.py` | `Plugin`, `list_plugins`, `plan_link_deps`, `dev_sync` + re-exports |
-| `__main__.py` | CLI: `parse_args`, `resolve_*`, error reporting, `main` |
+| compose the full web tree (146 rows, including the dotdsh bundle's) | 0.06 s |
+| load the module graph (144 plugin packages) | ≈1.1 s |
+| mount, bind the port, reconnect the browser | not measured here; seconds |
+| **total, warm cache** | **≈1–3 s** |
 
-- **One dry-run boundary.** Under `--dry-run` each effect logs `[dry-run] <module>:
-  would ...` and returns; no other module branches on `dry_run`. Every step is written
-  once and behaves the same in both modes.
-- **One validation point.** `Context.verify()` checks that the context is complete and
-  that every path exists, and `main` calls it before `node_src` is scanned. Command
-  availability is checked when a command is actually run, so `--dry-run` never invokes
-  pnpm or dsh — it only needs the dsh command itself to be resolvable, on PATH or via
-  `--dsh <path>`.
+Sessions are not lost: transcripts are append-only JSONL under `$DSH_HOME/sessions`, and the
+projection cache is persisted under `$DSH_HOME/storages/session_projcache`, so a restart
+folds a checkpoint plus the tail instead of recomputing. What a restart does change is the
+model's prefix cache: if the tool set or the system prompt changed, the first request after
+the restart is a cache miss; if only an `execute()` body changed, the prefix is identical.
 
-## Logging
+## Options
 
-Steps report through `ctx.log(module, level, message)`:
+| Flag | Meaning |
+|---|---|
+| `--profile <name>` | target profile under `$DSH_HOME/profiles` (default: `web`) |
+| `--no-build` | skip `pnpm -r build` |
+| `--dsh <path>` | dsh executable (default: `PATH` lookup; the command fails without one) |
 
-- `module` — which step: `sync`, `build`, `manifest`, `install`, `patch`
-- `level` — `info`, `plan` (the same step under `--dry-run`), `error`
-- `message` — the human text
+`--help` prints the same list.
 
-`--dry-run` and a real run therefore print the same sequence of steps, differing only
-in `would ...` versus the past tense. The default logger flushes every line, so a child
-process cannot overtake it in captured output.
+## Verifying without touching the real `~/.dsh`
 
-## Naming
+[AGENTS.md](./AGENTS.md) has the recipe: a stub `dsh` plus a temporary `DSH_HOME` shows the
+exact `dsh plugin add` command line, and the real `dsh` against the same temporary home shows
+the bundle landing in `dsh.profile.bundles`.
 
-`repo_*` for this repository, `dsh_*` for `$DSH_HOME` configuration; path names end in
-`_dir` or `_file`. Parsed data keeps the ownership prefix: `dsh_manifest_file` is the
-path, `dsh_manifest` is the JSON read from it. [AGENTS.md](./AGENTS.md) states the
-convention in full.
+## Naming and shape
 
-## Environment constraints
-
-- `dsh plugin add <path>` cannot be used here: pnpm 12 on Node 26 parses directory
-  arguments as registry names. `dotdsh_dev` writes `link:` dependencies and calls
-  `dsh plugin install` instead.
-- The workspace-dependencies precondition is `node_modules/` plus `pnpm-lock.yaml`;
-  probing pnpm's internal `.pnpm` layout produced false negatives.
-- [AGENTS.md](./AGENTS.md) documents how to verify a sync against a temporary
-  `DSH_HOME` with a stub `dsh`, without touching the real `~/.dsh`.
+The CLI is two files: `__main__.py` (everything) and `__init__.py` (the package docstring).
+Paths follow the repository convention — `repo_*` for this repository, `dsh_*` for
+`$DSH_HOME`, `_dir`/`_file` for the kind — which [AGENTS.md](./AGENTS.md) states in full.
+The repo root is found by walking up from the module's own location for
+`package.json` + `book.toml` + `pyproject.toml`, so the command works from any directory.

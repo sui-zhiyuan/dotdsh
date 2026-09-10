@@ -8,6 +8,12 @@ importers:
 
   .: {}
 
+  node_src/dotdsh:
+    dependencies:
+      '@dsh-external/dotdsh-hello-world':
+        specifier: workspace:*
+        version: link:../hello-world
+
   node_src/hello-world:
     dependencies:
       '@deepseek-ai/cordis':

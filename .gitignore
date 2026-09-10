@@ -7,7 +7,17 @@ __pycache__/
 .venv/
 # pnpm project-local store (created by `dsh plugin install` runs)
 .pnpm-store/
-# Package build output (compiled from src/*.ts; rebuilt by sync_home.py / prepublishOnly)
+# Package build output (compiled from src/*.ts; rebuilt by `dev_apply` / prepublishOnly)
 node_src/**/lib/
 *.log
 .DS_Store
+
+# dsh_home/ carries the settings.yaml reference template and nothing else:
+# credentials, runtime state, and the generated boot file must never land here
+# (AGENTS.md red lines), so ignore them even if something writes them.
+dsh_home/.credentials.yaml
+dsh_home/.env
+dsh_home/.env.*
+dsh_home/cordis.yml
+dsh_home/node_modules/
+dsh_home/sessions/

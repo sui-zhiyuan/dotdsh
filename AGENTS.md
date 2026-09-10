@@ -7,81 +7,86 @@ Conventions for AI agents working in this repository. Human-facing documentation
 | Path | Managed by | Role |
 |---|---|---|
 | `doc/` | mdbook (root `book.toml`) | Documentation source; `SUMMARY.md` is the table of contents |
-| `node_src/<id>/` | pnpm (root `package.json` + `pnpm-workspace.yaml`) | One pure plugin package per directory (TypeScript `src/*.ts` → gitignored `lib/`); ids match the row ids in the root `cordis.patch.yml` one-to-one |
-| `cordis.patch.yml` | — | The single hand-maintained patch source: every plugin row (insert/override) lives here; `dotdsh_dev` copies it verbatim to the target profile's user layer |
-| `py_src/` | uv workspace (root `pyproject.toml` + `uv.lock`) | Python tooling: the single `dotdsh_dev` CLI, run with `uv run python -m dotdsh_dev` |
+| `node_src/<id>/` | pnpm (root `package.json` + `pnpm-workspace.yaml`) | One pure plugin package per directory (TypeScript `src/*.ts` → gitignored `lib/`); it contributes no patch layer of its own |
+| `node_src/dotdsh/` | pnpm (same workspace) | The `@dsh-external/dotdsh` **bundle**: its `cordis.patch.yml` holds every plugin row and its `dependencies` (`workspace:*`) name every plugin package — dsh composes the patch as one layer |
+| `py_src/dev-apply/` | uv workspace (root `pyproject.toml` + `uv.lock`) | The `dev_apply` CLI, run with `uv run python -m dev_apply`: build + link-install + restart reminder |
 | `dsh_home/` | — | `settings.yaml` reference template only (one-time manual copy; nothing syncs it automatically) |
 | `target/` | build tools | All build artifacts (gitignored) |
 
 ## Naming conventions (Python tooling)
 
-- **Ownership prefix** — every path and owned value says which side it belongs to: `repo_*` for this repository, `dsh_*` for `$DSH_HOME` configuration. Bare names like `root`, `patch`, `profile_dir` are not acceptable.
+- **Ownership prefix** — a name says which side it belongs to: `repo_*` for this repository, `dsh_*` for `$DSH_HOME`. Bare names like `root` or `profile_dir` are not acceptable.
 - **Path suffix** — `_dir` for directories, `_file` for files, so a path reads as `<side>_<what>_<kind>`.
-- Examples: `repo_root_dir`, `repo_node_src_dir`, `repo_patch_file`, `repo_plugins` (data); `dsh_profile` (name), `dsh_profile_dir`, `dsh_manifest_file` (path) vs `dsh_manifest` (parsed JSON), `dsh_patch_file`, `dsh_bin_file`, `dsh_cmd` (data).
+- Examples: `repo_dir`, `node_src_dir`, `dsh` (the executable), `profile_dir`.
 
-## Verifying a sync without touching the real `~/.dsh`
+## Verifying without touching the real `~/.dsh`
 
-`--dry-run` alone is **not** enough: the effects wrappers return before touching the filesystem, so the write path (manifest write, patch copy) stays unverified. A stub `dsh` plus a temporary `DSH_HOME` exercises it with no network and no `~/.dsh` access:
+`dev_apply` writes only inside the profile directory, so a stub `dsh` plus a temporary `DSH_HOME` verifies the whole command sequence with no network and no `~/.dsh` access:
 
 ```sh
 TMP=$(mktemp -d); mkdir -p "$TMP/profiles/web"
 printf '{"name":"web-profile","dsh":{"profile":{"bundles":[],"patchReload":"live"}}}' > "$TMP/profiles/web/package.json"
 STUB=$(mktemp -d)/dsh-stub; printf '#!/bin/sh\necho "[stub dsh] $*"\n' > "$STUB"; chmod +x "$STUB"
-DSH_HOME="$TMP" uv run python -m dotdsh_dev --no-build --dsh "$STUB"
-diff -q cordis.patch.yml "$TMP/profiles/web/cordis.patch.yml"   # patch copied verbatim
+DSH_HOME="$TMP" uv run python -m dev_apply --no-build --dsh "$STUB"
+# [stub dsh] plugin --profile web add link:<repo>/node_src/dotdsh link:<repo>/node_src/hello-world
 rm -rf "$TMP"
 ```
+
+Running the same temporary `DSH_HOME` with the real `dsh` proves the plugin side too: pnpm writes the profile manifest, dsh adds the bundle to `dsh.profile.bundles`, and `dsh --profile web --dump-config` then shows the row annotated `# == @dsh-external/dotdsh`.
 
 ## Common commands
 
 ```sh
-uv sync                                # create/refresh .venv: members + the root dev group (ruff)
-uv run python -m dotdsh_dev            # dev sync into the web profile: pnpm -r build + link install + patch copy
-uv run python -m dotdsh_dev --dry-run  # print the steps without doing them
-uv run python -m dotdsh_dev --traceback  # full traceback instead of one error line
-uv run ruff check py_src/dotdsh-dev    # lint (ruff comes from the root dev group)
-uv run ruff format py_src/dotdsh-dev   # format
-pnpm install                           # install node_src package dependencies (incl. peerDependencies)
-pnpm build                             # compile every package's src/*.ts → lib/ (tsc, in-package)
-pnpm publish                           # publish every plugin package (pnpm -r publish --access public)
-mdbook build                           # build the docs
+uv sync                                  # create/refresh .venv: workspace members + the root dev group (ruff)
+uv run python -m dev_apply               # build the packages, link-install them into the web profile, remind you to restart dsh
+uv run ruff check py_src/dev-apply       # lint (ruff comes from the root dev group)
+uv run ruff format py_src/dev-apply      # format
+pnpm install                             # install node_src package dependencies (incl. peerDependencies)
+pnpm build                               # compile every package's src/*.ts → lib/ (tsc, in-package)
+pnpm release                             # publish every package (pnpm -r publish --access public)
+mdbook build                             # build the docs
 ```
 
-- Python tooling lives in the **uv workspace** (root `pyproject.toml`, member under `py_src/`, committed `uv.lock`): one CLI module `dotdsh_dev` executed as `uv run python -m dotdsh_dev`. Never single-file PEP 723 scripts — PEP 723 cannot express multi-file tools.
-- `dsh` must be resolvable: `dotdsh_dev` takes it from `PATH` or `--dsh <path>` and **fails otherwise** (it never installs a harness on the fly). Install it once with `pnpm add -g @deepseek-ai/dsh`; pnpm 12 refuses to finish that install while a dependency's build scripts are unapproved — it names those packages, so re-run with `--allow-build=<package>` for each.
-- Dev tools live in the **workspace root**, not in the member: `[dependency-groups] dev` (PEP 735, installed by `uv sync` by default) plus the single `[tool.ruff]` config; `py_src/dotdsh-dev/` stays a plain runtime package with no dev dependencies of its own.
-- `dotdsh_dev` locates the repo root via `find_repo_root()`: anchored at the module's own file location, which uv's editable install resolves into the repo source tree (independent of cwd and venv location), walking up for the root markers `package.json` + `book.toml` + `pyproject.toml` (all three must be present).
+- Python tooling lives in the **uv workspace** (root `pyproject.toml`, member under `py_src/`, committed `uv.lock`): one CLI module `dev_apply` executed as `uv run python -m dev_apply`. Never single-file PEP 723 scripts — PEP 723 cannot express a multi-file tool.
+- `dsh` must be resolvable: `dev_apply` takes it from `PATH` or `--dsh <path>` and **fails otherwise** (it never installs a harness on the fly). Install it once with `pnpm add -g @deepseek-ai/dsh`; pnpm 12 refuses to finish that install while a dependency's build scripts are unapproved — it names those packages, so re-run with `--allow-build=<package>` for each.
+- Dev tools live in the **workspace root**, not in the member: `[dependency-groups] dev` (PEP 735, installed by `uv sync` by default) plus the single `[tool.ruff]` config; `py_src/dev-apply/` stays a plain runtime package with no dependencies.
+- `dev_apply` locates the repo root via `repo_root_dir()`: anchored at the module's own file location, which uv's editable install resolves into the repo source tree (independent of cwd and venv location), walking up for the root markers `package.json` + `book.toml` + `pyproject.toml` (all three must be present).
 - uv state lives under gitignored `target/` via root `uv.toml` (`cache-dir`); the project venv is `.venv/` (gitignored). No `UV_CACHE_DIR` override needed in sandboxed/CI environments.
 
 ## Output convention
 
 - Repo-level build artifacts go into `target/<language>/` (gitignored): `target/book` (mdbook, active), `target/node` (test/coverage reports), `target/python` (uv cache).
-- Package build output: each publishable Node package compiles `src/*.ts` into its own **`lib/`** (tsc, same pattern as dsh's own packages). `lib/` is **gitignored build output** — freshness is guaranteed at the point of use: `dotdsh_dev` runs `pnpm -r build` before syncing, and each package's `prepublishOnly` hook builds before publishing. Never point package builds into `target/`.
-- `cordis.patch.yml` is **hand-maintained and the single source of plugin rows** — `dotdsh_dev` copies it verbatim over the target profile's user layer. Edit rows here, never in `$DSH_HOME` (the script overwrites the copy).
+- Package build output: each publishable Node package compiles `src/*.ts` into its own **`lib/`** (tsc, same pattern as dsh's own packages). `lib/` is **gitignored build output** — freshness is guaranteed at the point of use: `dev_apply` runs `pnpm -r build` before linking, and each package's `prepublishOnly` hook builds before publishing. Never point package builds into `target/`.
+- **Plugin rows are hand-maintained in `node_src/dotdsh/cordis.patch.yml`.** dsh composes that file as the bundle's patch layer, so a row change takes effect on the next dsh start. The profile's own `cordis.patch.yml` belongs to the user and is never written by this repository.
 
 ## dsh (DeepSeek Harness) contract cheat sheet
 
-- **bundle**: an npm package whose `package.json` declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` — the plugin form that contributes one patch layer. dsh's own packages (e.g. `dsh-base`, `dsh-web-app`) use this; this repo's plugins are **pure packages** and deliberately are not bundles — their rows live in the root `cordis.patch.yml` instead.
+- **bundle**: an npm package whose `package.json` declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`. Listing that package in `dsh.profile.bundles` composes its patch file as one layer. This repo has exactly one bundle, `node_src/dotdsh`; `dsh plugin add` appends it to that list by itself, and only its patch file is read — dsh never imports the package.
+- **plugin package**: exports a Cordis plugin and contributes rows to nobody's patch. Every `node_src/<id>/` except `dotdsh` is one — the same shape as dsh's own `dsh-tool-*` packages (of the 224 `@deepseek-ai` packages installed here, 6 are bundles; the rest are plain).
 - **patch rows**: a top-level YAML array; `{ insert: [ {id, name, config} ] }` inserts rows; `{ id, disabled, config }` overrides by id; last write wins per id; `config` replaces the whole row's config (no deep merge).
-- **profile**: `$DSH_HOME/profiles/<name>/` holds `package.json` (`dsh.profile.bundles` + `patchReload`), `cordis.patch.yml` (user layer), `pnpm-workspace.yaml`; `cordis.yml` is rewritten on every boot and must never be committed or hand-edited.
-- **Composition order**: bundle layers (in order) → profile user layer → `$DSH_HOME/cordis.patch.yml` → `--patch` overlays.
-- **`--patch <file>` is a boot-time overlay**: it applies to the process being started, so it cannot be injected into a running one. That is why this repo writes the profile's user layer instead — it hot-reloads *and* survives restarts.
+- **profile**: `$DSH_HOME/profiles/<name>/` holds `package.json` (`dsh.profile.bundles` + `patchReload`), `cordis.patch.yml` (the user's own layer), `pnpm-workspace.yaml`; `cordis.yml` is rewritten on every boot and must never be committed or hand-edited.
+- **Composition order**: bundle layers (in `dsh.profile.bundles` order) → profile user layer → `$DSH_HOME/cordis.patch.yml` → `--patch` overlays.
+- **`--patch <file>` is a boot-time overlay**: it applies to the process being started, so it cannot be injected into a running one. This repo does not need it: its rows ship as a bundle layer, and per-profile deviations belong in the profile's own `cordis.patch.yml`.
 - **Two node_modules**: `$DSH_HOME/profiles/node_modules/` is a shared fallback tree that boot rebuilds from the CLI install anchor, so every profile can resolve the harness packages; `$DSH_HOME/profiles/<name>/node_modules/` is that profile's own slot (pnpm installs plus boot's owned links) and shadows the shared tree.
-- **Hot-reload boundary**: profile and home `cordis.patch.yml` layers hot-reload when `patchReload: live` and are watched by exact path — overwrite them in place; a rename would drop the watch. The root `cordis.patch.yml` lands in the profile user layer via `dotdsh_dev`, so row changes hot-reload into the running profile **and** survive restarts. Plugin **code** changes (`src/*.ts`) and newly added/removed packages take effect on the next dsh restart after a `dotdsh_dev` run.
-- **`dsh plugin --profile <n> install`**: forwards `pnpm install` in the profile directory and reconciles `dsh.profile.bundles` (deps declaring `dsh.bundle` join the layer list).
-- **Local plugin installs (this repo's approach)**: `dotdsh_dev` writes `link:<absolute path>` dependencies into the profile `package.json` and then calls `dsh plugin install`. **Do not use `dsh plugin add <path>`**: on this environment pnpm 12 + Node 26 fails to parse directory arguments as local packages (it treats them as registry names and errors).
-- **Plugin shape**: `export { name, inject, Config, apply }`; tools register via `ctx.tools.register(defineTool({...}))` from `@deepseek-ai/dsh-tools`; `Config` uses `@deepseek-ai/schemastery`.
+- **Hot-reload boundary**: bundle layers — including `node_src/dotdsh/cordis.patch.yml` — are read **once at boot**. Only `$DSH_HOME/profiles/<name>/cordis.patch.yml` and `$DSH_HOME/cordis.patch.yml` hot-reload while dsh runs. So both a plugin-code change (`src/*.ts` → rebuilt `lib/`) and a row change need a dsh restart; only user-layer overrides apply live.
+- **`dsh plugin --profile <n> <pnpm args>`**: initializes the profile on first use, forwards the arguments to pnpm in the profile directory, then reconciles `dsh.profile.bundles` (a dependency whose manifest declares `dsh.bundle` joins the layer list; a bundle-less one only warns). `dev_apply` uses `add`.
+- **Local plugin installs (this repo's approach)**: `dev_apply` runs one `dsh plugin --profile <n> add link:<absolute path> …` covering every `node_src/*` package, so **pnpm writes the profile manifest** and dsh adds the bundle to the layer list. A `link:` install never materializes the linked package's own dependencies in the profile, which is why every plugin package is linked individually — the rows name packages that Node must resolve **from the profile directory**.
+- **Plugin shape**: `export { name, inject, Config, apply }`; tools register via `ctx.tools.register(defineTool({...}))` from `@deepseek-ai/dsh-tools`; `Config` uses `@deepseek-ai/schemastery`. `name` follows dsh's own convention: the package name minus scope and prefix (`@dsh-external/dotdsh-hello-world` → `hello-world`).
 
 ## Adding a plugin
 
-1. Create a package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`).
-2. Add its row (`id`, `name`, `config`) to the root `cordis.patch.yml`.
-3. `uv run python -m dotdsh_dev` → the row hot-reloads into the running web profile; restart dsh for the plugin code itself to load.
+1. Create the package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`). Give it its harness `peerDependencies`, so pnpm records a lockfile importer for it.
+2. Add its row (`id`, `name`, `config`) to `node_src/dotdsh/cordis.patch.yml`.
+3. Add it to the bundle's `dependencies` as `"workspace:*"`, then `pnpm install` — that is the edge a published install of the bundle needs (pnpm rewrites `workspace:*` to a real version at pack time).
+4. `uv run python -m dev_apply` — builds the packages, links them into the profile, prints the restart reminder.
+5. Restart dsh: the new module and the new row both load at boot.
 
 ## Red lines
 
-- Row changes are edited **only** in the root `cordis.patch.yml`; `dotdsh_dev` overwrites the profile user layer, so hand edits in `$DSH_HOME` are lost.
-- `dsh_home/` holds only controlled `$DSH_HOME` files; **credentials (`.credentials.yaml`/`.env`), node_modules, sessions, and `cordis.yml` must never be committed**; the `settings.yaml` template contains only commented examples.
-- Verify sync/boot only under a temporary `DSH_HOME` (`mktemp -d`); **never touch the user's real `~/.dsh`** without the user explicitly asking to run `dotdsh_dev` against it.
-- Run `--dry-run` before writing.
+- Plugin rows are edited **only** in `node_src/dotdsh/cordis.patch.yml`.
+- The profile's `cordis.patch.yml` belongs to the user: nothing in this repository writes it. Per-profile overrides and disables go there; machine-wide ones go in `$DSH_HOME/cordis.patch.yml`.
+- `dsh_home/` holds only controlled `$DSH_HOME` files; **credentials (`.credentials.yaml`/`.env`), node_modules, sessions, and `cordis.yml` must never be committed** (`.gitignore` also guards those paths); the `settings.yaml` template contains only commented examples.
+- Verify sync/boot only under a temporary `DSH_HOME` (`mktemp -d`); **never touch the user's real `~/.dsh`** without the user explicitly asking to run `dev_apply` against it.
+- `dev_apply` writes only into the profile directory; it never writes into this repository.
+- **No absolute paths in committed files.** Machine-local paths — the `link:` specs in the profile manifest, an HMR `root` — live in `$DSH_HOME` layers, and `dev_apply` computes them at run time; `workspace:*` is how the repository refers to its own packages.
 - Documentation language: English.

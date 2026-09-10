@@ -4,25 +4,56 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 
 ## Framework
 
-- [ ] Publish the plugins to npm under `@dsh-external` (switch `link:` deps to registry versions for sharing)
+- [ ] Publish the packages to npm under `@dsh-external`. The bundle already depends on its
+  plugin packages through `workspace:*` (pnpm rewrites that to a real version at pack time),
+  so what is left before a first publish is: a `LICENSE` file and a package `README.md` per
+  package (neither ships today), and `publishConfig.access: public`. Publishing is also what
+  unlocks the single-dependency consumer install (`dsh plugin add @dsh-external/dotdsh`); a
+  `file:` or tarball install cannot work before the plugin packages resolve from a registry,
+  so verify that shape against a local registry first
 - [ ] Decide the final platform name before publishing (`dotdsh` is taken on GitHub; npm is free)
-- [ ] Add CI: clean-tree `pnpm build` check + `mdbook build` on every push
-- [x] Run `dotdsh_dev` against the real `~/.dsh` (verified: the profile user layer matches the repo patch and the `hello_world` tool answers in the running profile)
+- [ ] Add CI: a clean-tree `pnpm build` + `mdbook build` + `uv run ruff check`. A repository
+  check command (rows ↔ packages, and the "no absolute paths in committed files" rule) was
+  written and then deliberately dropped while the tool was reduced to `dev_apply`; re-add it
+  here when CI exists
+- [x] Collapse the tool to one command: `dev_apply` builds, link-installs every `node_src/*`
+  package through one `dsh plugin add`, and prints the restart reminder
+- [x] Move the plugin rows into the `@dsh-external/dotdsh` bundle, so dsh composes them as a
+  layer and nothing has to be copied into a profile
+- [x] Stop writing the profile's `cordis.patch.yml`: it is the user's own layer again
+- [x] Rename the release script to `pnpm release`: as `publish` it was a lifecycle hook, so
+  `pnpm publish --dry-run` really did publish the packages (flags never reached it)
+- [x] Run the dev loop against the real `~/.dsh` (verified: the `hello_world` tool answers in
+  the running profile)
 
 ## Plugins
 
-- [x] Migrate plugin sources to TypeScript (tsc → in-package `lib/`, gitignored; auto-built by dotdsh_dev/prepublishOnly)
-- [x] Collapse the applist/store/generator flow into a single hand-maintained root `cordis.patch.yml` + the `dotdsh_dev` dev-loop script
-- [ ] Create an SSH plugin for remote-server development: the backend keeps one long-lived SSH connection per host (HTTP keep-alive style) instead of logging in per command — auto-connect on first use, auto-recycle idle connections on timeout, avoid repeated TCP handshakes and re-auth
-- [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation bundle to de-fragment micro-features)
-- [ ] Fix the stale `hello_world` tool description in `node_src/hello-world/src/index.ts`: it still claims the greeting comes from the removed plugin store's `applist.yaml` (the tool description is model-facing, so it needs a rebuild + a dsh restart)
+- [x] Migrate plugin sources to TypeScript (tsc → in-package `lib/`, gitignored; auto-built)
+- [x] Fix the stale `hello_world` tool description: it claimed the greeting came from the
+  removed plugin store's `applist.yaml`; the plugin now points at its row in the bundle patch
+- [ ] Create an SSH plugin for remote-server development: the backend keeps one long-lived SSH
+  connection per host (HTTP keep-alive style) instead of logging in per command — auto-connect
+  on first use, auto-recycle idle connections on timeout, avoid repeated TCP handshakes and
+  re-auth
+- [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation
+  bundle to de-fragment micro-features)
 
 ## Home config
 
-- [ ] Fill in `dsh_home/settings.yaml` with real preferences and copy it to `$DSH_HOME` once (nothing syncs it automatically)
-- [ ] Delete the superseded `~/.dsh/profiles/dotdsh/` profile directory (the `web` profile is the one this repository targets)
+- [x] `dsh_home/settings.yaml` mirrors the setup this repository is developed against
+  (commented examples only; nothing syncs it, and copying it to `$DSH_HOME` stays a one-time
+  manual step)
+- [ ] Optional: enable module HMR for the plugin packages by overriding the `hmr` row in the
+  **profile user layer** (`{id: hmr, disabled: false, config: {root: ['<repo>/node_src']}}`),
+  so a rebuilt `lib/` reloads without a restart. Needs one restart to take effect, and a
+  framework-level change still exits the process (dsh implements no restart hook)
 
 ## Languages
 
-- [x] Python tooling lives in the uv workspace (`py_src/dotdsh-dev`, run with `uv run python -m dotdsh_dev`)
-- [x] Dev tooling (ruff lint/format) lives at the workspace root: `[dependency-groups] dev` + the single `[tool.ruff]` config, installed by `uv sync`
+- [x] Python tooling lives in the uv workspace (`py_src/dev-apply`, run with
+  `uv run python -m dev_apply`), and the member has no runtime dependencies
+- [x] Python 3.14 is the floor (`requires-python` in both pyproject files, ruff
+  `target-version = "py314"`); its default lazy annotations (PEP 649) made
+  `from __future__ import annotations` unnecessary, so it is gone
+- [x] Dev tooling (ruff lint/format) lives at the workspace root: `[dependency-groups] dev` +
+  the single `[tool.ruff]` config, installed by `uv sync`
