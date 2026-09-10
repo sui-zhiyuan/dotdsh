@@ -7,6 +7,7 @@
     "apply": "uv run python -m dev_apply",
     "build": "pnpm -r build",
     "book": "mdbook build",
+    "test": "pnpm -r test",
     "release": "pnpm -r publish --access public"
   }
 }

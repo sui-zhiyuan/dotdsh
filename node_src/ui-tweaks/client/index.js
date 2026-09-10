@@ -118,6 +118,10 @@ window.__ModuleLoader__.load({
      * statements): a bank whose every entry ends the same way reads like a
      * template instead of a joke, so a new phrase is written the way it would be
      * said rather than bent to fit «…中...».
+     *
+     * Making this bank configurable is an open TODO (`doc/src/todo.md`): a browser
+     * half cannot read its row's `config`, so per-machine wording needs a source
+     * the page can reach, with this list as the fallback.
      * @type {readonly string[]}
      */
     const STATUS_PHRASES = Object.freeze([

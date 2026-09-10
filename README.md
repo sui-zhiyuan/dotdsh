@@ -62,6 +62,7 @@ uv run python -m dev_apply           # build + link-install into the web profile
 uv run ruff check py_src/dev-apply   # lint
 uv run ruff format py_src/dev-apply  # format
 mdbook build                         # docs → target/book/
+pnpm test                            # per-package checks (the ui-tweaks browser-half check)
 pnpm release                         # pnpm -r publish --access public
 ```
 

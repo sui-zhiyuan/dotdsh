@@ -40,10 +40,19 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   first dual-face one, so it also established the browser-half conventions in
   [Design decisions](./design.md); `hello-world` now earns its place as the node-only example
   until a real node-side plugin replaces it
-- [ ] Give a browser half a committed test. The `ui-tweaks` check that proves the boot-protocol
-  registration, the manifest contract and every Enter decision against a fake DOM runs from
-  gitignored `target/node/`, so a clean checkout has nothing guarding `client/index.js` — and a
-  browser half has no `tsc` pass to catch a mistake either
+- [x] Give a browser half a committed test. It ran from gitignored `target/node/`, so a clean
+  checkout had nothing guarding `client/index.js` — and a browser half has no `tsc` pass to catch
+  a mistake either. It now lives at `node_src/ui-tweaks/test/verify-client.mjs` (run by `pnpm test`),
+  locates its package from its own path instead of counting up from `target/`, keeps to Node
+  built-ins (no dependency, no harness, no network), and states in its header what a green run does
+  not prove: the sandbox has no React, no Lexical and no locale service, so end-to-end behaviour is
+  still settled by loading the page once
+- [ ] Make the status wording configurable. `STATUS_PHRASES` is a hardcoded bank in
+  `ui-tweaks/client/index.js`, and a browser half cannot read its row's `config` (the boot graph
+  carries none — see [Design decisions](./design.md)), so per-machine wording needs a source the
+  half can actually reach: a user-layer setting read through the client's `settingsScope`/`remote`
+  face, or a page-local source (a query parameter, `localStorage`) with the bank as the fallback.
+  Decide which before the bank stops being a personal list
 
 ## Home config
 
