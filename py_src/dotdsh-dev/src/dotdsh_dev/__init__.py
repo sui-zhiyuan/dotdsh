@@ -1,39 +1,8 @@
-"""Dev-loop sync for the dotdsh plugin repo.
+"""Dev-loop sync for the dotdsh plugin repo: build the plugins, link-install
+them into a dsh profile, then overwrite the profile's user patch layer.
 
-Package layout:
-    constants.py — BIN_NAME, PATCH_FILENAME, ROOT_MARKERS
-    context.py   — UserError, log_line, Context (+ its verify())
-    effects.py   — run_cmd/copy_file/write_file, the only readers of dry_run
-    __init__.py  — Plugin/list_plugins/plan_link_deps/dev_sync and the
-                   public re-exports below
-    __main__.py  — CLI (argument parsing, path resolution, error reporting)
-
-The library half writes no console output of its own: every step is
-reported through `ctx.log` (defaults to `log_line`). Run with
-`uv run python -m dotdsh_dev`.
-
-Failure model: every step is idempotent and nothing is rolled back — when a
-step fails, fix its cause and re-run the whole sync; a re-run converges.
-The patch layer is copied last, so a failed build or install leaves the
-running profile's patch layer as it was.
-
-Naming convention (see AGENTS.md): the prefix states ownership — `repo_*`
-for this repository, `dsh_*` for `$DSH_HOME` configuration — and path names
-end in `_dir` or `_file`:
-    repo_root_dir, repo_node_src_dir, repo_patch_file, repo_plugins
-    dsh_profile, dsh_profile_dir, dsh_manifest_file, dsh_manifest,
-    dsh_patch_file, dsh_bin_file, dsh_cmd
-
-Notes:
-    Plugins are written into the profile's package.json as pnpm `link:`
-    dependencies (the repo is the source of truth — editing repo sources
-    takes effect after `pnpm -r build`), then
-    `dsh plugin --profile <name> install` materializes them and reconciles
-    `dsh.profile.bundles`. The repo root's cordis.patch.yml is copied
-    verbatim over the profile's user patch layer, which the profile
-    hot-reloads (patchReload: live) and re-applies on the next boot.
-    `dsh plugin add <path>` is deliberately not used: pnpm 12 on Node 26
-    fails to parse directory arguments as local packages.
+Steps, failure model, logging and the dry-run boundary: doc/src/dev-cli.md.
+Naming convention (`repo_*`/`dsh_*`, `_dir`/`_file`): AGENTS.md.
 """
 
 from __future__ import annotations
@@ -106,11 +75,8 @@ class LinkDepPlan:
 
 def find_repo_root(repo_start_dir: Path | None = None) -> Path:
     """Return the nearest directory at or above `repo_start_dir` containing
-    every ROOT_MARKERS file, or raise UserError with a clear message.
-
-    `repo_start_dir` defaults to this module's own location, which resolves
-    into the repo source tree under uv's editable install of the workspace
-    members.
+    every ROOT_MARKERS file. Defaults to this module's own location, which
+    resolves into the repo source tree under uv's editable install.
     """
     anchor_dir = (
         Path(repo_start_dir).resolve() if repo_start_dir else Path(__file__).resolve().parent
@@ -160,8 +126,8 @@ def plan_link_deps(
     """Plan the dsh manifest's link: dependencies: one entry per plugin, plus
     removal of entries that point into this repo but match no plugin.
 
-    Pure: `dsh_manifest` is not modified. The caller decides whether and
-    when to write, which keeps --dry-run side-effect free."""
+    Pure: `dsh_manifest` is not modified; the caller decides when to write.
+    """
     current = dsh_manifest.get("dependencies", {})
     if not isinstance(current, dict):
         raise UserError("the dsh manifest's dependencies must be a mapping")
@@ -192,22 +158,16 @@ def plan_link_deps(
 
 
 def _resolved_paths(ctx: Context) -> tuple[Path, Path, Path]:
-    """Return (repo_root_dir, dsh_profile_dir, repo_patch_file), raising
-    UserError while the context is still unresolved — `verify()` is what
-    reports that to the user, this only narrows the types."""
+    """Return (repo_root_dir, dsh_profile_dir, repo_patch_file), raising while
+    the context is unresolved; `verify()` is what reports that to the user."""
     if ctx.repo_root_dir is None or ctx.dsh_profile_dir is None or ctx.repo_patch_file is None:
         raise UserError("context is not resolved: run verify() first")
     return ctx.repo_root_dir, ctx.dsh_profile_dir, ctx.repo_patch_file
 
 
 def dev_sync(ctx: Context, repo_plugins: list[Plugin]) -> None:
-    """Perform the dev sync described by `ctx` for the given plugins: build
-    them, link-install them into the profile, then overwrite the profile's
-    user patch layer. Every step is reported through `ctx.log`; the effects
-    wrappers are the only places that read `ctx.dry_run`.
-
-    Failure model: each step is idempotent and nothing is rolled back, so a
-    failed run is fixed at its cause and re-run as a whole."""
+    """Build the plugins, link-install them into the profile, then overwrite
+    the profile's user patch layer. Every step is reported through `ctx.log`."""
     ctx.verify()
 
     repo_root_dir, dsh_profile_dir, repo_patch_file = _resolved_paths(ctx)

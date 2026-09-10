@@ -1,13 +1,8 @@
 """Executable effects, gated on Context.dry_run.
 
-`run_cmd`, `copy_file` and `write_file` are the only places in the package
-that read `Context.dry_run`: under --dry-run they only log the effect,
-otherwise they check their precondition, log, perform the effect, and on
-failure log the error and re-raise. Nothing else may branch on dry_run.
-
-Each wrapper is told which `module` it acts for ("build", "manifest",
-"install", "patch"); that becomes the module part of every log line it
-emits.
+These three functions are the only readers of `Context.dry_run`: under
+--dry-run they log the effect and return; otherwise they check, log, perform,
+and on failure log the error and re-raise.
 """
 
 from __future__ import annotations
@@ -27,9 +22,8 @@ def run_cmd(
     module: str,
     cwd_dir: str | None = None,
 ) -> None:
-    """Run `cmd` in `cwd_dir` (when given) under `ctx`'s policy: under
-    --dry-run only log it; otherwise check that the command is executable,
-    log it, run it, and on failure log the exit code and re-raise."""
+    """Run `cmd` in `cwd_dir` when given, checking first that it is
+    executable — that check lives here so --dry-run needs no tools."""
     if ctx.dry_run:
         ctx.log(module, "plan", f"would run: {shlex.join(cmd)}")
         return
@@ -46,11 +40,8 @@ def run_cmd(
 
 
 def copy_file(src_file: Path, dst_file: Path, ctx: Context, *, module: str) -> None:
-    """Copy `src_file` over `dst_file` under `ctx`'s policy: under --dry-run
-    only log it; otherwise log, copy and, on failure, log the error and
-    re-raise. The copy is an in-place overwrite, not a rename: the profile's
-    HMR watcher holds an exact-path watch on the target, and an atomic
-    rename would lose it."""
+    """Copy `src_file` over `dst_file` in place: a rename would drop the
+    profile's exact-path HMR watch on the destination."""
     if ctx.dry_run:
         ctx.log(module, "plan", f"would copy: {src_file} -> {dst_file}")
         return
@@ -63,9 +54,8 @@ def copy_file(src_file: Path, dst_file: Path, ctx: Context, *, module: str) -> N
 
 
 def write_file(target_file: Path, text: str, ctx: Context, *, module: str) -> None:
-    """Write `text` to `target_file` under `ctx`'s policy: under --dry-run
-    only log it; otherwise log, write and, on failure, log the error and
-    re-raise."""
+    """Write `text` to `target_file` in place: a failed write is fixed by
+    re-running, not by rollback."""
     if ctx.dry_run:
         ctx.log(module, "plan", f"would write: {target_file}")
         return

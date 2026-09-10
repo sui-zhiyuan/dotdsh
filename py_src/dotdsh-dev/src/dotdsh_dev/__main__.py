@@ -8,12 +8,6 @@ Usage:
     uv run python -m dotdsh_dev --dry-run        # print the steps without doing them
     uv run python -m dotdsh_dev --dsh <path>     # dsh executable (default: PATH lookup, then pnx)
     uv run python -m dotdsh_dev --traceback      # full traceback instead of one error line
-
-The repo root is the nearest ancestor of this module's source location
-containing package.json, book.toml, and pyproject.toml.
-
-Naming convention (see AGENTS.md): `repo_*` for this repository, `dsh_*`
-for `$DSH_HOME` configuration; path names end in `_dir` or `_file`.
 """
 
 from __future__ import annotations
@@ -62,8 +56,8 @@ def parse_args(ctx: Context) -> None:
 
 
 def resolve_dsh_profile_dir(ctx: Context) -> None:
-    """Fill ctx.dsh_profile_dir: $DSH_HOME/profiles/<profile> when $DSH_HOME
-    is set, else ~/.dsh/profiles/<profile> (dsh's own default)."""
+    """Fill ctx.dsh_profile_dir: $DSH_HOME/profiles/<profile>, else dsh's own
+    default ~/.dsh/profiles/<profile>."""
     dsh_home = os.environ.get("DSH_HOME")
     dsh_home_dir = (
         Path(dsh_home).expanduser().resolve() if dsh_home else (Path.home() / ".dsh").resolve()
@@ -72,9 +66,8 @@ def resolve_dsh_profile_dir(ctx: Context) -> None:
 
 
 def resolve_dsh(ctx: Context) -> None:
-    """Fill ctx.dsh_cmd: the explicit --dsh path, else dsh on PATH, else pnx,
-    else the bare name — which command is actually usable is checked when it
-    is run (see effects.run_cmd), not here."""
+    """Fill ctx.dsh_cmd: --dsh path, else dsh on PATH, else pnx, else the bare
+    name; usability is checked when the command runs, not here."""
     if ctx.dsh_bin_file is not None:
         ctx.dsh_cmd = [str(ctx.dsh_bin_file.expanduser().resolve())]
         return
@@ -105,8 +98,7 @@ def _describe(error: BaseException) -> str:
 
 
 def _fail(ctx: Context, error: BaseException) -> None:
-    """Report `error` as one line and exit 1, or re-raise it under
-    --traceback."""
+    """Report `error` as one line and exit 1, or re-raise under --traceback."""
     if ctx.traceback:
         raise error
     print(f"error: {_describe(error)}", file=sys.stderr)

@@ -1,12 +1,6 @@
-"""Literals shared across the dotdsh_dev modules.
-
-Kept in one place so no module has to import another just for a constant.
-
-- `BIN_NAME`: the dsh executable, used both to look it up on PATH and to
-  word user-facing hints.
-- `PATCH_FILENAME`: the patch layer copied verbatim into the profile.
-- `ROOT_MARKERS`: the files that identify the repository root — all three
-  must be present in the same directory (see `find_repo_root`).
+"""Literals shared across the dotdsh_dev modules: the dsh executable name, the
+profile patch-layer filename, and the files that identify the repository root
+(all ROOT_MARKERS must sit in the same directory).
 """
 
 from __future__ import annotations

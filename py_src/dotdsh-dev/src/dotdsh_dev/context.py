@@ -1,14 +1,7 @@
-"""Context: the resolved dev-sync state, its validation, and the logger.
+"""Context: the resolved dev-sync state, its validation, and the default logger.
 
-This module is (apart from `constants`) free of package-internal imports —
-it defines what the rest of the package consumes: `UserError` (raised by
-verify and the sync logic), `log_line` (the global default logger behind
-`Context.log`), and the `Context` dataclass whose `verify()` is the only
-place that checks the context is complete.
-
-Naming convention: the prefix states ownership — `repo_*` for this
-repository, `dsh_*` for `$DSH_HOME` configuration — and path names end in
-`_dir` (directory) or `_file` (file). See AGENTS.md.
+`repo_*`/`dsh_*` state ownership and `_dir`/`_file` state path kind (see
+AGENTS.md); `verify()` is the only completeness check.
 """
 
 from __future__ import annotations
@@ -31,14 +24,8 @@ class UserError(Exception):
 
 
 def log_line(module: str, level: str, message: str) -> None:
-    """Global default logger, used as `Context.log`.
-
-    Takes the three parts separately — the module (which step: "sync",
-    "build", "manifest", "install", "patch", "dsh"), the level (see
-    LOG_LEVELS) and the message — so call sites cannot drift into ad-hoc
-    prefixes. Prints with flush, so no line is overtaken by a child process
-    writing to the same inherited stream.
-    """
+    """Default `Context.log`: `<module>: <message>`, with `plan` marked
+    `[dry-run]` and `error` prefixed, each line flushed."""
     if level not in LOG_LEVELS:
         raise ValueError(f"unknown log level {level!r}: expected one of {', '.join(LOG_LEVELS)}")
     if level == "plan":
@@ -52,14 +39,8 @@ def log_line(module: str, level: str, message: str) -> None:
 
 @dataclass
 class Context:
-    """Everything dev_sync needs: CLI options plus resolved runtime state.
-
-    The option fields are filled by parse_args; the resolved fields are
-    filled by main (find_repo_root / resolve_dsh_profile_dir / resolve_dsh)
-    before `verify()` and `dev_sync()` run. `verify()` checks that the
-    context is complete; the effects wrappers check the command they are
-    about to execute.
-    """
+    """CLI options (filled by parse_args) plus resolved runtime state (filled
+    by main before `verify()` and `dev_sync()` run)."""
 
     dsh_profile: str = "web"
     build: bool = True
@@ -75,12 +56,9 @@ class Context:
     dsh_cmd: list[str] = field(default_factory=list)
 
     def verify(self) -> None:
-        """Validate that every required field is resolved and every path
-        field exists, reporting all problems at once as a UserError.
-
-        Command availability is deliberately not checked here: the effects
-        wrappers check the command they are about to run, which keeps
-        --dry-run free of tool requirements."""
+        """Check every field is resolved and every path exists, reporting all
+        problems at once. Command availability is checked when a command
+        actually runs, which keeps --dry-run free of tool requirements."""
         problems: list[str] = []
         if not self.dsh_profile:
             problems.append("dsh_profile is empty")
