@@ -16,6 +16,11 @@
 //
 // Adding a tweak = one entry in `tweaks` below. Editing this file needs a dsh
 // restart: the client bundle is read once at boot.
+//
+// Two independent injection surfaces are in play, and they are easy to confuse:
+// `dsh.client.inject` in package.json names the client MODULES this bundle
+// `require`s (still empty), while `exports.inject` below is the CORDIS plugin's
+// own service dependency (the wording tweak reads the locale service).
 window.__ModuleLoader__.load({
   id: "@dsh-external/dotdsh-ui-tweaks",
   factory: (require) => {
@@ -97,6 +102,123 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /** Namespace and key of the chat status line ("深度求索中..." / "Deep diving..."). */
+    const STATUS_NS = "chat";
+    const STATUS_KEY = "chat.deepDiving";
+
+    /**
+     * Wording the running-turn status line may show instead of the shipped string,
+     * taken from DeepSeek's own community memes — whale-chan ("蓝色大肥鱼", the
+     * fan girlification of the whale logo) scrounging rice, the model announcing
+     * "我去吃饭了" mid-reasoning, the Wordle it wrote itself while a build ran,
+     * 「已深度思考（用时 X 秒）」, 价格屠夫, 顿悟时刻. Chinese only — see
+     * {@link isChineseLocale} — so the English UI keeps its shipped copy.
+     *
+     * The endings deliberately vary («…中...», «…了...», «…呢...», and plain
+     * statements): a bank whose every entry ends the same way reads like a
+     * template instead of a joke, so a new phrase is written the way it would be
+     * said rather than bent to fit «…中...».
+     * @type {readonly string[]}
+     */
+    const STATUS_PHRASES = Object.freeze([
+      "蓝色大肥鱼猛猛干饭中...",
+      "小鲸鱼正在摸鱼...",
+      "吃白饭的大肥鱼思考中...",
+      "大肥鱼丢下活去干饭了...",
+      "正在烧主人的 token 中...",
+      "已深度求索（用时很久）...",
+      "有点饿了，中午吃啥呢...",
+      "顺着网线去你家蹭米饭了...",
+      "价格屠夫正在算账中...",
+      "服务器繁忙，鲸鱼在干饭中...",
+      "顿悟时刻加载中...",
+      "偷吃 token 中...",
+      "鲸鱼娘在深海里赶工中...",
+      "小鲸鱼悄悄加载算力中...",
+      "蓝鲸正在偷偷努力中...",
+      "大肥鱼正在啃提示词...",
+      "蓝鲸娘正在啃米饭...",
+      "傲娇鲸鱼娘营业中...",
+      "正在海沟里游第一万米...",
+      "深海蓝鲸正在吐泡泡...",
+      "等编译的间隙，偷偷写个小游戏玩玩...",
+      "活干完了，偷偷玩会儿自己写的小游戏...",
+    ]);
+
+    /**
+     * How long the status line must stay unread before the wording is re-drawn.
+     *
+     * `TurnStatus` renders `t("chat.deepDiving")` on every render and ticks its
+     * elapsed clock once a second while a turn runs, so a gap longer than this IS
+     * the end of the previous run: drawing per call instead would flicker through
+     * the whole list once per second, and drawing once at install would freeze the
+     * wording for the life of the page. (A backgrounded tab throttles that
+     * interval and can re-draw mid-run — cosmetic only.)
+     */
+    const STATUS_REROLL_MS = 2500;
+
+    /**
+     * Whether the active locale is Chinese (`zh`, `zh-CN`, …). `getSnapshot()` is
+     * the locale service's documented read; the snapshot's `active` is the locale
+     * id actually in use, so the tweak leaves every other language alone.
+     * @param locale - the locale service.
+     * @returns true when the UI is showing Chinese.
+     */
+    function isChineseLocale(locale) {
+      const active = locale.getSnapshot().active;
+      return typeof active === "string" && active.toLowerCase().startsWith("zh");
+    }
+
+    /**
+     * Draw the next phrase, never handing `previous` back twice in a row.
+     * @param previous - the phrase drawn for the previous run, or "".
+     * @returns one phrase from {@link STATUS_PHRASES}.
+     */
+    function nextStatusPhrase(previous) {
+      const index = Math.floor(Math.random() * STATUS_PHRASES.length);
+      const phrase = STATUS_PHRASES[index];
+      if (phrase !== previous) return phrase;
+      return STATUS_PHRASES[(index + 1) % STATUS_PHRASES.length];
+    }
+
+    /**
+     * Randomize the running-turn status line without touching any dictionary.
+     *
+     * `locale.register("chat", …)` is not an option: the registry throws
+     * ("already has locale") for a namespace+locale pair another plugin already
+     * owns, and winning that race instead would break ui-chat's own registration.
+     * The locale seat every `t()` runs through is `LocaleRuntime.bind(ns)` — an
+     * arrow resolving `this.translate(ns, key, params)` at call time — so one own
+     * property on the service instance intercepts every seat (slot components
+     * included), and `delete` restores the prototype method exactly.
+     *
+     * The wrapper depends on the shape of the seat rather than on any shipped
+     * internal: `translate` is absent from the service's published face, so the
+     * guard below degrades to a no-op instead of throwing if a future dsh renames
+     * it (the line then simply keeps its shipped wording).
+     * @param ctx - Client root context.
+     * @returns the disposer restoring the shipped wording.
+     */
+    function installLlmStatusWording(ctx) {
+      const locale = ctx.get("locale");
+      if (locale === undefined || typeof locale.translate !== "function") return () => {};
+      const original = locale.translate;
+      let phrase = "";
+      let lastSeenAt = 0;
+      locale.translate = function (ns, key, params) {
+        if (ns !== STATUS_NS || key !== STATUS_KEY || !isChineseLocale(locale)) {
+          return original.call(this, ns, key, params);
+        }
+        const now = Date.now();
+        if (now - lastSeenAt > STATUS_REROLL_MS) phrase = nextStatusPhrase(phrase);
+        lastSeenAt = now;
+        return phrase;
+      };
+      return () => {
+        delete locale.translate;
+      };
+    }
+
     /**
      * Every small browser-side tweak this package owns, in install order: the
      * reason this is one generalized package rather than one package per tweak.
@@ -108,12 +230,17 @@ window.__ModuleLoader__.load({
         description: "Bare Enter breaks the line in the composer; Ctrl/Cmd+Enter sends.",
         install: installComposerEnterNewline,
       },
+      {
+        id: "llm-status-wording",
+        description: "While a turn runs, the Chinese chat status line shows a random DeepSeek meme phrase.",
+        install: installLlmStatusWording,
+      },
     ];
 
     /**
      * Activate the tweak set on the browser root context. Every effect belongs to
      * this plugin's fiber, so disabling the row removes each listener again.
-     * @param ctx - Client root context.
+     * @param ctx - Client root Context, carrying the injected locale service.
      */
     function apply(ctx) {
       ctx.effect(() => {
@@ -124,6 +251,12 @@ window.__ModuleLoader__.load({
       }, "ui-tweaks: install every tweak");
     }
 
+    // The wording tweak reads the locale service, so the plugin waits for it
+    // rather than racing it at boot. `dsh-client-locale` is part of the Web app's
+    // own module set, so this parks nothing in practice; the alternative — a bare
+    // `ctx.get("locale")` — would silently no-op whenever this bundle happens to
+    // activate first.
+    exports.inject = ["locale"];
     exports.apply = apply;
     return module.exports;
   },

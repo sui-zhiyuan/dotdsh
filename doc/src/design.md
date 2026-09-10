@@ -80,6 +80,24 @@ deliberately passes through to Lexical's plain-text default, which inserts a rea
 (serialized to the model as `"\n"`). Every other chord, and the suggestion-menu Enter, keeps its
 shipped meaning.
 
+The second tweak reaches shipped **copy** rather than a gesture, and it records the one extension
+point that exists for that. The running-turn line above the composer is `dsh-client-ui-chat`'s
+`TurnStatus` printing `t("chat.deepDiving")` from inside its view component: no slot can replace it,
+and `locale.register("chat", …)` cannot reword it either — the registry throws for a namespace and
+locale another plugin already owns, and winning that race instead would break ui-chat's own
+registration. What is reachable is the *seat*: every `t()` a slot component receives resolves through
+`LocaleRuntime.bind(ns)`, an arrow that reads `this.translate(ns, key, params)` at call time. One own
+property on the locale service instance therefore intercepts every seat, and `delete` restores the
+prototype method exactly — a copy-level hook with no DOM and no hashed class names, where the
+ecosystem's equivalent plugins rewrite the `role="status"` text node under a MutationObserver and pay
+for it in reconciliation fights and per-release churn. Two details came out of the wording feature.
+The locale guard must be read per call (`getSnapshot().active`), because the same seat also serves the
+English dictionary and every other chat string. And the re-draw must be gap-driven, because that line
+re-renders about once a second while a turn runs: drawing per call would cycle the whole list once a
+second, and drawing once at install would freeze it for the life of the page. `translate` is absent
+from the locale service's published face, so the wrapper probes for it and degrades to the shipped
+wording rather than throwing if a future dsh renames it.
+
 ## Constraints worth remembering
 
 - `dsh` must be on `PATH` or given as `--dsh <path>`; the tool fails instead of fetching a
