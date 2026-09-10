@@ -14,10 +14,19 @@
     name: '@dsh-external/dotdsh-hello-world'
     config:
       greeting: Hello from dotdsh
-  # Dual-face plugin: this row mounts the package's node half (an empty apply),
-  # while its browser half reaches the Web client through the package's
-  # `dsh.client` declaration + `exports["./client"]`. The row carries no config
-  # because a client half cannot read one; disable the whole tweak set per profile
-  # with `- {id: ui-tweaks, disabled: true}` in that profile's own patch layer.
+  # Dual-face plugin: this row mounts the package's node half, while its browser
+  # half reaches the Web client through the package's `dsh.client` declaration +
+  # `exports["./client"]`. The node half registers the `ui-tweaks` settings
+  # namespace — a browser half cannot read this row's `config`, so that namespace
+  # is the one channel the tweak set's switches travel: this row's config (when
+  # there is one) becomes the composition base layer, and $DSH_HOME/settings.yaml
+  # overrides it per machine, live:
+  #   ui-tweaks:
+  #     composerEnterNewline: true    # bare Enter breaks the line, Ctrl/Cmd+Enter sends
+  #     statusWording: true           # random DeepSeek meme in the running-turn status line
+  #     statusPhrases: ["自定义一句"]   # extra phrasing appended to the shipped bank
+  # Without a settings provider the browser half runs on the same schema defaults.
+  # Disable the whole tweak set per profile with
+  # `- {id: ui-tweaks, disabled: true}` in that profile's own patch layer.
   - id: ui-tweaks
     name: '@dsh-external/dotdsh-ui-tweaks'

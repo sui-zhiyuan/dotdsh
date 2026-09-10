@@ -17,16 +17,46 @@
 // Adding a tweak = one entry in `tweaks` below. Editing this file needs a dsh
 // restart: the client bundle is read once at boot.
 //
-// Two independent injection surfaces are in play, and they are easy to confuse:
-// `dsh.client.inject` in package.json names the client MODULES this bundle
-// `require`s (still empty), while `exports.inject` below is the CORDIS plugin's
-// own service dependency (the wording tweak reads the locale service).
+// Three injection surfaces are in play, and they are easy to confuse: the
+// package's `dsh.client.inject` names the client MODULES this bundle `require`s
+// (still empty), `exports.inject` below is the CORDIS plugin's own HARD service
+// dependency (the wording tweak reads the locale service), and the
+// `ctx.inject(["settingsScope"], …)` inside `apply` is an OPTIONAL one — a page
+// composed without the settings transport keeps every tweak on its defaults
+// instead of parking the whole set.
+//
+// Configuration reaches this half through a settings namespace and never through
+// the row: the node half registers `ui-tweaks` with the row's config as the
+// composition base layer (src/index.ts), this half binds a scope over that
+// namespace, and $DSH_HOME/settings.yaml is the user layer on top of it. Until
+// the first accepted section arrives — and forever without a settings provider —
+// the `settings` object below carries the schema's own defaults.
 window.__ModuleLoader__.load({
   id: "@dsh-external/dotdsh-ui-tweaks",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+
+    /**
+     * Settings namespace this package owns. The node half registers the same
+     * name (src/index.ts), and it is the only channel through which the row's
+     * config can reach this file.
+     */
+    const SETTINGS_NAMESPACE = "ui-tweaks";
+
+    /**
+     * The section the tweaks act on, seeded with the defaults the node half's
+     * schema also declares — keep the two in step. A page cannot read the row's
+     * config, so these values are what it uses until the first accepted settings
+     * section arrives, and forever in a composition with no settings provider.
+     * @type {{composerEnterNewline: boolean, statusWording: boolean, statusPhrases: string[]}}
+     */
+    const settings = {
+      composerEnterNewline: true,
+      statusWording: true,
+      statusPhrases: [],
+    };
 
     /** The resident composer's editable host (ComposerContentEditable's attribute). */
     const COMPOSER_INPUT = "[data-composer-input]";
@@ -56,7 +86,8 @@ window.__ModuleLoader__.load({
 
     /**
      * Apply the composer Enter tweak to one keydown: bare Enter breaks the line,
-     * Ctrl/Cmd+Enter keeps sending.
+     * Ctrl/Cmd+Enter keeps sending — unless the settings section turned the tweak
+     * off, in which case the shipped keymap keeps plain Enter as its send key.
      *
      * The shipped composer keymap owns bare Enter (submit) and deliberately lets
      * Shift+Enter fall through to Lexical's plain-text default, which inserts a
@@ -69,6 +100,7 @@ window.__ModuleLoader__.load({
      */
     function onComposerKeyDown(event) {
       if (event.key !== "Enter" || event.defaultPrevented) return;
+      if (!settings.composerEnterNewline) return;
       // Every chord keeps its shipped meaning: Ctrl/Cmd+Enter sends (steer-queue
       // when the queue is eligible) and Shift+Enter already breaks the line.
       if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
@@ -119,9 +151,10 @@ window.__ModuleLoader__.load({
      * template instead of a joke, so a new phrase is written the way it would be
      * said rather than bent to fit «…中...».
      *
-     * Making this bank configurable is an open TODO (`doc/src/todo.md`): a browser
-     * half cannot read its row's `config`, so per-machine wording needs a source
-     * the page can reach, with this list as the fallback.
+     * This is the SHIPPED half of the bank: the settings section's
+     * `statusPhrases` list is appended to it at draw time, so a per-machine
+     * phrase joins the memes instead of replacing them, and an empty list leaves
+     * exactly these.
      * @type {readonly string[]}
      */
     const STATUS_PHRASES = Object.freeze([
@@ -174,15 +207,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The bank a run draws from: the shipped phrases plus whatever the settings
+     * section extends them with. Resolved at draw time, so an edit applies from
+     * the next run on — no re-install and no page reload.
+     * @returns the effective phrase bank.
+     */
+    function statusBank() {
+      return settings.statusPhrases.length === 0
+        ? STATUS_PHRASES
+        : STATUS_PHRASES.concat(settings.statusPhrases);
+    }
+
+    /**
      * Draw the next phrase, never handing `previous` back twice in a row.
      * @param previous - the phrase drawn for the previous run, or "".
-     * @returns one phrase from {@link STATUS_PHRASES}.
+     * @returns one phrase from {@link statusBank}.
      */
     function nextStatusPhrase(previous) {
-      const index = Math.floor(Math.random() * STATUS_PHRASES.length);
-      const phrase = STATUS_PHRASES[index];
+      const bank = statusBank();
+      const index = Math.floor(Math.random() * bank.length);
+      const phrase = bank[index];
       if (phrase !== previous) return phrase;
-      return STATUS_PHRASES[(index + 1) % STATUS_PHRASES.length];
+      return bank[(index + 1) % bank.length];
     }
 
     /**
@@ -199,7 +245,9 @@ window.__ModuleLoader__.load({
      * The wrapper depends on the shape of the seat rather than on any shipped
      * internal: `translate` is absent from the service's published face, so the
      * guard below degrades to a no-op instead of throwing if a future dsh renames
-     * it (the line then simply keeps its shipped wording).
+     * it (the line then simply keeps its shipped wording). It stays installed
+     * while the settings section has the tweak off and forwards every call
+     * untouched, so toggling the switch never re-installs the shadow.
      * @param ctx - Client root context.
      * @returns the disposer restoring the shipped wording.
      */
@@ -210,7 +258,7 @@ window.__ModuleLoader__.load({
       let phrase = "";
       let lastSeenAt = 0;
       locale.translate = function (ns, key, params) {
-        if (ns !== STATUS_NS || key !== STATUS_KEY || !isChineseLocale(locale)) {
+        if (ns !== STATUS_NS || key !== STATUS_KEY || !settings.statusWording || !isChineseLocale(locale)) {
           return original.call(this, ns, key, params);
         }
         const now = Date.now();
@@ -224,19 +272,66 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Adopt one accepted settings section. A field that is absent or not the type
+     * the schema declares keeps the current value rather than switching a tweak
+     * off: the Host answers `settings.describe` with the RESOLVED section, so a
+     * field is only ever missing when no section has been accepted at all.
+     * @param section - the scope snapshot's `value`, or undefined.
+     */
+    function adoptSettings(section) {
+      if (section === null || typeof section !== "object") return;
+      if (typeof section.composerEnterNewline === "boolean") {
+        settings.composerEnterNewline = section.composerEnterNewline;
+      }
+      if (typeof section.statusWording === "boolean") {
+        settings.statusWording = section.statusWording;
+      }
+      if (Array.isArray(section.statusPhrases)) {
+        settings.statusPhrases = section.statusPhrases.filter(
+          (phrase) => typeof phrase === "string" && phrase.trim() !== "",
+        );
+      }
+    }
+
+    /**
+     * Bind the `ui-tweaks` settings namespace when this page has a settings
+     * transport. Optional on purpose: the tweaks are independent of the settings
+     * domain, so a page composed without it keeps its defaults and every tweak
+     * instead of parking the whole set.
+     *
+     * The scope derives from the settings mirror the client's one
+     * `settings.describe` reader fills, and the subscription lives on the child
+     * fiber `ctx.inject` hands the callback — so unloading the row releases both
+     * the subscription and the adopted values' source.
+     * @param ctx - Client root context.
+     */
+    function bindSettings(ctx) {
+      ctx.inject(["settingsScope"], (scopeCtx) => {
+        const scope = scopeCtx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
+        scopeCtx.effect(() => {
+          adoptSettings(scope.getSnapshot().value);
+          return scope.subscribe(() => {
+            adoptSettings(scope.getSnapshot().value);
+          });
+        }, "ui-tweaks: adopt the ui-tweaks settings section");
+      });
+    }
+
+    /**
      * Every small browser-side tweak this package owns, in install order: the
      * reason this is one generalized package rather than one package per tweak.
+     * Each one names the settings field that switches it.
      * @type {readonly {id: string, description: string, install: (ctx: object) => () => void}[]}
      */
     const tweaks = [
       {
         id: "composer-enter-newline",
-        description: "Bare Enter breaks the line in the composer; Ctrl/Cmd+Enter sends.",
+        description: "Bare Enter breaks the line in the composer; Ctrl/Cmd+Enter sends. Settings: composerEnterNewline.",
         install: installComposerEnterNewline,
       },
       {
         id: "llm-status-wording",
-        description: "While a turn runs, the Chinese chat status line shows a random DeepSeek meme phrase.",
+        description: "While a turn runs, the Chinese chat status line shows a random DeepSeek meme phrase. Settings: statusWording, statusPhrases.",
         install: installLlmStatusWording,
       },
     ];
@@ -244,9 +339,13 @@ window.__ModuleLoader__.load({
     /**
      * Activate the tweak set on the browser root context. Every effect belongs to
      * this plugin's fiber, so disabling the row removes each listener again.
+     * Settings are bound first so an already-available section is adopted before
+     * the first event can arrive; the tweaks still act on the live `settings`
+     * object, so later commits need no re-install.
      * @param ctx - Client root Context, carrying the injected locale service.
      */
     function apply(ctx) {
+      bindSettings(ctx);
       ctx.effect(() => {
         const disposers = tweaks.map((tweak) => tweak.install(ctx));
         return () => {
@@ -259,7 +358,8 @@ window.__ModuleLoader__.load({
     // rather than racing it at boot. `dsh-client-locale` is part of the Web app's
     // own module set, so this parks nothing in practice; the alternative — a bare
     // `ctx.get("locale")` — would silently no-op whenever this bundle happens to
-    // activate first.
+    // activate first. `settingsScope`, by contrast, is NOT declared here: it is
+    // an optional collaborator reached through `ctx.inject` in `apply`.
     exports.inject = ["locale"];
     exports.apply = apply;
     return module.exports;

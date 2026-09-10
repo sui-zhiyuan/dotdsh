@@ -5,15 +5,21 @@
 // the boot when the file is missing. This script is that file's gate. It mirrors
 // what dsh's client-modules scanner reads out of the package manifest, loads the
 // browser half in a `node:vm` sandbox under a fake `window.__ModuleLoader__`, and
-// asserts every decision both tweaks make against a fake DOM and a fake locale
-// service. Built-ins only (`node:vm|fs|path|url`), so a clean checkout runs it
-// with plain Node — no test framework, no dependency, no harness, no network.
+// asserts every decision both tweaks make against a fake DOM, a fake locale
+// service, and a fake settings scope (the mirror-backed per-namespace view the
+// page reads its configuration from). Built-ins only
+// (`node:vm|fs|path|url`), so a clean checkout runs it with plain Node — no test
+// framework, no dependency, no harness, no network.
 //
-// What a green run does NOT mean: there is no React, no Lexical and no locale
-// service in here. The Enter checks assert the shape of the synthetic event the
-// tweak re-emits, not that Lexical inserted a line break; the wording checks
-// assert what the locale wrapper returns, not that the page re-rendered the new
-// text. Whether either tweak works end to end is settled by loading the page once.
+// What a green run does NOT mean: there is no React, no Lexical, no locale
+// service and no settings transport in here. The Enter checks assert the shape of
+// the synthetic event the tweak re-emits, not that Lexical inserted a line break;
+// the wording checks assert what the locale wrapper returns, not that the page
+// re-rendered the new text; the settings checks publish a section into the fake
+// scope directly, so they prove what the page does with one, not that dsh
+// resolved, delivered or persisted it (that seam is the host half's own check,
+// test/verify-host.mjs). Whether either tweak works end to end is settled by
+// loading the page once.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,9 +132,55 @@ FakeLocale.prototype.translate = function translate(ns, key) {
 };
 const locale = new FakeLocale();
 const statusLine = () => locale.translate("chat", "chat.deepDiving");
+
+// The settings channel is an OPTIONAL cordis dependency, so the fake context
+// implements `inject(deps, callback)` beside `get`, and the scope stands in for
+// the mirror-backed per-namespace view: `value` is the resolved section the Host
+// would publish, and the listeners are what a committed change notifies.
+const scopeState = { value: undefined, listeners: [] };
+let scopeReleased = false;
+const boundNamespaces = [];
+const injectedDeps = [];
+const fakeScope = {
+  getSnapshot: () => ({
+    status: scopeState.value === undefined ? "unavailable" : "ready",
+    value: scopeState.value,
+    base: undefined,
+    user: undefined,
+    revision: 1,
+    writable: false,
+    mode: "memory",
+  }),
+  subscribe: (listener) => {
+    scopeState.listeners.push(listener);
+    return () => {
+      scopeState.listeners = scopeState.listeners.filter((entry) => entry !== listener);
+      scopeReleased = true;
+    };
+  },
+  set: () => Promise.resolve(),
+  unset: () => Promise.resolve(),
+  mutate: () => Promise.resolve(),
+};
+const settingsScope = {
+  bind: (spec) => {
+    boundNamespaces.push(spec.namespace);
+    return fakeScope;
+  },
+};
+/** Publish one accepted section the way the mirror does: replace, then notify. */
+const adopt = (value) => {
+  scopeState.value = value;
+  for (const listener of [...scopeState.listeners]) listener();
+};
+
 const disposers = [];
 const ctx = {
   get: (name) => (name === "locale" ? locale : undefined),
+  inject: (deps, callback) => {
+    injectedDeps.push(deps);
+    callback({ get: ctx.get, effect: ctx.effect, settingsScope });
+  },
   effect: (callback, label) => {
     check("ctx.effect label is set", typeof label === "string", String(label));
     const dispose = callback();
@@ -138,8 +190,17 @@ const ctx = {
 };
 exportsObj.apply(ctx);
 
+check("binds exactly one settings namespace", boundNamespaces.length === 1, `${boundNamespaces.length} bind(s)`);
+check("binds the ui-tweaks namespace", boundNamespaces[0] === "ui-tweaks", String(boundNamespaces[0]));
+check("reaches settings through ctx.inject, not a hard dependency", JSON.stringify(injectedDeps) === JSON.stringify([["settingsScope"]]), JSON.stringify(injectedDeps));
+check("settingsScope is not a hard inject dependency", !exportsObj.inject.includes("settingsScope"), JSON.stringify(exportsObj.inject));
+check("subscribes to the bound scope", scopeState.listeners.length === 1, `${scopeState.listeners.length} listener(s)`);
+
 const first = statusLine();
 check("the running-turn line is reworded in a Chinese UI", typeof first === "string" && first.length > 0 && first !== shipped("chat", "chat.deepDiving"), first);
+// No section has been published yet: the reworded line above, and the Enter
+// interception the region below asserts, are the schema defaults at work.
+check("no accepted section yet, so the tweak set is on its schema defaults", scopeState.value === undefined, String(scopeState.value));
 check("other chat copy passes through untouched", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
 check("other namespaces pass through untouched", locale.translate("common", "chat.deepDiving") === shipped("common", "chat.deepDiving"));
 check("the wording is stable within one run", statusLine() === first, `${statusLine()} vs ${first}`);
@@ -220,9 +281,58 @@ check("a non-Enter key is left alone", run(keydown({ key: "a", target: makeCompo
 check("an already-defaultPrevented Enter is left alone", run(keydown({ defaultPrevented: true, target: makeComposer(true) })).intercepted === false);
 //#endregion
 
+//#region settings-driven behaviour (the ui-tweaks namespace)
+// The section shape is the one the node half's schema declares, and the host
+// check pins that the two halves name the same fields. What is checked here is
+// what the PAGE does with an adopted section: an edit arrives through the scope
+// subscription alone — no re-install, no reload — and each field switches only
+// its own tweak.
+adopt({ composerEnterNewline: false, statusWording: true, statusPhrases: [] });
+check("composerEnterNewline: false leaves bare Enter to the shipped keymap", run(keydown({ target: makeComposer(true) })).intercepted === false);
+check("composerEnterNewline: false still lets Ctrl+Enter through", run(keydown({ ctrlKey: true, target: makeComposer(true) })).intercepted === false);
+
+adopt({ composerEnterNewline: true, statusWording: false, statusPhrases: [] });
+check("statusWording: false restores the shipped running-turn copy", statusLine() === shipped("chat", "chat.deepDiving"), statusLine());
+check("statusWording: false leaves other chat copy alone", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
+check("composerEnterNewline: true comes back without a re-install", run(keydown({ target: makeComposer(true) })).intercepted);
+check("the page still carries one document listener", listeners.length === 1, `${listeners.length} left`);
+
+// The extension list JOINS the shipped bank, and the dice are pinned to the last
+// index of the effective bank, so the draw lands on the extension's last entry.
+adopt({ composerEnterNewline: true, statusWording: true, statusPhrases: ["自定义甲", "自定义乙"] });
+fakeNow += 3_000;
+randoms.push(0.999999);
+check("an extended phrase is drawn from the appended end", statusLine() === "自定义乙", statusLine());
+fakeNow += 3_000;
+randoms.push(0);
+const shippedDraw = statusLine();
+check(
+  "the shipped phrases are still in the bank",
+  shippedDraw !== "自定义乙" && shippedDraw !== shipped("chat", "chat.deepDiving") && shippedDraw.length > 0,
+  shippedDraw,
+);
+
+// Blank and non-string entries are the shape a hand-edited settings.yaml really
+// produces; they must not enter the bank (a blank status line would read as a
+// broken page) and must not disable the tweak.
+adopt({ composerEnterNewline: true, statusWording: true, statusPhrases: ["", "   ", 42, null, "有效的一句"] });
+fakeNow += 3_000;
+randoms.push(0.999999);
+check("blank and non-string entries never reach the bank", statusLine() === "有效的一句", statusLine());
+
+// A section the page cannot read (an unanswered read, a hand-edit the schema
+// rejected, a namespace that went away) keeps the last accepted values.
+adopt(undefined);
+check("an absent section keeps the Enter tweak on", run(keydown({ target: makeComposer(true) })).intercepted);
+check("an absent section keeps the wording tweak on", statusLine() !== shipped("chat", "chat.deepDiving"), statusLine());
+adopt("not a section");
+check("a malformed section keeps the adopted values", run(keydown({ target: makeComposer(true) })).intercepted);
+//#endregion
+
 //#region teardown
 for (const dispose of disposers) dispose();
 check("disposing removes the document listener", listeners.length === 0, `${listeners.length} left`);
+check("disposing releases the settings subscription", scopeReleased && scopeState.listeners.length === 0, `${scopeState.listeners.length} left`);
 check(
   "disposing restores the shipped wording",
   statusLine() === shipped("chat", "chat.deepDiving") && !Object.prototype.hasOwnProperty.call(locale, "translate"),
