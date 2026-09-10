@@ -13,6 +13,9 @@ importers:
       '@dsh-external/dotdsh-hello-world':
         specifier: workspace:*
         version: link:../hello-world
+      '@dsh-external/dotdsh-ui-tweaks':
+        specifier: workspace:*
+        version: link:../ui-tweaks
 
   node_src/hello-world:
     dependencies:
@@ -25,6 +28,16 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.2
         version: 3.18.2
+    devDependencies:
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  node_src/ui-tweaks:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.2
     devDependencies:
       typescript:
         specifier: ^5.9.0

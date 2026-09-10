@@ -7,7 +7,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@dsh-external/dotdsh-hello-world": "workspace:*"
+    "@dsh-external/dotdsh-hello-world": "workspace:*",
+    "@dsh-external/dotdsh-ui-tweaks": "workspace:*"
   },
   "dsh": {
     "bundle": {

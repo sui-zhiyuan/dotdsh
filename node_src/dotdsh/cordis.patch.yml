@@ -14,3 +14,10 @@
     name: '@dsh-external/dotdsh-hello-world'
     config:
       greeting: Hello from dotdsh
+  # Dual-face plugin: this row mounts the package's node half (an empty apply),
+  # while its browser half reaches the Web client through the package's
+  # `dsh.client` declaration + `exports["./client"]`. The row carries no config
+  # because a client half cannot read one; disable the whole tweak set per profile
+  # with `- {id: ui-tweaks, disabled: true}` in that profile's own patch layer.
+  - id: ui-tweaks
+    name: '@dsh-external/dotdsh-ui-tweaks'
