@@ -14,6 +14,7 @@
 // real one answers. This checks the fence around the answer, not the answer.
 import assert from "node:assert/strict";
 import { slugFromCandidate, stripPrefixWord, namingPrompt, NAMING_SYSTEM } from "../lib/namer.js";
+import { createModelNamer } from "../lib/runtime.js";
 
 let passed = 0;
 const failures = [];
@@ -39,6 +40,126 @@ async function verify(name, body) {
 function expectSlug(candidate, expected) {
   assert.equal(slugFromCandidate(candidate), expected, `candidate ${JSON.stringify(candidate)}`);
 }
+
+// --- the model half -------------------------------------------------------------
+//
+// This half had no coverage until a real session failed on it: the naming call was
+// made with a budget smaller than the model needed to think, the answer came back
+// empty, and nothing anywhere said so. The fake host below is what makes the call
+// observable without a harness, and the assertions on `maxTokens` and on the
+// absence of `sessionId` pin the two decisions that are not visible from outside.
+
+/** A host that answers with the given chunks, recording the options it was called with. */
+function fakeHost(chunks, { throwInstead = false, selection = { provider: "p", model: "m" } } = {}) {
+  const calls = [];
+  return {
+    calls,
+    llm: {
+      stream(options) {
+        calls.push(options);
+        return (async function* () {
+          if (throwInstead) throw new Error("adapter exploded");
+          for (const chunk of chunks) yield chunk;
+        })();
+      },
+    },
+    agentDefaultModel: { currentSelection: () => selection },
+  };
+}
+
+/** An agent whose session has no logged request route, so the default model is used. */
+function fakeAgent() {
+  return {
+    session: {
+      id: "s1",
+      header: { cwd: "/tmp" },
+      deriveMessages: () => [],
+      requestHeader: () => undefined,
+    },
+  };
+}
+
+/** Collect the warnings a namer reports, so a silent failure cannot pass. */
+function recorder() {
+  const infos = [];
+  const warnings = [];
+  return { infos, warnings, info: (m) => infos.push(m), warn: (m) => warnings.push(m) };
+}
+
+await verify("returns the model's answer and reports which model gave it", async () => {
+  const host = fakeHost([
+    { type: "text-delta", index: 0, text: "git-flow-" },
+    { type: "text-delta", index: 0, text: "plugin" },
+    { type: "finish", reason: { kind: "stop" } },
+  ]);
+  const log = recorder();
+  const namer = createModelNamer(host, fakeAgent(), undefined, log);
+
+  assert.equal(await namer("实现 git 工作流插件"), "git-flow-plugin");
+  assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0].provider, "p");
+  assert.equal(host.calls[0].model, "m");
+  assert.equal(host.calls[0].system, NAMING_SYSTEM);
+  assert.equal(log.warnings.length, 0, `a success must not warn: ${log.warnings.join("; ")}`);
+  assert.equal(log.infos.length, 1);
+});
+
+await verify("pays for the model's reasoning, not just for the slug", async () => {
+  // The failure this pins: a budget sized for the answer alone, spent entirely on
+  // reasoning, returns nothing at all — a `max-tokens` finish with no text, which
+  // at this end is indistinguishable from a provider that never answered.
+  const host = fakeHost([{ type: "text-delta", index: 0, text: "x" }]);
+  await createModelNamer(host, fakeAgent())("some intent");
+  assert.equal(host.calls[0].maxTokens, 64, "the budget must match the harness's own equivalent naming call");
+});
+
+await verify("does not ask the checkpoint policy to flush the session log", async () => {
+  // `sessionId` is what makes `dsh-session-checkpoint-policy` flush the durable log
+  // before dispatch. That is a real side effect, on the pre-write path, for a call
+  // whose whole answer is two words.
+  const host = fakeHost([{ type: "text-delta", index: 0, text: "x" }]);
+  await createModelNamer(host, fakeAgent())("some intent");
+  assert.equal("sessionId" in host.calls[0], false, "the naming call must not carry a sessionId");
+});
+
+await verify("says why an empty answer was empty", async () => {
+  const log = recorder();
+  const truncated = fakeHost([{ type: "finish", reason: { kind: "max-tokens" } }]);
+  assert.equal(await createModelNamer(truncated, fakeAgent(), undefined, log)("intent"), undefined);
+  assert.equal(log.warnings.length, 1, "an unusable answer must be reported, not swallowed");
+  assert.ok(
+    log.warnings[0].includes("max-tokens"),
+    `the warning must name the finish reason, got: ${log.warnings[0]}`,
+  );
+});
+
+await verify("reports a failing provider instead of looking like a model with no opinion", async () => {
+  const log = recorder();
+  const broken = fakeHost([], { throwInstead: true });
+  assert.equal(await createModelNamer(broken, fakeAgent(), undefined, log)("intent"), undefined);
+  assert.equal(log.warnings.length, 1);
+  assert.ok(log.warnings[0].includes("adapter exploded"), `got: ${log.warnings[0]}`);
+});
+
+await verify("reports a missing route rather than failing quietly", async () => {
+  const log = recorder();
+  const unrouted = fakeHost([{ type: "text-delta", index: 0, text: "x" }], { selection: { provider: "", model: "" } });
+  assert.equal(await createModelNamer(unrouted, fakeAgent(), undefined, log)("intent"), undefined);
+  assert.equal(log.warnings.length, 1);
+  assert.ok(log.warnings[0].includes("no model route"), `got: ${log.warnings[0]}`);
+  assert.equal(unrouted.calls.length, 0, "no call may be made without a route");
+});
+
+await verify("prefers the session's own logged route over the configured default", async () => {
+  // A human who switched model mid-session should be named by the model they chose,
+  // not by the deployment default.
+  const host = fakeHost([{ type: "text-delta", index: 0, text: "x" }], { selection: { provider: "default", model: "default" } });
+  const agent = fakeAgent();
+  agent.session.requestHeader = () => ({ config: { provider: "chosen", model: "chosen-model" } });
+  await createModelNamer(host, agent)("some intent");
+  assert.equal(host.calls[0].provider, "chosen");
+  assert.equal(host.calls[0].model, "chosen-model");
+});
 
 console.log("intent namer");
 

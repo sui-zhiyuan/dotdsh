@@ -146,8 +146,25 @@ export interface NamingHost {
 /** How long a naming call may take before the flow gives up and asks instead. */
 const NAMING_TIMEOUT_MS = 20_000;
 
-/** Token budget for one name. A slug is a handful of tokens; more would be waste. */
-const NAMING_MAX_TOKENS = 32;
+/**
+ * Token budget for one name.
+ *
+ * 64, not the handful a slug needs, because the budget pays for the model's
+ * *reasoning* before its answer. A reasoning model given 32 tokens can spend all
+ * of them thinking and be cut off with nothing emitted at all — which arrives as a
+ * `max-tokens` finish with no text, indistinguishable at this end from a provider
+ * that simply failed. The harness's own equivalent call (a five-word session
+ * title) uses this same 64, which is the number to match rather than guess below.
+ */
+const NAMING_MAX_TOKENS = 64;
+
+/** The two severities this module reports through. */
+export interface NamingLog {
+  /** A naming attempt succeeded. */
+  info(message: string): void;
+  /** A naming attempt produced nothing usable. */
+  warn(message: string): void;
+}
 
 /** The plugin name recorded as the source of the naming message. */
 const NAMING_SOURCE = "git-flow";
@@ -211,16 +228,24 @@ function modelSelectionOf(
  * @param ctx - a context carrying both `llm` and `agentDefaultModel`.
  * @param agent - the agent whose branches are being named.
  * @param timeoutMs - how long to wait before treating the call as unanswered.
+ * @param log - where to report the outcome. A capability that fails closed and
+ *   silently is undebuggable: every unusable answer says which way it failed, so a
+ *   broken route or an exhausted budget is visible in the harness log instead of
+ *   looking exactly like a model that had no opinion.
  * @returns a namer that answers with raw text for the caller to slug.
  */
 export function createModelNamer(
   ctx: NamingHost,
   agent: AgentLike,
   timeoutMs: number = NAMING_TIMEOUT_MS,
+  log?: NamingLog,
 ): IntentNamer {
   return async (intent, signal) => {
     const selection = modelSelectionOf(ctx, agent);
-    if (selection === undefined) return undefined;
+    if (selection === undefined) {
+      log?.warn("git-flow: no model route to name a branch with; a feature name will have to be given");
+      return undefined;
+    }
 
     const deadline = AbortSignal.any([
       ...(signal === undefined ? [] : [signal]),
@@ -235,6 +260,10 @@ export function createModelNamer(
         }),
       ];
       let text = "";
+      // The finish reason is kept, not discarded: it is the difference between "the
+      // model said nothing" and "the model was cut off mid-thought", and only one of
+      // those is worth telling the human about.
+      let finish: string | undefined;
       for await (const chunk of ctx.llm.stream({
         provider: selection.provider,
         model: selection.model,
@@ -248,10 +277,38 @@ export function createModelNamer(
         signal: deadline,
       })) {
         if (chunk.type === "text-delta") text += chunk.text ?? "";
+        else if (chunk.type === "finish") finish = finishReasonOf(chunk.reason);
       }
-      return text === "" ? undefined : text;
-    } catch {
+
+      if (text === "") {
+        log?.warn(
+          `git-flow: naming call on ${selection.provider}/${selection.model} produced no text` +
+            (finish === undefined ? " and no finish reason" : ` (finish: ${finish})`),
+        );
+        return undefined;
+      }
+      log?.info(`git-flow: named a feature with ${selection.provider}/${selection.model} (finish: ${finish ?? "none"})`);
+      return text;
+    } catch (error) {
+      log?.warn(`git-flow: naming call failed: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
   };
+}
+
+/**
+ * Reduce a finish reason to something readable in a log.
+ *
+ * `FinishReason` is a tagged union and only some of its variants mean the answer
+ * is complete; everything else is a reason the naming call produced nothing, which
+ * is exactly what a reader of the log needs to see.
+ *
+ * @param reason - the reason a stream ended.
+ * @returns its tag, or a fallback when the shape is not what was expected.
+ */
+function finishReasonOf(reason: unknown): string {
+  if (typeof reason === "object" && reason !== null && "kind" in reason) {
+    return String((reason as { kind: unknown }).kind);
+  }
+  return "unknown";
 }

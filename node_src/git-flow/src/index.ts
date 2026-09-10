@@ -157,6 +157,7 @@ export function apply(ctx: Context, config: Config): void {
   // The factory is per agent because the route is: naming runs on the model this
   // session is already using, falling back to the configured default.
   ctx.inject(["llm", "agentDefaultModel"], (scoped) => {
-    runtime.namerFor = (agent) => createModelNamer(scoped, agent);
+    runtime.namerFor = (agent) => createModelNamer(scoped, agent, undefined, scoped.logger);
+    scoped.logger.info("git-flow: model-backed branch naming is available");
   });
 }
