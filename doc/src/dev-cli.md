@@ -3,7 +3,8 @@
 `uv run python -m dotdsh_dev` wires this repository into a dsh profile: it builds the
 plugin packages, link-installs them into the profile, and copies the root patch layer
 onto the profile's user layer. Plugin rows reach a running profile by hot reload; new
-plugin code needs a dsh restart.
+plugin code needs a dsh restart. Why the tool is shaped this way:
+[Design decisions](./design.md).
 
 ## Steps, in order
 
@@ -40,14 +41,15 @@ stack, and a corrupt profile manifest is reported as a message rather than a tra
   once and behaves the same in both modes.
 - **One validation point.** `Context.verify()` checks that the context is complete and
   that every path exists, and `main` calls it before `node_src` is scanned. Command
-  availability is checked when a command is actually run, which keeps `--dry-run` free
-  of tool requirements — printing a plan needs neither pnpm nor dsh.
+  availability is checked when a command is actually run, so `--dry-run` never invokes
+  pnpm or dsh — it only needs the dsh command itself to be resolvable, on PATH or via
+  `--dsh <path>`.
 
 ## Logging
 
 Steps report through `ctx.log(module, level, message)`:
 
-- `module` — which step: `sync`, `build`, `manifest`, `install`, `patch`, `dsh`
+- `module` — which step: `sync`, `build`, `manifest`, `install`, `patch`
 - `level` — `info`, `plan` (the same step under `--dry-run`), `error`
 - `message` — the human text
 
