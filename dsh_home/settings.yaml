@@ -1,8 +1,8 @@
-# dotdsh: runtime preferences template — one-time reference; copy it to
-# $DSH_HOME/settings.yaml manually if you want it (nothing syncs it
-# automatically, and nothing overwrites an existing settings.yaml).
-# Runtime settings are managed by dsh-settings-file and hot-reload. Everything
-# below is an example; uncomment and fill in as needed.
+# dotdsh: `$DSH_HOME/settings.yaml` reference — a one-time manual copy; nothing
+# syncs it, and an existing settings.yaml is never overwritten.
+# Runtime settings are managed by dsh-settings-file and hot-reload. The values
+# below mirror the setup this repository is developed against: uncomment what
+# you want, drop what you do not.
 # Red line: never commit real credentials/secrets (apiKeyEnv stores only the
 # environment variable name, never the key itself).
 #
@@ -11,16 +11,19 @@
 #
 # agent-default-model:
 #   provider: deepseek-official
-#   model: deepseek-v4-pro
+#   model: deepseek-v4-flash
 #   reasoningEffort: max
 #
 # ui-conversation:
 #   busyEnter: queue
 #
+# agent-presets:
+#   default: standard
+#
 # llm-pi-ai:
 #   providers:
-#     example:
-#       apiKeyEnv: EXAMPLE_API_KEY
+#     opencode:
+#       apiKeyEnv: OPENCODE_API_KEY
 #
 # permission:
 #   defaultPreset: workspace-write

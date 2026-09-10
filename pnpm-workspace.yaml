@@ -1,5 +1,7 @@
-# pnpm workspace: one pure plugin package per directory under node_src/.
-# There is no store package and no generator — the plugin rows live in the
-# root cordis.patch.yml, and dotdsh_dev links these packages into a profile.
+# pnpm workspace: one package per directory under node_src/ — the plugin
+# packages, plus the @dsh-external/dotdsh bundle whose cordis.patch.yml carries
+# the rows that mount them. `dev_apply` link-installs every package here into a
+# dsh profile, and `pnpm -r build` compiles the TypeScript ones (the bundle has
+# no build script).
 packages:
   - node_src/*

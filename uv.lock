@@ -4,21 +4,21 @@ requires-python = ">=3.11"
 
 [manifest]
 members = [
-    "dotdsh-dev",
+    "dev-apply",
     "dotdsh-tooling",
 ]
 
 [[package]]
-name = "dotdsh-dev"
+name = "dev-apply"
 version = "0.1.0"
-source = { editable = "py_src/dotdsh-dev" }
+source = { editable = "py_src/dev-apply" }
 
 [[package]]
 name = "dotdsh-tooling"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "dotdsh-dev" },
+    { name = "dev-apply" },
 ]
 
 [package.dev-dependencies]
@@ -27,7 +27,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "dotdsh-dev", editable = "py_src/dotdsh-dev" }]
+requires-dist = [{ name = "dev-apply", editable = "py_src/dev-apply" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.6" }]

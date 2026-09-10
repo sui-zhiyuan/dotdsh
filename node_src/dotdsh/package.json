@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-external/dotdsh",
+  "version": "0.1.0",
+  "description": "dotdsh bundle: the patch layer that wires every node_src/ plugin package into a dsh profile",
+  "files": [
+    "cordis.patch.yml"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@dsh-external/dotdsh-hello-world": "workspace:*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

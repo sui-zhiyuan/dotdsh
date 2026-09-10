@@ -1,0 +1,16 @@
+# The dotdsh bundle patch: every row that wires this repository's plugin packages
+# (node_src/<id>/) into a dsh profile. dsh composes it as one layer because this
+# package declares "dsh": {"bundle": {"patch": "./cordis.patch.yml"}} and appears
+# in the profile's dsh.profile.bundles — `dev_apply` links the packages into the
+# profile, and dsh adds this bundle to that list by itself.
+#
+# Row shape: a top-level YAML array of loader patch entries. `insert` adds rows
+# (id / name / config); `{id, disabled}` or `{id, config}` overrides a row by id;
+# later entries win; `config` replaces the whole row's config. The profile's own
+# cordis.patch.yml is applied after this layer, so it can override or disable any
+# row below, and it is the only layer that hot-reloads while dsh runs.
+- insert:
+  - id: hello-world
+    name: '@dsh-external/dotdsh-hello-world'
+    config:
+      greeting: Hello from dotdsh
