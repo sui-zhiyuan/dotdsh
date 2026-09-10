@@ -36,7 +36,14 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   on first use, auto-recycle idle connections on timeout, avoid repeated TCP handshakes and
   re-auth
 - [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation
-  bundle to de-fragment micro-features)
+  bundle to de-fragment micro-features). Started: `ui-tweaks` is the first real plugin — and the
+  first dual-face one, so it also established the browser-half conventions in
+  [Design decisions](./design.md); `hello-world` now earns its place as the node-only example
+  until a real node-side plugin replaces it
+- [ ] Give a browser half a committed test. The `ui-tweaks` check that proves the boot-protocol
+  registration, the manifest contract and every Enter decision against a fake DOM runs from
+  gitignored `target/node/`, so a clean checkout has nothing guarding `client/index.js` — and a
+  browser half has no `tsc` pass to catch a mistake either
 
 ## Home config
 

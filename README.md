@@ -8,11 +8,18 @@
 
 | Path | Role |
 |---|---|
-| `node_src/<id>/` | One plugin package per directory (TypeScript, built to gitignored `lib/`); `hello-world` is the example |
+| `node_src/<id>/` | One plugin package per directory. Single-face: TypeScript `src/` built to gitignored `lib/` (`hello-world`). Dual-face (also declares `dsh.client`): the same node half plus a committed, hand-authored browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | The `@dsh-external/dotdsh` bundle: its `cordis.patch.yml` holds every plugin row, and its `dependencies` (`workspace:*`) name every plugin package |
 | `py_src/dev-apply/` | uv workspace member: the `dev_apply` CLI (`uv run python -m dev_apply`) |
 | `dsh_home/` | `settings.yaml` reference template (one-time manual copy) |
 | `doc/src/` | mdbook documentation |
+
+## Plugins
+
+| Package | Row id | What it does |
+|---|---|---|
+| `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
+| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends |
 
 ## Prerequisites
 
@@ -41,11 +48,11 @@ dsh --profile web
 
 ## Adding a plugin
 
-1. Create a package under `node_src/<id>/` (`package.json` + `src/index.ts` + `tsconfig.json`);
+1. Create a package under `node_src/<id>/` (`package.json` + `src/index.ts` + `tsconfig.json`). For a browser half, also point `exports["./client"]` at a committed `client/index.js` and declare `"dsh": {"client": {"platform": "web"}}` — and prefer extending an existing dual-face package (`ui-tweaks`) over adding another tiny one;
 2. Add its row (`id`, `name`, `config`) to `node_src/dotdsh/cordis.patch.yml`;
 3. Add it to the bundle's `dependencies` as `"workspace:*"` and run `pnpm install` — that is what a published install of the bundle needs;
 4. `uv run python -m dev_apply` — builds, links, and reminds you to restart;
-5. Restart dsh: the row is composed from the bundle layer at boot.
+5. Restart dsh: the row is composed from the bundle layer at boot. For a browser half that restart is also what puts it in the boot graph, so verify the graph (see [AGENTS.md](./AGENTS.md)) instead of assuming the row was enough.
 
 ## Development
 

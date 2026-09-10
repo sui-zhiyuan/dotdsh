@@ -49,6 +49,36 @@ What is left is one command with three steps and no state: build, link, remind.
 | Dev tooling lives in the root dependency group | `uv sync` installs ruff with everything else, and the member stays a plain runtime package with no dependencies |
 | Paths are named `repo_*`/`dsh_*` with a `_dir`/`_file` suffix | A name should say which side a path belongs to, and whether it is a directory or a file |
 | A failed run is fixed and re-run, never rolled back | Every step is idempotent — `pnpm -r build` and `dsh plugin add` both converge — so rollback and transactions would buy nothing |
+| Browser-side tweaks share one dual-face package (`node_src/ui-tweaks`) | Small behaviour changes are cheap to write and expensive to fragment: a package per tweak multiplies rows, manifests and lockfile importers for twenty lines of code. One package owns a `tweaks` registry, each entry a reversible `install()`. The shape is dsh's own: a `dsh.client` declaration plus a browser half at `exports["./client"]`, exactly like the `dsh-client-ui-*` packages |
+
+## The browser half
+
+A dual-face package is mounted like any other — its row names the package and the Loader imports
+the node half — but the node half may be an empty `apply()`: being an *active Loader entry* is
+what makes dsh's client-modules scan find the package, read its `dsh.client` declaration, resolve
+`exports["./client"]` and add that file to the browser boot graph as one cordis entry.
+
+Two consequences shape `node_src/ui-tweaks`:
+
+1. **The browser half is hand-authored and committed.** dsh serves those exact bytes as a classic
+   script that must register itself through the boot protocol
+   (`window.__ModuleLoader__.load({id, factory})`, `id` = the package name), so the file cannot
+   live under gitignored `lib/`, and dsh fails the boot when it is missing. It needs no bundler
+   because it is plain JavaScript with no imports and no JSX — which is also why the package
+   declares no `dsh.client.inject`.
+2. **No row config reaches the browser.** The boot graph carries
+   `id`/`url`/`rev`/`inject`/`external`/`immediately` and nothing else, so a tweak cannot read its
+   row's `config`. Tweaks are therefore enabled by the package's presence and turned off per
+   profile in that profile's own `cordis.patch.yml` (`- {id: ui-tweaks, disabled: true}`).
+
+The first tweak also records how far a plugin can go without a harness extension point: the
+composer's Enter gesture is a hardcoded Lexical command registered at CRITICAL priority by
+`dsh-client-ui-conversation`, with no keybinding registry to hook and no editor handle a plugin
+can reach. The tweak therefore intercepts `keydown` in the capture phase ahead of Lexical's root
+listener and replays the bare Enter it claims as `Shift+Enter` — the one chord the shipped keymap
+deliberately passes through to Lexical's plain-text default, which inserts a real line break
+(serialized to the model as `"\n"`). Every other chord, and the suggestion-menu Enter, keeps its
+shipped meaning.
 
 ## Constraints worth remembering
 
@@ -61,6 +91,10 @@ What is left is one command with three steps and no state: build, link, remind.
 - **Repository files never contain absolute paths.** Machine-local paths — the `link:` specs
   in the profile manifest, an HMR `root` — live in `$DSH_HOME` layers only, and `dev_apply`
   computes them at run time. `workspace:*` is how the repository refers to its own packages.
+- **A browser half is source, not build output.** `pnpm -r build` compiles `src/*.ts` into
+  gitignored `lib/`, but `client/index.js` is committed: the client-modules scan serves those
+  bytes (a missing bundle fails the boot) and dsh's HMR can only rebuild what a bundler watched.
+  Editing it therefore needs a dsh restart, like every other change on the boot path.
 - A workspace package with **no dependencies at all** gets no `pnpm-lock.yaml` importer entry,
   and `pnpm install --frozen-lockfile` then fails with `ERR_PNPM_PACKAGE_MANAGER_NO_IMPORTER`
   (pnpm 12.3.4 writes no empty importer and refuses to invent one). That is why the bundle

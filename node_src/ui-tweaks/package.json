@@ -1,0 +1,39 @@
+{
+  "name": "@dsh-external/dotdsh-ui-tweaks",
+  "version": "0.1.0",
+  "description": "dotdsh UI tweaks: one dual-face plugin package owning every small browser-side behaviour change (starting with the composer Enter remap), so each tweak does not become its own package",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./client/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/index.d.ts",
+    "client/index.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "pnpm build"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  }
+}
