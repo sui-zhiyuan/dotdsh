@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "dev-apply"
 version = "0.1.0"
 description = "dotdsh dev-loop CLI: build the plugin packages, link-install them into a dsh profile, and remind you to restart dsh"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 
 # This member is a plain runtime package with no dependencies: dev tooling (the
 # `dev` dependency group) and the ruff config both live at the workspace root

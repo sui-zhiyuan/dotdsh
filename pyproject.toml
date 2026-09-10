@@ -2,7 +2,7 @@
 name = "dotdsh-tooling"
 version = "0.1.0"
 description = "dotdsh tooling workspace: the dev_apply dev-loop CLI (uv run python -m dev_apply)"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "dev-apply",
 ]
@@ -34,7 +34,7 @@ dev-apply = { workspace = true }
 # and members deliberately define none of their own.
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 src = ["py_src/dev-apply/src"]
 
 [tool.ruff.lint]

@@ -4,8 +4,6 @@ profile, and remind you to restart dsh.
 Usage: uv run python -m dev_apply [--profile web] [--no-build] [--dsh PATH]
 """
 
-from __future__ import annotations
-
 import argparse
 import shutil
 import subprocess
