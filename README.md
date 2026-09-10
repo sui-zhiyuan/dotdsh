@@ -48,11 +48,11 @@ dsh --profile web
 
 ## Adding a plugin
 
-1. Create a package under `node_src/<id>/` (`package.json` + `src/index.ts` + `tsconfig.json`);
+1. Create a package under `node_src/<id>/` (`package.json` + `src/index.ts` + `tsconfig.json`). For a browser half, also point `exports["./client"]` at a committed `client/index.js` and declare `"dsh": {"client": {"platform": "web"}}` — and prefer extending an existing dual-face package (`ui-tweaks`) over adding another tiny one;
 2. Add its row (`id`, `name`, `config`) to `node_src/dotdsh/cordis.patch.yml`;
 3. Add it to the bundle's `dependencies` as `"workspace:*"` and run `pnpm install` — that is what a published install of the bundle needs;
 4. `uv run python -m dev_apply` — builds, links, and reminds you to restart;
-5. Restart dsh: the row is composed from the bundle layer at boot.
+5. Restart dsh: the row is composed from the bundle layer at boot. For a browser half that restart is also what puts it in the boot graph, so verify the graph (see [AGENTS.md](./AGENTS.md)) instead of assuming the row was enough.
 
 ## Development
 
