@@ -169,7 +169,7 @@ await verify("names a Chinese prompt through the model rather than refusing the 
     // The requirement's main path, end to end through the guard: the session said
     // what it is doing, just not in a Latin script, so the model names it and the
     // write proceeds. This is the case the earlier version got wrong by asking.
-    const namer = async () => "git-flow-plugin";
+    const namer = async () => ({ kind: "named", candidate: "git-flow-plugin" });
     const prompt = "我需要创建一个插件（或者其他什么东西？） ， 实现如下功能， 你先搜索 github 上是否有完美实现";
     const decision = await decideToolCall(runtimeFor(CONFIG, namer), callFor({ cwd: root, prompt }), allow);
     assert.deepEqual(decision, { kind: "allow" }, "the write must proceed once a name was found");

@@ -126,7 +126,7 @@ await verify("names a non-Latin prompt with the model instead of asking", async 
     // question. The mechanical rules find nothing here, so the namer answers.
     const namer = async (intent) => {
       assert.ok(intent.includes("插件"), "the namer must receive the stated intent");
-      return "git-flow-plugin";
+      return { kind: "named", candidate: "git-flow-plugin" };
     };
     const result = await startFlow(depsFor(git, "session-a", { namer }), "我需要创建一个插件，实现 git 工作流功能");
     assert.equal(result.kind, "started", "a stated intent in another script must still be named");
@@ -145,7 +145,7 @@ await verify("does not consult the namer when the mechanical rules already named
     let consulted = false;
     const namer = async () => {
       consulted = true;
-      return "should-not-be-used";
+      return { kind: "named", candidate: "should-not-be-used" };
     };
     const result = await startFlow(depsFor(git, "session-a", { namer }), "Add the login redirect");
     assert.equal(result.branch, "feature/login-redirect", "the mechanical name must win");
@@ -177,10 +177,15 @@ await verify("treats a failing or unusable namer as no name, never as an error",
     };
     const first = await startFlow(depsFor(git, "session-a", { namer: throwing }), "实现登录跳转");
     assert.equal(first.kind, "need-name", "a throw must degrade to asking");
+    assert.ok(first.reason.includes("unreachable"), `a throw must say so, got: ${first.reason}`);
 
-    const prose = async () => "I am not sure what to call this.";
+    const prose = async () => ({ kind: "named", candidate: "I am not sure what to call this." });
     const second = await startFlow(depsFor(git, "session-a", { namer: prose }), "实现登录跳转");
     assert.equal(second.kind, "need-name", "an answer with no usable slug must degrade to asking");
+    assert.ok(
+      second.reason.includes("not a name"),
+      `the reason must say the answer was unusable, got: ${second.reason}`,
+    );
     assert.equal(await currentBranch(git), "main");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -190,7 +195,7 @@ await verify("treats a failing or unusable namer as no name, never as an error",
 await verify("does not let the model's answer repeat the branch prefix", async () => {
   const { root, git } = await scratchRepo();
   try {
-    const namer = async () => "feature/login-redirect";
+    const namer = async () => ({ kind: "named", candidate: "feature/login-redirect" });
     const result = await startFlow(depsFor(git, "session-a", { namer }), "实现登录跳转");
     assert.equal(result.branch, "feature/login-redirect", "not feature/feature-login-redirect");
   } finally {

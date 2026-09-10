@@ -28,7 +28,12 @@
  * @module @dsh-external/dotdsh-git-flow/runtime
  */
 
-import { createUserMessage, type GenerateOptions, type StreamChunk } from "@deepseek-ai/dsh-llm";
+import {
+  createUserMessage,
+  ReasoningEffortId,
+  type GenerateOptions,
+  type StreamChunk,
+} from "@deepseek-ai/dsh-llm";
 import type { SubprocessRuntime } from "@deepseek-ai/dsh-subprocess";
 // Type-only, and deliberately value-free: these packages are what declare
 // `Context.llm` and `Context.agentDefaultModel`. The services themselves arrive
@@ -38,7 +43,7 @@ import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-llm";
 import type { Runner } from "./exec.js";
 import type { FlowConfig } from "./flow.js";
-import { NAMING_SYSTEM, namingPrompt, type IntentNamer } from "./namer.js";
+import { NAMING_SYSTEM, namingPrompt, type IntentNamer, type NamingAttempt } from "./namer.js";
 import type { AgentLike } from "./session.js";
 import type { GitFlowState } from "./state.js";
 
@@ -77,6 +82,8 @@ export interface Runtime {
   readonly state: GitFlowState;
   /** The resolved settings. */
   readonly config: ResolvedConfig;
+  /** Where the plugin reports what it did, or could not do. */
+  log?: NamingLog;
   /**
    * Builds the model-backed namer for one agent.
    *
@@ -240,60 +247,120 @@ export function createModelNamer(
   timeoutMs: number = NAMING_TIMEOUT_MS,
   log?: NamingLog,
 ): IntentNamer {
-  return async (intent, signal) => {
+  // Two attempts, and the order is the point.
+  //
+  // The first asks for no reasoning at all. Naming a branch needs none, and the
+  // budget is what pays for it: the adapter disables thinking only for
+  // `purpose: 'session-title'` (a purpose this call is not and must not pretend to
+  // be), so left to itself the model spends the whole allowance on a monologue and
+  // is cut off before it emits a single character of the answer — observed, as
+  // `finish: max-tokens` with no text. Asking explicitly is the difference between
+  // a budget spent on a slug and one spent on thinking about a slug.
+  //
+  // The second attempt drops the hint, for an adapter that does not accept it. It
+  // runs only after the first produced nothing, so the fast path stays one call.
+  const attempts: readonly (ReasoningEffortId | undefined)[] = [ReasoningEffortId("off"), undefined];
+  const perAttemptMs = Math.max(1, Math.floor(timeoutMs / attempts.length));
+
+  return async (intent, signal): Promise<NamingAttempt> => {
     const selection = modelSelectionOf(ctx, agent);
     if (selection === undefined) {
-      log?.warn("git-flow: no model route to name a branch with; a feature name will have to be given");
-      return undefined;
+      const reason = "no model route is available (the session has made no request and no default is configured)";
+      log?.warn(`git-flow: ${reason}`);
+      return { kind: "unnamed", reason };
     }
 
-    const deadline = AbortSignal.any([
-      ...(signal === undefined ? [] : [signal]),
-      AbortSignal.timeout(timeoutMs),
-    ]);
-
-    try {
-      const messages = [
-        createUserMessage({
-          content: [{ type: "text", text: namingPrompt(intent) }],
-          source: { kind: "plugin", plugin: NAMING_SOURCE },
-        }),
-      ];
-      let text = "";
-      // The finish reason is kept, not discarded: it is the difference between "the
-      // model said nothing" and "the model was cut off mid-thought", and only one of
-      // those is worth telling the human about.
-      let finish: string | undefined;
-      for await (const chunk of ctx.llm.stream({
-        provider: selection.provider,
-        model: selection.model,
-        system: NAMING_SYSTEM,
-        messages,
-        maxTokens: NAMING_MAX_TOKENS,
-        // `sessionId` is deliberately omitted. Passing it makes
-        // `dsh-session-checkpoint-policy` flush the durable session log before
-        // dispatch — a real side effect, on the pre-write path, for a call whose
-        // answer is a two-word branch name.
-        signal: deadline,
-      })) {
-        if (chunk.type === "text-delta") text += chunk.text ?? "";
-        else if (chunk.type === "finish") finish = finishReasonOf(chunk.reason);
+    let last: NamingAttempt = { kind: "unnamed", reason: "no naming attempt was made" };
+    for (const [index, effort] of attempts.entries()) {
+      last = await oneNamingAttempt(ctx, agent, selection, intent, signal, perAttemptMs, effort, log);
+      if (last.kind === "named") return last;
+      if (index + 1 < attempts.length) {
+        log?.warn(`git-flow: ${last.reason}; retrying with the model's default reasoning`);
       }
-
-      if (text === "") {
-        log?.warn(
-          `git-flow: naming call on ${selection.provider}/${selection.model} produced no text` +
-            (finish === undefined ? " and no finish reason" : ` (finish: ${finish})`),
-        );
-        return undefined;
-      }
-      log?.info(`git-flow: named a feature with ${selection.provider}/${selection.model} (finish: ${finish ?? "none"})`);
-      return text;
-    } catch (error) {
-      log?.warn(`git-flow: naming call failed: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
     }
+    return last;
   };
+}
+
+/**
+ * Make one bounded naming call and read its text.
+ *
+ * Every failure path answers `unnamed` with a reason rather than throwing, because
+ * the caller is a pre-write gate: a plugin must not turn an unreachable provider
+ * into a failed file edit. Only `text-delta` chunks are collected — a model that
+ * answers by calling a tool, or that finishes with no text at all, has not named
+ * anything, which is an answer, not an error to report.
+ *
+ * @param ctx - the host.
+ * @param agent - the agent whose branches are being named.
+ * @param selection - the resolved provider route.
+ * @param intent - the session's stated intent.
+ * @param signal - cancellation owned by the caller.
+ * @param timeoutMs - this attempt's own budget.
+ * @param effort - the reasoning effort to ask for, or `undefined` for the model's default.
+ * @param log - where to report the outcome.
+ * @returns the candidate text, or the reason there is none.
+ */
+async function oneNamingAttempt(
+  ctx: NamingHost,
+  agent: AgentLike,
+  selection: { readonly provider: string; readonly model: string },
+  intent: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  effort: ReasoningEffortId | undefined,
+  log?: NamingLog,
+): Promise<NamingAttempt> {
+  const deadline = AbortSignal.any([
+    ...(signal === undefined ? [] : [signal]),
+    AbortSignal.timeout(timeoutMs),
+  ]);
+
+  try {
+    const messages = [
+      createUserMessage({
+        content: [{ type: "text", text: namingPrompt(intent) }],
+        source: { kind: "plugin", plugin: NAMING_SOURCE },
+      }),
+    ];
+    let text = "";
+    // The finish reason is kept, not discarded: it is the difference between "the
+    // model said nothing" and "the model was cut off mid-thought", and only one of
+    // those is worth reporting to the human.
+    let finish: string | undefined;
+    for await (const chunk of ctx.llm.stream({
+      provider: selection.provider,
+      model: selection.model,
+      system: NAMING_SYSTEM,
+      messages,
+      maxTokens: NAMING_MAX_TOKENS,
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+      // `sessionId` is deliberately omitted. Passing it makes
+      // `dsh-session-checkpoint-policy` flush the durable session log before
+      // dispatch — a real side effect, on the pre-write path, for a call whose
+      // answer is a two-word branch name.
+      signal: deadline,
+    })) {
+      if (chunk.type === "text-delta") text += chunk.text ?? "";
+      else if (chunk.type === "finish") finish = finishReasonOf(chunk.reason);
+    }
+
+    if (text === "") {
+      const reason =
+        `the naming call on ${selection.provider}/${selection.model} produced no text` +
+        (finish === undefined ? " and no finish reason" : ` (finish: ${finish})`);
+      log?.warn(`git-flow: ${reason}`);
+      return { kind: "unnamed", reason };
+    }
+    log?.info(`git-flow: named a feature with ${selection.provider}/${selection.model} (finish: ${finish ?? "none"})`);
+    return { kind: "named", candidate: text };
+  } catch (error) {
+    const reason = `the naming call to ${selection.provider}/${selection.model} failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    log?.warn(`git-flow: ${reason}`);
+    return { kind: "unnamed", reason };
+  }
 }
 
 /**

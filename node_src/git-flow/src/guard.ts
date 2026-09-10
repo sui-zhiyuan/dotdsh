@@ -191,7 +191,17 @@ export async function decideToolCall(
   }
 
   // The namer is built from *this* agent, because the model route is the agent's.
+  // An absent factory is worth saying out loud: it is installed by a *scoped*
+  // injection that starts a child plugin, and a child plugin whose dependencies
+  // never resolve simply never runs — there is no error, and without this line the
+  // only symptom is a branch name that could not be found.
   const namer = runtime.namerFor?.(agent);
+  if (namer === undefined) {
+    runtime.log?.warn(
+      "git-flow: no model-backed namer is installed (the scoped llm/agentDefaultModel injection did not " +
+        "activate), so a prompt the naming rules cannot slug has to be named by hand",
+    );
+  }
   const result = await startFlow(
     {
       git,
@@ -227,11 +237,18 @@ export async function decideToolCall(
   }
 
   const detail = result.kind === "need-name" ? result.reason : result.kind === "blocked" ? result.reason : "";
+  // The reason distinguishes "there was no namer to ask" from "the namer was asked
+  // and declined". Collapsing those two into one sentence cost a debugging session:
+  // they need different fixes, and only one of them is the model's fault.
+  const cause =
+    namer === undefined
+      ? "this build has no model-backed namer installed, so only the naming rules could be tried"
+      : "the naming rules declined and the model produced no usable name";
   return {
     kind: "deny",
     reason:
-      `this change would land on ${branch}, and a feature branch could not be opened automatically (${detail}). ` +
-      "Name the feature and run `/git-start <name>`, then repeat the change.",
+      `this change would land on ${branch}, and a feature branch could not be opened automatically (${cause}; ` +
+      `${detail}). Name the feature and run \`/git-start <name>\`, then repeat the change.`,
   };
 }
 

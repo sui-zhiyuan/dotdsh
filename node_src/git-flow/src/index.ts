@@ -126,6 +126,7 @@ export function apply(ctx: Context, config: Config): void {
     state: new GitFlowState(),
     config: resolved,
     pid: process.pid,
+    log: ctx.logger,
   };
 
   // Each contribution is registered as an effect on this plugin's fiber, so

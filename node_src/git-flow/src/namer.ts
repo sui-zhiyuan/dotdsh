@@ -36,13 +36,26 @@
 import { slugify } from "./branch.js";
 
 /**
+ * What one naming attempt produced.
+ *
+ * `unnamed` carries a reason rather than being a bare `undefined`, because "no
+ * name" has several causes that need different fixes — no model route, a provider
+ * that failed, an answer truncated before it emitted anything, an answer that was
+ * prose. Collapsing them cost a debugging session: the harness logger is not
+ * visible on every surface a plugin runs on, so the reason has to be able to
+ * travel in the one channel that always is — the message the caller shows.
+ */
+export type NamingAttempt =
+  | { readonly kind: "named"; readonly candidate: string }
+  | { readonly kind: "unnamed"; readonly reason: string };
+
+/**
  * Produce a branch slug from a session's stated intent.
  *
- * Implementations return a candidate — it may be prose, decorated, or empty — and
- * the caller re-slugs it. Returning `undefined` means "I could not name this",
- * which sends the decision back to the human.
+ * Implementations answer with a candidate — it may be prose, decorated, or empty —
+ * and the caller re-slugs it, or with the reason they produced none.
  */
-export type IntentNamer = (intent: string, signal?: AbortSignal) => Promise<string | undefined>;
+export type IntentNamer = (intent: string, signal?: AbortSignal) => Promise<NamingAttempt>;
 
 /** Longest candidate this module will look at, so a runaway answer cannot be slugged into nonsense. */
 const CANDIDATE_MAX_CHARS = 200;

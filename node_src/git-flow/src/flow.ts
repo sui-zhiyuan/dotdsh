@@ -319,10 +319,23 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
   // that stated its purpose in another language has still stated its purpose. The
   // model reads any language and is already running this session, so it is asked
   // here — after the free, deterministic path, and never before it.
-  if (name === undefined && explicitName === undefined && intent !== undefined && deps.namer !== undefined) {
-    const candidate = await deps.namer(intent, signal).catch(() => undefined);
-    const slug = slugFromCandidate(candidate);
-    if (slug !== undefined) name = `${config.branchPrefix}${stripPrefixWord(slug, config.branchPrefix)}`;
+  let namingFailure: string | undefined;
+  if (name === undefined && explicitName === undefined && intent !== undefined) {
+    if (deps.namer === undefined) {
+      namingFailure = "no model-backed namer is installed in this build";
+    } else {
+      const attempt = await deps.namer(intent, signal).catch((error: unknown) => ({
+        kind: "unnamed" as const,
+        reason: `the naming call threw: ${error instanceof Error ? error.message : String(error)}`,
+      }));
+      if (attempt.kind === "named") {
+        const slug = slugFromCandidate(attempt.candidate);
+        if (slug !== undefined) name = `${config.branchPrefix}${stripPrefixWord(slug, config.branchPrefix)}`;
+        else namingFailure = `the answer was not a name: ${JSON.stringify(attempt.candidate.slice(0, 80))}`;
+      } else {
+        namingFailure = attempt.reason;
+      }
+    }
   }
 
   const { others, outstanding } = await otherLiveSessions(git, sessionId);
@@ -335,7 +348,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
       reason:
         intent === undefined
           ? "this session has no usable prompt to name a feature from yet"
-          : "neither the naming rules nor the model could name this session's prompt",
+          : `the naming rules could not slug this session's prompt (${namingFailure ?? "no namer was tried"})`,
     };
   }
 

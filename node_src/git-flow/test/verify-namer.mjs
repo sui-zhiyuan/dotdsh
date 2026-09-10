@@ -95,7 +95,7 @@ await verify("returns the model's answer and reports which model gave it", async
   const log = recorder();
   const namer = createModelNamer(host, fakeAgent(), undefined, log);
 
-  assert.equal(await namer("实现 git 工作流插件"), "git-flow-plugin");
+  assert.deepEqual(await namer("实现 git 工作流插件"), { kind: "named", candidate: "git-flow-plugin" });
   assert.equal(host.calls.length, 1);
   assert.equal(host.calls[0].provider, "p");
   assert.equal(host.calls[0].model, "m");
@@ -104,13 +104,44 @@ await verify("returns the model's answer and reports which model gave it", async
   assert.equal(log.infos.length, 1);
 });
 
-await verify("pays for the model's reasoning, not just for the slug", async () => {
-  // The failure this pins: a budget sized for the answer alone, spent entirely on
-  // reasoning, returns nothing at all — a `max-tokens` finish with no text, which
-  // at this end is indistinguishable from a provider that never answered.
+await verify("asks for no reasoning, because naming needs none", async () => {
+  // The bug this pins, observed as `finish: max-tokens` with no text at all: a
+  // reasoning model spends the whole allowance thinking and is cut off before it
+  // emits a character. The adapter disables thinking only for `purpose:
+  // 'session-title'`, which this call is not, so it has to ask — and the ask has to
+  // be the documented id, not a guess.
   const host = fakeHost([{ type: "text-delta", index: 0, text: "x" }]);
-  await createModelNamer(host, fakeAgent())("some intent");
-  assert.equal(host.calls[0].maxTokens, 64, "the budget must match the harness's own equivalent naming call");
+  const log = recorder();
+  await createModelNamer(host, fakeAgent(), undefined, log)("some intent");
+  assert.equal(host.calls[0].reasoningEffort, "off", "the naming call must disable reasoning");
+  assert.equal(host.calls[0].maxTokens, 64, "and keep the harness's own budget for the answer");
+  assert.equal(host.calls.length, 1, "a first attempt that works must not be retried");
+});
+
+await verify("drops the reasoning hint when an adapter will not take it", async () => {
+  // Not every adapter accepts "off", and one that refuses it must not cost the
+  // feature: the second attempt omits the hint entirely.
+  const host = fakeHost([
+    { type: "finish", reason: { kind: "error" } },
+  ]);
+  // The first attempt fails; the second gets a working answer.
+  let call = 0;
+  host.llm.stream = (options) => {
+    host.calls.push(options);
+    call += 1;
+    return (async function* () {
+      if (call === 1) throw new Error('DeepSeek does not support reasoning effort "off"');
+      yield { type: "text-delta", index: 0, text: "login-redirect" };
+      yield { type: "finish", reason: { kind: "stop" } };
+    })();
+  };
+  const log = recorder();
+  const attempt = await createModelNamer(host, fakeAgent(), undefined, log)("some intent");
+  assert.equal(attempt.kind, "named");
+  assert.equal(attempt.candidate, "login-redirect");
+  assert.equal(host.calls.length, 2, "the retry must happen exactly once");
+  assert.equal(host.calls[0].reasoningEffort, "off", "the first attempt asks for no reasoning");
+  assert.equal("reasoningEffort" in host.calls[1], false, "the retry leaves the effort to the model");
 });
 
 await verify("does not ask the checkpoint policy to flush the session log", async () => {
@@ -125,28 +156,47 @@ await verify("does not ask the checkpoint policy to flush the session log", asyn
 await verify("says why an empty answer was empty", async () => {
   const log = recorder();
   const truncated = fakeHost([{ type: "finish", reason: { kind: "max-tokens" } }]);
-  assert.equal(await createModelNamer(truncated, fakeAgent(), undefined, log)("intent"), undefined);
-  assert.equal(log.warnings.length, 1, "an unusable answer must be reported, not swallowed");
+  assert.equal((await createModelNamer(truncated, fakeAgent(), undefined, log)("intent")).kind, "unnamed");
+  assert.ok(log.warnings.length > 0, "an unusable answer must be reported, not swallowed");
   assert.ok(
-    log.warnings[0].includes("max-tokens"),
-    `the warning must name the finish reason, got: ${log.warnings[0]}`,
+    log.warnings.some((warning) => warning.includes("max-tokens")),
+    `a warning must name the finish reason, got: ${log.warnings.join(" | ")}`,
   );
+});
+
+await verify("carries the reason on the attempt, for callers that cannot see a log", async () => {
+  // The harness logger is not visible on every surface a plugin runs on, so the
+  // reason has to travel in the one channel that always is — the message the
+  // caller shows. This is what made a silent failure diagnosable.
+  const truncated = fakeHost([{ type: "finish", reason: { kind: "max-tokens" } }]);
+  const attempt = await createModelNamer(truncated, fakeAgent())("intent");
+  assert.equal(attempt.kind, "unnamed");
+  assert.ok(attempt.reason.includes("max-tokens"), `got: ${attempt.reason}`);
+
+  const unrouted = fakeHost([], { selection: { provider: "", model: "" } });
+  const noRoute = await createModelNamer(unrouted, fakeAgent())("intent");
+  assert.equal(noRoute.kind, "unnamed");
+  assert.ok(noRoute.reason.includes("no model route"), `got: ${noRoute.reason}`);
 });
 
 await verify("reports a failing provider instead of looking like a model with no opinion", async () => {
   const log = recorder();
   const broken = fakeHost([], { throwInstead: true });
-  assert.equal(await createModelNamer(broken, fakeAgent(), undefined, log)("intent"), undefined);
-  assert.equal(log.warnings.length, 1);
-  assert.ok(log.warnings[0].includes("adapter exploded"), `got: ${log.warnings[0]}`);
+  assert.equal((await createModelNamer(broken, fakeAgent(), undefined, log)("intent")).kind, "unnamed");
+  assert.ok(
+    log.warnings.some((warning) => warning.includes("adapter exploded")),
+    `got: ${log.warnings.join(" | ")}`,
+  );
 });
 
 await verify("reports a missing route rather than failing quietly", async () => {
   const log = recorder();
   const unrouted = fakeHost([{ type: "text-delta", index: 0, text: "x" }], { selection: { provider: "", model: "" } });
-  assert.equal(await createModelNamer(unrouted, fakeAgent(), undefined, log)("intent"), undefined);
-  assert.equal(log.warnings.length, 1);
-  assert.ok(log.warnings[0].includes("no model route"), `got: ${log.warnings[0]}`);
+  assert.equal((await createModelNamer(unrouted, fakeAgent(), undefined, log)("intent")).kind, "unnamed");
+  assert.ok(
+    log.warnings.some((warning) => warning.includes("no model route")),
+    `got: ${log.warnings.join(" | ")}`,
+  );
   assert.equal(unrouted.calls.length, 0, "no call may be made without a route");
 });
 
