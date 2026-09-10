@@ -7,7 +7,7 @@ Conventions for AI agents working in this repository. Human-facing documentation
 | Path | Managed by | Role |
 |---|---|---|
 | `doc/` | mdbook (root `book.toml`) | Documentation source; `SUMMARY.md` is the table of contents |
-| `node_src/<id>/` | pnpm (root `package.json` + `pnpm-workspace.yaml`) | One pure plugin package per directory (TypeScript `src/*.ts` → gitignored `lib/`); it contributes no patch layer of its own |
+| `node_src/<id>/` | pnpm (root `package.json` + `pnpm-workspace.yaml`) | One plugin package per directory (TypeScript `src/*.ts` → gitignored `lib/`); it contributes no patch layer of its own. A **dual-face** package additionally declares `dsh.client` and commits its browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | pnpm (same workspace) | The `@dsh-external/dotdsh` **bundle**: its `cordis.patch.yml` holds every plugin row and its `dependencies` (`workspace:*`) name every plugin package — dsh composes the patch as one layer |
 | `py_src/dev-apply/` | uv workspace (root `pyproject.toml` + `uv.lock`) | The `dev_apply` CLI, run with `uv run python -m dev_apply`: build + link-install + restart reminder |
 | `dsh_home/` | — | `settings.yaml` reference template only (one-time manual copy; nothing syncs it automatically) |
@@ -34,6 +34,14 @@ rm -rf "$TMP"
 
 Running the same temporary `DSH_HOME` with the real `dsh` proves the plugin side too: pnpm writes the profile manifest, dsh adds the bundle to `dsh.profile.bundles`, and `dsh --profile web --dump-config` then shows the row annotated `# == @dsh-external/dotdsh`.
 
+To boot that temporary home for real, copy the real profile's bundle list into it (`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@dsh-external/dotdsh`) — a profile whose `bundles` holds only the dotdsh bundle composes *just* these rows, so a host plugin like `hello-world` stays `pending (waiting for service: tools)` and the boot fails with `1 entry did not activate`. Then serve it on a free port and read the boot graph instead of the UI:
+
+```sh
+DSH_HOME="$TMP" dsh --profile web --no-open --port 3099 > "$TMP/web.log" 2>&1 &   # prints ?token=…
+curl -sL -c "$TMP/c" -b "$TMP/c" "http://127.0.0.1:3099/?token=$(sed -n 's/.*token=//p' "$TMP/web.log")" -o "$TMP/index.html"
+grep -o '{"id":"<package>"[^}]*}' "$TMP/index.html"   # boot-graph entry + its /plugins/??… bundle URL
+```
+
 ## Common commands
 
 ```sh
@@ -58,11 +66,13 @@ mdbook build                             # build the docs
 - Repo-level build artifacts go into `target/<language>/` (gitignored): `target/book` (mdbook, active), `target/node` (test/coverage reports), `target/python` (uv cache).
 - Package build output: each publishable Node package compiles `src/*.ts` into its own **`lib/`** (tsc, same pattern as dsh's own packages). `lib/` is **gitignored build output** — freshness is guaranteed at the point of use: `dev_apply` runs `pnpm -r build` before linking, and each package's `prepublishOnly` hook builds before publishing. Never point package builds into `target/`.
 - **Plugin rows are hand-maintained in `node_src/dotdsh/cordis.patch.yml`.** dsh composes that file as the bundle's patch layer, so a row change takes effect on the next dsh start. The profile's own `cordis.patch.yml` belongs to the user and is never written by this repository.
+- **A browser half (`client/index.js`) is committed source, not build output.** dsh serves those exact bytes and fails the boot when the file is missing, so it cannot live under gitignored `lib/`; nothing builds or type-checks it either (`tsc` only compiles `src/`), which is why a change there is guarded by review and the fake-DOM check in `target/node/` rather than by the build.
 
 ## dsh (DeepSeek Harness) contract cheat sheet
 
 - **bundle**: an npm package whose `package.json` declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`. Listing that package in `dsh.profile.bundles` composes its patch file as one layer. This repo has exactly one bundle, `node_src/dotdsh`; `dsh plugin add` appends it to that list by itself, and only its patch file is read — dsh never imports the package.
 - **plugin package**: exports a Cordis plugin and contributes rows to nobody's patch. Every `node_src/<id>/` except `dotdsh` is one — the same shape as dsh's own `dsh-tool-*` packages (of the 224 `@deepseek-ai` packages installed here, 6 are bundles; the rest are plain).
+- **dual-face plugin package**: additionally declares `"dsh": { "client": { "platform": "web" } }` and exports a `./client` subpath. The row still mounts the node half (here an empty `apply()`), and *being an active Loader entry* is what makes dsh's client-modules scan find the package, resolve `exports["./client"]` and add that file to the browser boot graph as one cordis entry. A browser half is a classic script that registers itself with `window.__ModuleLoader__.load({id, factory})`, where `id` MUST equal the package name (the Web shell creates one cordis entry per boot-graph id and resolves it through that registration); `factory(require)` returns the module exports and `exports.apply` is the client plugin. `dsh.client.inject`/`external` name the client modules the bundle `require`s — this repo's halves require nothing. The boot graph carries `id`/`url`/`rev`/`inject`/`external`/`immediately` and **no row config**, so a browser half cannot read its row's `config`.
 - **patch rows**: a top-level YAML array; `{ insert: [ {id, name, config} ] }` inserts rows; `{ id, disabled, config }` overrides by id; last write wins per id; `config` replaces the whole row's config (no deep merge).
 - **profile**: `$DSH_HOME/profiles/<name>/` holds `package.json` (`dsh.profile.bundles` + `patchReload`), `cordis.patch.yml` (the user's own layer), `pnpm-workspace.yaml`; `cordis.yml` is rewritten on every boot and must never be committed or hand-edited.
 - **Composition order**: bundle layers (in `dsh.profile.bundles` order) → profile user layer → `$DSH_HOME/cordis.patch.yml` → `--patch` overlays.
@@ -75,11 +85,11 @@ mdbook build                             # build the docs
 
 ## Adding a plugin
 
-1. Create the package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`). Give it its harness `peerDependencies`, so pnpm records a lockfile importer for it.
+1. Create the package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`). Give it its harness `peerDependencies`, so pnpm records a lockfile importer for it. For a browser half, additionally add `"exports": {"./client": …}` → a committed `client/index.js` and the `"dsh": {"client": {"platform": "web"}}` declaration; prefer extending an existing dual-face package (one `tweaks` registry, one row) over adding a new tiny package.
 2. Add its row (`id`, `name`, `config`) to `node_src/dotdsh/cordis.patch.yml`.
 3. Add it to the bundle's `dependencies` as `"workspace:*"`, then `pnpm install` — that is the edge a published install of the bundle needs (pnpm rewrites `workspace:*` to a real version at pack time).
 4. `uv run python -m dev_apply` — builds the packages, links them into the profile, prints the restart reminder.
-5. Restart dsh: the new module and the new row both load at boot.
+5. Restart dsh: the new module and the new row both load at boot. For a browser half that restart is also what composes the boot graph, so the row composing is not proof enough — check the boot graph under a temporary `DSH_HOME` (see above) before reporting a browser half as done.
 
 ## Red lines
 
