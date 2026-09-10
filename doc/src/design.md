@@ -65,6 +65,13 @@ What is left is one command with three steps and no state: build, link, remind.
   and `pnpm install --frozen-lockfile` then fails with `ERR_PNPM_PACKAGE_MANAGER_NO_IMPORTER`
   (pnpm 12.3.4 writes no empty importer and refuses to invent one). That is why the bundle
   declares its plugin packages and every plugin package declares its harness peers.
+- **Installing only the bundle is the consumer shape, and it needs published packages.** A
+  `file:` install of `node_src/dotdsh` fails with "`@dsh-external/dotdsh-hello-world@workspace:*`
+  is in the dependencies but no package named … is present in the workspace"; a tarball from
+  `pnpm pack` (which rewrites `workspace:*` to `0.1.0`) fails with a registry 404, and pnpm
+  refuses `bundledDependencies` under its default linker, so nothing can embed the plugin
+  packages yet. Until the packages are published, the profile keeps one `link:` per package —
+  which is also what makes live editing work.
 - `publish` is an npm lifecycle-hook name, so a script called `publish` runs *as part of*
   `pnpm publish` and the command's own flags never reach it — `pnpm publish --dry-run` would
   still have published every package. The release script is therefore named `release`.

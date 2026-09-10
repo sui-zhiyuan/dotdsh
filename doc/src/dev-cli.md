@@ -36,7 +36,7 @@ hot-reload while dsh runs, so a quick config experiment belongs there, not here.
 
 | Step | Cost |
 |---|---|
-| compose the full web tree (145 rows) | 0.06 s |
+| compose the full web tree (146 rows, including the dotdsh bundle's) | 0.06 s |
 | load the module graph (144 plugin packages) | ≈1.1 s |
 | mount, bind the port, reconnect the browser | not measured here; seconds |
 | **total, warm cache** | **≈1–3 s** |

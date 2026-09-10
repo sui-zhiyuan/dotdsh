@@ -7,7 +7,10 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 - [ ] Publish the packages to npm under `@dsh-external`. The bundle already depends on its
   plugin packages through `workspace:*` (pnpm rewrites that to a real version at pack time),
   so what is left before a first publish is: a `LICENSE` file and a package `README.md` per
-  package (neither ships today), and `publishConfig.access: public`
+  package (neither ships today), and `publishConfig.access: public`. Publishing is also what
+  unlocks the single-dependency consumer install (`dsh plugin add @dsh-external/dotdsh`); a
+  `file:` or tarball install cannot work before the plugin packages resolve from a registry,
+  so verify that shape against a local registry first
 - [ ] Decide the final platform name before publishing (`dotdsh` is taken on GitHub; npm is free)
 - [ ] Add CI: a clean-tree `pnpm build` + `mdbook build` + `uv run ruff check`. A repository
   check command (rows ↔ packages, and the "no absolute paths in committed files" rule) was
@@ -49,5 +52,8 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 
 - [x] Python tooling lives in the uv workspace (`py_src/dev-apply`, run with
   `uv run python -m dev_apply`), and the member has no runtime dependencies
+- [x] Python 3.14 is the floor (`requires-python` in both pyproject files, ruff
+  `target-version = "py314"`); its default lazy annotations (PEP 649) made
+  `from __future__ import annotations` unnecessary, so it is gone
 - [x] Dev tooling (ruff lint/format) lives at the workspace root: `[dependency-groups] dev` +
   the single `[tool.ruff]` config, installed by `uv sync`

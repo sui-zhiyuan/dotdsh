@@ -17,7 +17,7 @@
 ## Prerequisites
 
 - `pnpm` and Node — for the plugin packages;
-- `uv` — for the Python tooling;
+- `uv` and Python 3.14+ — for the Python tooling (`uv` downloads the interpreter when it is missing);
 - `dsh` on `PATH` — install it once with `pnpm add -g @deepseek-ai/dsh`. pnpm 12 refuses to
   finish that install while any dependency's build scripts are unapproved: it names those
   packages, so re-run with `--allow-build=<package>` for each of them. Without a global
@@ -32,7 +32,7 @@ uv sync
 
 # 1. Build the plugin packages and link-install every node_src/ package into the
 #    web profile (dsh writes the profile manifest and adds the bundle to
-#    dsh.profile.bundles by itself).
+#    dsh.profile.bundles by itself). `pnpm apply` is the same command.
 uv run python -m dev_apply
 
 # 2. Restart dsh — bundle layers and plugin code are read at boot.
