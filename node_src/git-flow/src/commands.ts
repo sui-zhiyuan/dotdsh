@@ -86,10 +86,14 @@ async function normalizeName(
 /**
  * Render the outcome of `/git-start`.
  *
+ * Exported for the committed check: this is the text a human acts on, and the
+ * branch names, commands and paths inside it are the only route from a failed
+ * attempt to a fix — nothing type-checks it.
+ *
  * @param result - the flow outcome.
  * @returns the text the human sees.
  */
-function reportStart(result: StartResult): { readonly kind: "success" | "error"; readonly text: string } {
+export function reportStart(result: StartResult): { readonly kind: "success" | "error"; readonly text: string } {
   switch (result.kind) {
     case "started": {
       const lines = [`Opened \`${result.branch}\` from \`${result.integration}\`.`];
@@ -141,7 +145,7 @@ function reportStart(result: StartResult): { readonly kind: "success" | "error";
       return {
         kind: "success",
         text: [
-          "I cannot name this feature from the session so far — nothing in it reduces to a branch name.",
+          `I cannot name this feature from the session so far: ${result.reason}.`,
           "",
           "Give the branch a name:",
           "",
@@ -158,10 +162,12 @@ function reportStart(result: StartResult): { readonly kind: "success" | "error";
 /**
  * Render the outcome of `/git-complete`.
  *
+ * Exported for the committed check, for the same reason as {@link reportStart}.
+ *
  * @param result - the flow outcome.
  * @returns the text the human sees.
  */
-function reportComplete(result: CompleteResult): { readonly kind: "success" | "error"; readonly text: string } {
+export function reportComplete(result: CompleteResult): { readonly kind: "success" | "error"; readonly text: string } {
   switch (result.kind) {
     case "merged": {
       const lines = [
@@ -231,6 +237,15 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
     ctx.commands.register({
       name: "git-start",
       description: START_DESCRIPTION,
+      // Declaring `input` is what turns a menu pick into a *completion* rather than
+      // an execution. The composer's decision table reads: a host command with
+      // `input` produces a claim — it inserts `/git-start ` and shows this hint,
+      // waiting for the argument — while a host command without one is executed
+      // detached the moment it is picked. So this line is the difference between
+      // "Enter runs it before you can type a name" and "Enter completes it and waits".
+      // The square brackets follow the host's own convention for an optional
+      // argument (`/goal` declares `[<objective>|clear|…]`).
+      input: { hint: "[<branch-name>]" },
       async handler(invocation: CommandInvocation) {
         const agent = invocation.agent;
         const cwd = sessionCwd(agent);
@@ -257,6 +272,10 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
     ctx.commands.register({
       name: "git-complete",
       description: COMPLETE_DESCRIPTION,
+      // Deliberately no `input`: this command takes no argument, and a command that
+      // declares one can never be run by a single pick — it always becomes a claim
+      // that needs a second Enter. The host splits the same way: `/compact` is bare,
+      // `/feedback` and `/goal` declare a hint.
       async handler(invocation: CommandInvocation) {
         const agent = invocation.agent;
         const cwd = sessionCwd(agent);

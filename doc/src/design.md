@@ -149,6 +149,19 @@ hazard: `dsh-fs-sandbox` falls back to the *deployment* policy when no session p
 the write would be refused under a policy the session itself is not under. `FileAccess` stays a
 seam, so the decision is reversible in one place.
 
+**A command's `input` declaration is what decides whether the menu completes it or runs
+it.** The web client reads exactly one field to tell a command that takes an argument from one that
+does not: a host command declaring `input` produces a *claim* — the composer inserts `/git-start `
+with the hint as a placeholder and waits — while a bare host command is executed the moment it is
+picked. There is no Tab completion to opt into, and the popup's keymap is only
+ArrowUp/ArrowDown/Enter/Escape (Tab belongs to the trigger menu's directory drill). So `/git-start`
+declares `input: { hint: "[<branch-name>]" }` because it takes an optional name, and
+`/git-complete` deliberately declares nothing, because a command with `input` can never be run by a
+single pick — it always becomes a claim that needs a second Enter, which is the wrong trade for a
+command whose whole input is "now". The host splits identically (`/compact` bare; `/feedback` and
+`/goal` with hints), and `test/verify-commands.mjs` pins both halves, since neither a rename nor a
+dropped field fails anything else.
+
 **Two worktree locations, chosen for two different lifetimes.** A *session's* worktree lives at
 `<repo>/.dsh/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
 sandbox is rooted at the session's workspace, so work that stays under the repository needs no
