@@ -29,7 +29,7 @@ import { GitFlowState } from "../lib/state.js";
 const CONFIG = {
   branchPrefix: "feature/",
   integrationBranch: undefined,
-  worktreeRoot: ".dsh/worktrees",
+  worktreeRoot: ".dsh.local/worktrees",
   useWorktreeWhenBusy: true,
   commitUncommittedBeforeMerge: true,
   mergeMessage: "Merge {branch} into {integration}",
@@ -203,7 +203,7 @@ await verify("isolates a session that arrives while another is live, and redirec
     // first use.
     assert.equal(decision.kind, "deny", "the triggering write must move into the new worktree");
     assert.ok(
-      decision.reason.includes(".dsh/worktrees/"),
+      decision.reason.includes(".dsh.local/worktrees/"),
       `the refusal must name the worktree, got: ${decision.reason}`,
     );
     assert.ok(
@@ -216,7 +216,7 @@ await verify("isolates a session that arrives while another is live, and redirec
     assert.ok(branches.includes("feature/login-redirect"), "the branch must exist");
     assert.equal(await currentBranch(git), "master", "and the main tree must stay on the integration branch");
     const tree = await git.text(["worktree", "list", "--porcelain"]);
-    assert.ok(tree.includes(".dsh/worktrees/"), "and the worktree it points at must exist");
+    assert.ok(tree.includes(".dsh.local/worktrees/"), "and the worktree it points at must exist");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -266,7 +266,7 @@ await verify("a stale record does not block a free tree", async () => {
     const decision = await decideToolCall(runtimeFor(), callFor({ cwd: root }), allow);
     assert.equal(decision.kind, "deny", "isolation still applies while another session is live");
     assert.ok(
-      decision.reason.includes(".dsh/worktrees/"),
+      decision.reason.includes(".dsh.local/worktrees/"),
       `but as a redirect into a worktree, not a same-checkout refusal, got: ${decision.reason}`,
     );
     // A free main tree is claimed by opening a branch and isolating this session in
@@ -319,7 +319,7 @@ await verify("ignores a write that targets nothing inside the repository", async
 await verify("keeps an isolated session inside its worktree", async () => {
   const { root, git } = await scratchRepo();
   try {
-    const worktree = join(root, ".dsh/worktrees/login");
+    const worktree = join(root, ".dsh.local/worktrees/login");
     await git.text(["worktree", "add", "-q", "-b", "feature/login", worktree]);
     await writeLedger(git, {
       "session-a": {

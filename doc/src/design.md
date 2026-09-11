@@ -163,7 +163,7 @@ command whose whole input is "now". The host splits identically (`/compact` bare
 dropped field fails anything else.
 
 **Two worktree locations, chosen for two different lifetimes.** A *session's* worktree lives at
-`<repo>/.dsh/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
+`<repo>/.dsh.local/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
 sandbox is rooted at the session's workspace, so work that stays under the repository needs no
 re-approval, and `$DSH_HOME` would put it outside that root. The *transient* worktree used to merge
 into an integration branch nobody has checked out goes to the OS temporary directory instead — it
@@ -208,11 +208,18 @@ Two smaller choices follow from the same "use the seam the harness uses" rule. T
 convention ships as a **bundled skill provider** — the shape `dsh-skill-badge` establishes, with the
 body read from a packaged asset through a `new URL(..., import.meta.url)` locator — rather than as a
 `pre-commit` hook, which is unversioned, needs installing per clone, and can only reject a message
-after it has been composed. And the per-session ledger lives in
-`<git-common-dir>/dsh-git-flow/state.json` rather than in the working tree: it is per-clone (the
-right scope for machine-local worktree paths) and it is never staged, so neither this plugin's own
-per-step commits nor another session's `git add --all` can sweep it into history — which keeps the
-ignore guard's job down to exactly one explainable rule.
+after it has been composed. And the per-session ledger lives beside them, in `<repo>/.dsh.local/git-flow.json` — one ignored
+directory for everything this plugin leaves on this machine. It moved there from
+`<git-common-dir>/dsh-git-flow/state.json`, and the move is worth recording because it trades a
+property git gave away for free: the common directory is the same from every worktree, while a
+directory in the working tree is not. A ledger resolved from the session's own directory would give
+each linked worktree its own copy, and the copy a worktree session reads is exactly the one that
+cannot tell it a second session is already working here — concurrency detection would fail silently
+in the one case that needs it. So the path is anchored to the repository's main working tree (git
+lists it first, which is what makes that reliable from anywhere), and the whole `.dsh.local`
+directory is ignored by one rule, verified after writing, before any state is written at all. The
+name matters too: `.dsh.local` rather than `.dsh`, because `<project>/.dsh/skills` holds project
+skills that are meant to be committed.
 
 ## Constraints worth remembering
 

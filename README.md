@@ -75,20 +75,39 @@ tree is stale, and a stale record must not block a tree nobody is using.
 ### Parallel sessions and worktrees
 
 When `/git-start` finds other live sessions in the same repository, this session is isolated in a
-worktree under `<repo>/.dsh/worktrees/<name>` and its file edits are required to stay there. Work
-stays under the repository — never in `$DSH_HOME` — so the harness's workspace-write sandbox keeps
-covering it without repeated authorization prompts.
+worktree under `<repo>/.dsh.local/worktrees/<name>` and its file edits are required to stay there.
+Work stays under the repository — never in `$DSH_HOME` — so the harness's workspace-write sandbox
+keeps covering it without repeated authorization prompts.
 
-Before the worktree exists, the plugin adds `worktreeRoot` to the tracked `.gitignore` with a
-comment explaining it, and then **verifies with `git check-ignore`** rather than trusting the write.
-The reason is worth stating because the failure is silent: a `git worktree` inside the repository
-is a linked repository, and a `git add --all` from the main tree does not stage its thousands of
-files — it stages **one** entry, a gitlink recording a commit id that stops being reachable the
-moment `/git-complete` deletes the branch. A clone could never reproduce it, and this plugin's own
-per-step commits would commit it for you. (`node_src/git-flow/test/verify-ignore.mjs` asserts that
-failure really happens without the guard, so the guard's premise cannot rot unnoticed.) A rule that
-another rule overrides — a later `!` line, a parent directory's ignore — makes the guard refuse to
-create the worktree at all, rather than leave one that only looks protected.
+### `.dsh.local`
+
+Everything this plugin leaves on this machine lives in one ignored directory at the repository
+root: the worktrees, and a ledger of the open feature branches (`git-flow.json`). `.dsh.local`
+rather than `.dsh` because the harness reads `<project>/.dsh/skills` for *project* skills, which are
+meant to be committed and shared — a rule ignoring `.dsh/` would quietly stop a team's skills from
+being tracked. A name of its own can be ignored wholesale, and the `.local` half says what it is.
+
+`/git-start` adds `.dsh.local/` to the tracked `.gitignore` with a comment explaining it, and then
+**verifies with `git check-ignore`** rather than trusting the write. Two reasons, both silent when
+they go wrong:
+
+- A `git worktree` inside the repository is a linked repository, and a `git add --all` from the main
+  tree does not stage its thousands of files — it stages **one** entry, a gitlink recording a commit
+  id that stops being reachable the moment `/git-complete` deletes the branch. A clone could never
+  reproduce it, and this plugin's own per-step commits would commit it for you.
+  (`node_src/git-flow/test/verify-ignore.mjs` asserts that failure really happens without the guard,
+  so the guard's premise cannot rot unnoticed.)
+- The ledger holds **absolute paths belonging to this machine**, and it is written by every start —
+  including the single-session one that creates no worktree at all. So the rule is ensured before
+  the first state write, not only on the path that creates a worktree.
+
+A rule that another rule overrides — a later `!` line, a parent directory's ignore — makes the
+plugin refuse to proceed rather than leave state that only looks protected.
+
+The directory is anchored to the repository's **main** working tree, never to the session's own:
+a path resolved from the session's directory would give every linked worktree its own ledger, and
+the copy a worktree session reads is exactly the one that cannot tell it another session is already
+working here.
 
 ### Configuration
 
@@ -98,7 +117,7 @@ Every tunable, at its default, in the row's `config` in `node_src/dotdsh/cordis.
 |---|---|---|
 | `branchPrefix` | `feature/` | Prefix `/git-start` gives every branch it opens |
 | `integrationBranch` | `""` | Empty detects `origin/HEAD`, then `main`, then `master` |
-| `worktreeRoot` | `.dsh/worktrees` | Relative to the repository's main tree; must stay inside it |
+| `worktreeRoot` | `.dsh.local/worktrees` | Relative to the repository's **main** tree; must stay inside it |
 | `useWorktreeWhenBusy` | `true` | Isolate a session that arrives while others are live |
 | `commitUncommittedBeforeMerge` | `true` | Collect loose work into a commit before merging, instead of blocking |
 | `mergeMessage` | `Merge {branch} into {integration}` | Merge-commit subject; `{branch}` must be present |

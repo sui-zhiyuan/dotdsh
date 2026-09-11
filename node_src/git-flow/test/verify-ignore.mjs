@@ -8,8 +8,8 @@
 // `git add --all` a careless session would run and asserting that the worktree
 // directory is not in the index.
 //
-// The guard is given the worktree ROOT (`<repo>/.dsh/worktrees`), not one
-// worktree inside it: one rule then covers every session's worktree, present and
+// The guard is given the local-state directory (`<repo>/.dsh.local`), not one
+// entry inside it: one rule then covers every session's worktree and the ledger,
 // future, and the entry does not change as branches come and go.
 //
 // Every case builds a real repository under a temporary directory and drives the
@@ -30,7 +30,7 @@ import { gitClient, nodeRunner } from "../lib/exec.js";
 import { nodeFileAccess } from "../lib/file-access.js";
 import { ensureIgnored, ignoreComment } from "../lib/ignore.js";
 
-const WORKTREE_ROOT = ".dsh/worktrees";
+const WORKTREE_ROOT = ".dsh.local";
 const FEATURE_DIR = `${WORKTREE_ROOT}/add-login`;
 
 let passed = 0;
@@ -77,7 +77,7 @@ async function stagedEntries(git) {
 
 /** The guard call under test, aimed at the worktree root. */
 function guard(root, git) {
-  return { git, files: nodeFileAccess, comment: ignoreComment(WORKTREE_ROOT), directory: join(root, WORKTREE_ROOT) };
+  return { git, files: nodeFileAccess, comment: ignoreComment(), directory: join(root, WORKTREE_ROOT) };
 }
 
 console.log("ignore guard");
@@ -160,10 +160,13 @@ await verify("is idempotent: a second run changes nothing", async () => {
 await verify("a broader existing rule is respected instead of duplicated", async () => {
   const { root, git } = await scratchRepo();
   try {
-    await writeFile(join(root, ".gitignore"), ".dsh/\n", "utf8");
+    // `.dsh.*` is broader than the exact pattern and genuinely covers `.dsh.local/`,
+    // which is what this case is about: a rule that already does the job must not be
+    // duplicated. (`.dsh/` would not cover it — the two names are unrelated.)
+    await writeFile(join(root, ".gitignore"), ".dsh.*\n", "utf8");
     const result = await ensureIgnored(guard(root, git));
     assert.equal(result.changed, false, "a covering rule needs no new entry");
-    assert.equal(await readFile(join(root, ".gitignore"), "utf8"), ".dsh/\n", "the file must be untouched");
+    assert.equal(await readFile(join(root, ".gitignore"), "utf8"), ".dsh.*\n", "the file must be untouched");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -240,7 +243,7 @@ await verify("a directory outside the repository needs no rule", async () => {
     const result = await ensureIgnored({
       git,
       files: nodeFileAccess,
-      comment: ignoreComment(WORKTREE_ROOT),
+      comment: ignoreComment(),
       directory: join(outside, "somewhere"),
     });
     assert.equal(result.needed, false);

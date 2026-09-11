@@ -44,7 +44,7 @@ async function verify(name, body) {
 const CONFIG = {
   branchPrefix: "feature/",
   integrationBranch: undefined,
-  worktreeRoot: ".dsh/worktrees",
+  worktreeRoot: ".dsh.local/worktrees",
   useWorktreeWhenBusy: true,
   commitUncommittedBeforeMerge: true,
   mergeMessage: "Merge {branch} into {integration}",
@@ -125,16 +125,16 @@ await verify("a start reports where to work and what it changed underneath", () 
   assert.ok(plain.text.includes("feature/login-redirect"), "the branch it opened must be named");
 
   const isolated = reportStart(
-    started({ worktreePath: "/repo/.dsh/worktrees/login-redirect", parallelSessions: 1 }),
+    started({ worktreePath: "/repo/.dsh.local/worktrees/login-redirect", parallelSessions: 1 }),
   );
-  assert.ok(isolated.text.includes("/repo/.dsh/worktrees/login-redirect"), "the worktree must be named");
+  assert.ok(isolated.text.includes("/repo/.dsh.local/worktrees/login-redirect"), "the worktree must be named");
   assert.ok(/absolute paths/i.test(isolated.text), "and the human must be told to use them");
 
   const ignored = reportStart(
-    started({ ignoreChanged: true, gitignorePath: "/repo/.gitignore", gitignorePattern: ".dsh/worktrees/" }),
+    started({ ignoreChanged: true, gitignorePath: "/repo/.gitignore", gitignorePattern: ".dsh.local/" }),
   );
   assert.ok(ignored.text.includes("/repo/.gitignore"), "a changed .gitignore must be reported");
-  assert.ok(ignored.text.includes(".dsh/worktrees/"), "with the pattern that was added");
+  assert.ok(ignored.text.includes(".dsh.local/"), "with the pattern that was added");
 
   const exposed = reportStart(started({ trackedGitlink: true }));
   assert.ok(/git rm --cached/.test(exposed.text), "an already-staged gitlink needs the command that undoes it");
@@ -164,7 +164,7 @@ await verify("a completed feature reports the replay and what was cleaned up", (
     rebased: true,
     rebasedFrom: "1234567890abcdef",
     collectedCommit: "fedcba0987654321",
-    removedWorktree: "/repo/.dsh/worktrees/login-redirect",
+    removedWorktree: "/repo/.dsh.local/worktrees/login-redirect",
     deletedBranch: true,
     warnings: ["the tree at /repo had uncommitted changes"],
   });
@@ -172,7 +172,7 @@ await verify("a completed feature reports the replay and what was cleaned up", (
   assert.ok(reported.text.includes("abcdef12"), "the merge commit must be shown");
   assert.ok(/replayed/.test(reported.text), "a replay must be stated, not hidden");
   assert.ok(reported.text.includes("fedcba09"), "collected work must be accounted for");
-  assert.ok(reported.text.includes("/repo/.dsh/worktrees/login-redirect"), "the removed worktree must be named");
+  assert.ok(reported.text.includes("/repo/.dsh.local/worktrees/login-redirect"), "the removed worktree must be named");
   assert.ok(reported.text.includes("warning:"), "warnings must survive to the human");
 });
 

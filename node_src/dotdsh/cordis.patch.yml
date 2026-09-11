@@ -42,8 +42,10 @@
   #
   #   branchPrefix: feature/          # prefix /git-start gives every branch it opens
   #   integrationBranch: ""           # empty = detect origin/HEAD, then main, then master
-  #   worktreeRoot: .dsh/worktrees    # relative to the repository's main tree; ignored
-  #                                   #   before a worktree is created, with a comment
+  #   worktreeRoot: .dsh.local/worktrees   # relative to the repository's MAIN tree
+  #                                   #   (never the session's own, so a worktree session
+  #                                   #   computes the same root); `.dsh.local/` is added
+  #                                   #   to .gitignore before any state is written
   #   useWorktreeWhenBusy: true       # a session arriving while others are live is isolated
   #   commitUncommittedBeforeMerge: true   # collect loose work before a merge, rather than block
   #   mergeMessage: Merge {branch} into {integration}
@@ -62,7 +64,7 @@
     config:
       branchPrefix: feature/
       integrationBranch: ''
-      worktreeRoot: .dsh/worktrees
+      worktreeRoot: .dsh.local/worktrees
       useWorktreeWhenBusy: true
       commitUncommittedBeforeMerge: true
       mergeMessage: Merge {branch} into {integration}

@@ -26,7 +26,7 @@ import { nodeFileAccess } from "../lib/file-access.js";
 import { completeFlow, startFlow } from "../lib/flow.js";
 import { commonDir, currentBranch, readLedger, writeLedger } from "../lib/repo.js";
 
-const ROOT = ".dsh/worktrees";
+const ROOT = ".dsh.local/worktrees";
 
 const CONFIG = {
   branchPrefix: "feature/",
@@ -290,6 +290,69 @@ await verify("does not call a live session's branch outstanding", async () => {
   }
 });
 
+await verify("keeps one ledger for the whole clone, worktrees included", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // The trap this pins. `--git-common-dir` gave "the same file from anywhere" for
+    // free; a directory in the working tree does not, and a ledger resolved from the
+    // session's own directory would give every linked worktree its own copy. The copy
+    // a worktree session reads is exactly the one that cannot tell it another session
+    // is already working here — so concurrency detection would fail silently, in the
+    // one case that needs it.
+    const worktree = join(root, ROOT, "nested");
+    await git.text(["worktree", "add", "-q", "-b", "feature/nested", worktree]);
+    const fromWorktree = git.withCwd(worktree);
+
+    const record = (sessionId) => ({
+      sessionId,
+      repoKey: `${root}/.git`,
+      repoRoot: root,
+      branch: `feature/${sessionId}`,
+      worktreePath: null,
+      integration: "main",
+      baseCommit: "0".repeat(40),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    });
+
+    await writeLedger(fromWorktree, { "session-in-worktree": record("session-in-worktree") });
+    const readFromMain = await readLedger(git);
+    assert.ok(readFromMain["session-in-worktree"], "the main tree must see what the worktree wrote");
+
+    await writeLedger(git, { "session-in-main": record("session-in-main") });
+    const readFromWorktree = await readLedger(fromWorktree);
+    assert.ok(readFromWorktree["session-in-main"], "and the worktree must see what the main tree wrote");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("a start that creates no worktree still keeps its state out of git", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // The user-facing half of the same design: a lone session works in place, so no
+    // worktree is created — and yet this command still leaves a ledger in the working
+    // tree, holding absolute paths belonging to this machine. If the rule were only
+    // ensured on the worktree path, the very next `git add --all` would commit it, and
+    // this plugin's own collection sweep would do that without asking.
+    const result = await startFlow(depsFor(git), "add login");
+    assert.equal(result.kind, "started");
+    assert.equal(result.worktreePath, null, "a lone session works in place");
+    assert.equal(result.ignoreChanged, true, "and its local state must still be ignored");
+    assert.ok((await readLedger(git))["session-a"], "the ledger really was written");
+
+    const ignored = (path) => git.ok(["check-ignore", "-q", "--no-index", path]);
+    assert.equal(await ignored(join(root, ".dsh.local", "git-flow.json")), true, "the ledger must be ignored");
+    assert.equal(await ignored(join(root, ROOT, "anything")), true, "and the worktree root with it");
+
+    await git.text(["add", "--all"]);
+    const staged = await git.text(["ls-files", "-s"]);
+    assert.ok(!staged.includes(".dsh.local"), `nothing local may be stageable, got: ${staged}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 console.log("git flow");
 
 await verify("derives a branch name from the session's intent", async () => {
@@ -414,11 +477,16 @@ await verify("isolates a parallel session in a worktree, and cleans it up", asyn
     assert.equal(started.kind, "started");
     assert.equal(started.parallelSessions, 1);
     assert.ok(started.worktreePath !== null, "a session that arrives second must be isolated");
-    assert.equal(started.ignoreChanged, true, "the worktree root must be ignored before the worktree exists");
+    assert.equal(started.ignoreChanged, true, "the local state must be ignored before the worktree exists");
 
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
-    assert.ok(gitignore.includes(`${ROOT}/`), "the rule must be in the tracked .gitignore");
+    assert.ok(gitignore.includes(".dsh.local/"), "the rule must be in the tracked .gitignore");
     assert.ok(gitignore.includes("# dsh git-flow:"), "with the comment that explains it");
+    assert.equal(
+      await git.ok(["check-ignore", "-q", "--no-index", started.worktreePath]),
+      true,
+      "one rule for the local directory must cover the worktree root inside it",
+    );
 
     // The whole point of the guard, re-proved here through the real flow: the
     // worktree is invisible to a careless `git add --all` in the main tree.
@@ -444,8 +512,18 @@ await verify("isolates a parallel session in a worktree, and cleans it up", asyn
 await verify("reports nothing to do rather than a hollow merge commit", async () => {
   const { root, git } = await scratchRepo();
   try {
+    // The rule is pre-seeded and committed, so starting changes nothing in the tree.
+    // That matters: a first start legitimately adds the rule as a tracked change, and
+    // this case is about a branch that never received any *work* — not about the
+    // ignore rule, whose own commit would make the branch non-empty and mask it.
+    await writeFile(join(root, ".gitignore"), ".dsh.local/\n", "utf8");
+    await git.text(["add", "--all"]);
+    await git.text(["commit", "-q", "-m", "chore: ignore the git-flow local state"]);
+
     const started = await startFlow(depsFor(git), "add login");
     assert.equal(started.kind, "started");
+    assert.equal(started.ignoreChanged, false, "the rule was already in place");
+
     const result = await completeFlow(depsFor(git));
     assert.equal(result.kind, "no-changes", "a branch with no commits must not produce a merge commit");
     assert.equal(await currentBranch(git), started.branch, "and the branch must be left intact");

@@ -36,7 +36,7 @@
 import { resolve, relative, sep } from "node:path";
 import type { FileAccess } from "./file-access.js";
 import type { Git } from "./exec.js";
-import { worktreeList } from "./repo.js";
+import { LOCAL_DIR, worktreeList } from "./repo.js";
 
 /** Inputs to one guard run. */
 export interface IgnoreGuardOptions {
@@ -251,11 +251,13 @@ export async function ensureIgnored(options: IgnoreGuardOptions): Promise<Ignore
  * @param directory - the repository-relative directory being ignored.
  * @returns the comment lines, without leading `#`.
  */
-export function ignoreComment(directory: string): readonly string[] {
+export function ignoreComment(): readonly string[] {
   return [
-    `dsh git-flow: per-session git worktrees live under ${directory}/.`,
-    "Each one is a linked git repository: without this rule a `git add --all`",
-    "would stage it as an embedded repository (a gitlink) pointing at a commit",
-    "that disappears when the worktree is removed. Keep this ignored.",
+    `dsh git-flow: ${LOCAL_DIR}/ is this machine's local state for the git workflow.`,
+    "It holds a worktree per session and a ledger of the open feature branches.",
+    "A worktree is a linked git repository, so without this rule a `git add --all`",
+    "would stage one as an embedded repository (a gitlink) pointing at a commit that",
+    "disappears when the worktree is removed; the ledger holds absolute paths that",
+    "belong to this machine only. Neither is meant to be committed.",
   ];
 }

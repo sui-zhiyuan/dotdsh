@@ -63,7 +63,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   branchPrefix: z.string().default("feature/"),
   integrationBranch: z.string().default(""),
-  worktreeRoot: z.string().default(".dsh/worktrees"),
+  worktreeRoot: z.string().default(".dsh.local/worktrees"),
   useWorktreeWhenBusy: z.boolean().default(true),
   commitUncommittedBeforeMerge: z.boolean().default(true),
   mergeMessage: z.string().default("Merge {branch} into {integration}"),

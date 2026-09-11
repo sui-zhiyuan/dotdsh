@@ -81,6 +81,26 @@ interface LedgerFile {
 const LEDGER_VERSION = 1;
 
 /**
+ * The directory this plugin keeps machine-local state in, and the file it keeps
+ * there.
+ *
+ * `.dsh.local` rather than `.dsh`: the harness already reads `<project>/.dsh/skills`
+ * for *project* skills, which are meant to be committed and shared, so a rule
+ * ignoring `.dsh/` would quietly stop the team's skills from being tracked. A
+ * separate name can be ignored wholesale — one rule covers the worktrees and the
+ * ledger both — and the `.local` half says what it is: this machine's, not the
+ * repository's.
+ *
+ * The file is named for its owner rather than `state.json`, because `.dsh.local`
+ * is a shared namespace: anything else that keeps local state there can do so
+ * without colliding with a name as generic as `state.json`.
+ */
+export const LOCAL_DIR = ".dsh.local";
+
+/** The ledger file inside {@link LOCAL_DIR}. */
+export const LEDGER_FILE = "git-flow.json";
+
+/**
  * Absolute path of the working tree a git client is bound to.
  *
  * @param git - a client bound anywhere inside the repository or a worktree.
@@ -253,13 +273,41 @@ export async function worktreeWithBranch(git: Git, branch: string): Promise<Work
 }
 
 /**
+ * Absolute path of the repository's **main** working tree.
+ *
+ * This is the anchor for everything under {@link LOCAL_DIR}, and it has to be the
+ * main tree rather than the caller's own: a path resolved from the session's
+ * directory would give every linked worktree its own copy of the state, and the
+ * copy a worktree session reads is precisely the one that cannot tell it that it
+ * is the second session. Git lists the main working tree first, which is what
+ * makes this reliable from anywhere.
+ *
+ * @param git - any client for the repository.
+ * @returns the absolute main working-tree path.
+ */
+export async function mainWorktree(git: Git): Promise<string> {
+  const trees = await worktreeList(git);
+  return trees[0]?.path ?? repoRoot(git);
+}
+
+/**
+ * Absolute path of this plugin's local state directory, anchored to the main tree.
+ *
+ * @param git - any client for the repository.
+ * @returns the absolute `.dsh.local` path.
+ */
+export function localDir(git: Git): Promise<string> {
+  return mainWorktree(git).then((main) => join(main, LOCAL_DIR));
+}
+
+/**
  * Absolute path of the session ledger for a repository.
  *
  * @param git - any client for the repository.
  * @returns the ledger file path.
  */
 async function ledgerPath(git: Git): Promise<string> {
-  return join(await commonDir(git), "dsh-git-flow", "state.json");
+  return join(await localDir(git), LEDGER_FILE);
 }
 
 /**
@@ -347,13 +395,21 @@ export function isProcessAlive(pid: number): boolean {
  * Records whose process is gone are pruned here rather than left to make a later
  * run believe the repository is busy.
  *
+ * The ledger is only rewritten when `persist` is set. Pruning is therefore owned
+ * by the two commands that were asked to change something, not by the pre-write
+ * guard — which calls this on every file-mutating tool call, and which must not
+ * write state at all: a gate that rewrites the ledger would have to make sure the
+ * ledger is ignored first, on the hot path, to stay safe.
+ *
  * @param git - any client for the repository.
  * @param ownSessionId - the calling session, excluded from the result.
- * @returns the other live records, and whether the ledger was pruned.
+ * @param options - `persist` writes the pruned ledger; the default only reports.
+ * @returns the other live records, whatever dead records still hold, and the repo key.
  */
 export async function otherLiveSessions(
   git: Git,
   ownSessionId: string,
+  options: { readonly persist?: boolean } = {},
 ): Promise<{
   readonly others: readonly SessionRecord[];
   readonly repoKey: string;
@@ -382,6 +438,6 @@ export async function otherLiveSessions(
     pruned = true;
   }
 
-  if (pruned) await writeLedger(git, kept);
+  if (pruned && options.persist === true) await writeLedger(git, kept);
   return { others, repoKey, outstanding };
 }
