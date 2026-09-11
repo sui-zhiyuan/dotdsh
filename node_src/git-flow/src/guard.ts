@@ -41,7 +41,7 @@ import { nodeFileAccess } from "./file-access.js";
 import { startFlow } from "./flow.js";
 import { otherLiveSessions } from "./repo.js";
 import type { Runtime } from "./runtime.js";
-import { sessionCwd, sessionId, sessionIntent, type AgentLike } from "./session.js";
+import { isDelegate, sessionCwd, sessionIntent, sessionRoot, type AgentLike } from "./session.js";
 
 /**
  * Tools that write files, and the argument naming the file they write.
@@ -129,7 +129,8 @@ export async function decideToolCall(
   if (isFileTool && declared === undefined) return next();
 
   const git = gitClient(runtime.runner, cwd);
-  const snapshot = await runtime.state.refresh(git, agent, config);
+  const identity = sessionRoot(agent, runtime.sessions);
+  const snapshot = await runtime.state.refresh(git, agent, config, identity);
   if (snapshot.repoRoot === undefined) return next();
 
   const target = declared === undefined ? undefined : resolve(cwd, declared);
@@ -160,7 +161,7 @@ export async function decideToolCall(
   // whose branch is not the one actually checked out here is stale — the human
   // switched back, or that session finished without `/git-complete` — and a stale
   // record must not block a tree nobody is using.
-  const { others } = await otherLiveSessions(git, sessionId(agent));
+  const { others } = await otherLiveSessions(git, identity);
   const inMainTree = snapshot.mainTree !== undefined && snapshot.mainTree === snapshot.repoRoot;
   const claimant = others.find(
     (record) =>
@@ -206,7 +207,8 @@ export async function decideToolCall(
     {
       git,
       files: nodeFileAccess,
-      sessionId: sessionId(agent),
+      sessionId: identity,
+      isDelegate: isDelegate(agent),
       pid: runtime.pid,
       config,
       ...(namer === undefined ? {} : { namer }),
@@ -217,7 +219,7 @@ export async function decideToolCall(
 
   if (result.kind === "started" || result.kind === "already-on-feature") {
     runtime.state.invalidateRepos();
-    await runtime.state.refresh(git, agent, config);
+    await runtime.state.refresh(git, agent, config, identity);
 
     // A start that isolated this session leaves the write that triggered it
     // pointing at the tree the session just left. Allowing it would defeat the

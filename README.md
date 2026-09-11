@@ -74,10 +74,25 @@ tree is stale, and a stale record must not block a tree nobody is using.
 
 ### Parallel sessions and worktrees
 
-When `/git-start` finds other live sessions in the same repository, this session is isolated in a
-worktree under `<repo>/.dsh.local/worktrees/<name>` and its file edits are required to stay there.
-Work stays under the repository — never in `$DSH_HOME` — so the harness's workspace-write sandbox
-keeps covering it without repeated authorization prompts.
+When `/git-start` finds another live session that is **not part of its own delegation chain**, this
+session is isolated in a worktree under `<repo>/.dsh.local/worktrees/<name>` and its file edits are
+required to stay there. Work stays under the repository — never in `$DSH_HOME` — so the harness's
+workspace-write sandbox keeps covering it without repeated authorization prompts.
+
+Everything is keyed by the **root** of a session's delegation chain, not by the session itself, and
+that is what makes a family behave as one workflow: a subagent runs in its parent's working
+directory, so a branch opened for one of them is opened for all of them. Keyed by the immediate
+session, whichever of the two wrote first would own the record and the other would see a stranger
+and open a *second* branch in the same checkout, moving it out from under the first. Keyed by the
+root they share one record and one branch, and a subagent is never handed a worktree of its own —
+unless it asks for one by naming a branch explicitly, in which case it is isolated, because
+switching the shared checkout would silently repoint its parent's work at a different branch.
+
+The other half of the rule is what a sibling is. Two top-level sessions with one working directory
+are the ordinary way to hit this: the first opens a branch there, so the second no longer sees the
+integration branch — it sees the first session's branch. Adopting that would put two sessions' work
+on one branch, so a branch owned by a stranger is never adopted; the arriving session is isolated
+instead.
 
 ### `.dsh.local`
 

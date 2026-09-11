@@ -171,6 +171,20 @@ exists for seconds, no agent ever edits in it, and keeping it out of the reposit
 `/git-complete` never has to rewrite `.gitignore` and never leaves an unignored linked repository
 behind if the process dies mid-merge.
 
+**Who counts as another session is a family question, not a session question.** Every decision —
+which branch a session may write on, whether it gets a checkout of its own, what `/git-complete`
+finishes — is keyed by the *root* of the session's delegation chain, because a subagent runs in its
+parent's working directory and therefore shares its parent's branch. Keyed by the immediate session,
+whichever of the two wrote first owned the record and the other saw a stranger: it would open a
+second branch in the same checkout and move it out from under the first. The root walk stopped at a
+one-hop version first, and running the flow twice against one scratch repository showed why that is
+not enough — a grandchild would disagree with its grandparent about which record is theirs, which is
+the same bug one generation later. `SessionStore.get` is what makes the full walk possible, and when
+an intermediate is no longer resident the walk stops there: a coarser identity, never a split one.
+The distinction also has to hold in the other direction, which is where it was over-broad at first: a
+sibling — a session with no parent — is a competitor even though it looks identical from the ledger,
+and it is refused rather than allowed to write onto a branch it does not own.
+
 **A guess is worse than a question, and the first version of the naming proved it.** Branch names
 come from the session's opening prompt, and the slug rules — lowercase, hyphenate, drop a leading
 verb, keep a few words — are an English heuristic. Applied to a prompt in another script they do not

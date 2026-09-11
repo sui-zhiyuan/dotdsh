@@ -37,7 +37,7 @@ export const name = "git-flow";
 // Every service this plugin touches is named explicitly. `tools` is what carries
 // the pre-execute seam, `subprocess` is the only way this plugin starts a
 // process, and the other three are the surfaces it contributes to.
-export const inject = ["commands", "systemPrompt", "skills", "tools", "subprocess"];
+export const inject = ["commands", "systemPrompt", "skills", "tools", "subprocess", "sessions"];
 
 /** git-flow plugin configuration. */
 export interface Config {
@@ -127,6 +127,7 @@ export function apply(ctx: Context, config: Config): void {
     config: resolved,
     pid: process.pid,
     log: ctx.logger,
+    sessions: ctx.sessions,
   };
 
   // Each contribution is registered as an effect on this plugin's fiber, so

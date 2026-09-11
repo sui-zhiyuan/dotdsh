@@ -101,8 +101,16 @@ export interface FlowDeps {
   readonly git: Git;
   /** The file seam used by the ignore guard. */
   readonly files: FileAccess;
-  /** Harness session id owning this workflow. */
+  /**
+   * The workflow's identity: the **root** of the session's delegation chain, not the
+   * immediate session. A subagent runs in its parent's working directory, so a branch
+   * opened for one of them is opened for all of them — keyed by the immediate session,
+   * whichever wrote first would own the record and the other would see a stranger and
+   * open a second branch in the same tree, moving it out from under the first.
+   */
   readonly sessionId: string;
+  /** Whether this session is a delegate (a subagent), rather than one the human opened. */
+  readonly isDelegate: boolean;
   /** Owning process id, recorded so a later run can prune dead sessions. */
   readonly pid: number;
   /** The resolved plugin settings. */
@@ -359,26 +367,42 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
     return { kind: "blocked", reason: "HEAD is detached; check out a branch before starting a feature" };
   }
 
-  // Already on a usable feature branch: adopting it is what makes /git-start
+  // Already on a usable feature branch. Adopting it is what makes /git-start
   // idempotent, and it is the only sane answer to "start a feature" while one is
-  // already open — creating a branch off a branch is never intended.
+  // already open — creating a branch off a branch is never intended. It is also what
+  // keeps a subagent from being handed a worktree of its own: it shares its parent's
+  // record, so this is *its* branch, not a stranger's.
+  //
+  // A branch a stranger owns is the exception, and the important one. Two top-level
+  // sessions with one working directory are the ordinary way to hit it: the first
+  // opens a branch there, so the second no longer sees the integration branch — it
+  // sees the first session's branch — and adopting it would put two sessions' work on
+  // one branch. That session is isolated instead, by falling through to the worktree
+  // path below.
   if (branch !== integration && hasBranchPrefix(branch, config.branchPrefix) && explicitName === undefined) {
-    const existing = (await readLedger(git))[sessionId];
-    if (existing === undefined) {
-      await record(
-        git,
-        facts,
-        deps,
+    const { others } = await otherLiveSessions(git, sessionId);
+    const stranger = others.find((entry) => entry.branch === branch);
+    if (stranger === undefined) {
+      const existing = (await readLedger(git))[sessionId];
+      if (existing === undefined) {
+        await record(
+          git,
+          facts,
+          deps,
+          branch,
+          integration,
+          await mergeBase(git, integration, branch),
+          facts.inWorktree ? facts.own : null,
+        );
+      }
+      return {
+        kind: "already-on-feature",
         branch,
+        worktreePath: existing?.worktreePath ?? (facts.inWorktree ? facts.own : null),
         integration,
-        await mergeBase(git, integration, branch),
-        facts.inWorktree ? facts.own : null,
-      );
+      };
     }
-    return { kind: "already-on-feature", branch, worktreePath: existing?.worktreePath ?? (facts.inWorktree ? facts.own : null), integration };
-  }
-
-  if (branch !== integration && explicitName === undefined) {
+  } else if (branch !== integration && explicitName === undefined) {
     return {
       kind: "blocked",
       reason:
@@ -434,9 +458,17 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
   const ignore = await ensureLocalIgnored(deps, facts, git);
   const { others, outstanding } = await otherLiveSessions(git, sessionId, { persist: true });
 
-  const baseCommit = await revParse(git, "HEAD");
   const exists = await branchExists(git, name);
-  const useWorktree = config.useWorktreeWhenBusy && others.length > 0 && !facts.inWorktree;
+  // A delegate normally shares its parent's branch and never reaches here with a name
+  // of its own. When it does, it asked explicitly — and letting it switch the shared
+  // checkout would silently repoint its parent's work at a different branch, so it
+  // gets a worktree even when nobody else is around.
+  const wantsOwnCheckout = others.length > 0 || (deps.isDelegate && explicitName !== undefined);
+  const useWorktree = config.useWorktreeWhenBusy && wantsOwnCheckout && !facts.inWorktree;
+  // The base differs by path: in place, the branch continues from what is checked
+  // out; in a worktree, it is cut from the integration branch, because what is
+  // checked out belongs to the session being isolated from.
+  const baseCommit = useWorktree ? await revParse(git, integration) : await revParse(git, "HEAD");
 
   if (!useWorktree) {
     // Work in place: either nobody else is in this repository, or this session is

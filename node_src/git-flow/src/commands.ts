@@ -21,7 +21,7 @@ import { hasBranchPrefix } from "./branch.js";
 import { nodeFileAccess } from "./file-access.js";
 import { completeFlow, startFlow, type CompleteResult, type FlowDeps, type StartResult } from "./flow.js";
 import type { Runtime } from "./runtime.js";
-import { sessionCwd, sessionId, sessionIntent, type AgentLike } from "./session.js";
+import { isDelegate, sessionCwd, sessionIntent, sessionRoot, type AgentLike } from "./session.js";
 
 /** The description shown in command discovery for `/git-start`. */
 const START_DESCRIPTION =
@@ -43,10 +43,14 @@ const COMPLETE_DESCRIPTION =
 function depsFor(runtime: Runtime, agent: AgentLike, git: Git, signal: AbortSignal): FlowDeps {
   // Built per call from this agent: the model route belongs to the agent.
   const namer = runtime.namerFor?.(agent);
+  const identity = sessionRoot(agent, runtime.sessions);
   return {
     git,
     files: nodeFileAccess,
-    sessionId: sessionId(agent),
+    // The root of the delegation chain, so a subagent works as its parent rather
+    // than as a second workflow in the same checkout.
+    sessionId: identity,
+    isDelegate: isDelegate(agent),
     pid: runtime.pid,
     config: runtime.config,
     ...(namer === undefined ? {} : { namer }),
@@ -254,17 +258,14 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
         }
 
         const git = gitClient(runtime.runner, cwd);
+        const deps = depsFor(runtime, agent, git, invocation.signal);
         const normalized = await normalizeName(git, invocation.rawInput, runtime.config.branchPrefix);
         if ("error" in normalized) return { kind: "error", text: normalized.error };
 
-        const result = await startFlow(
-          depsFor(runtime, agent, git, invocation.signal),
-          sessionIntent(agent),
-          normalized.name,
-        );
+        const result = await startFlow(deps, sessionIntent(agent), normalized.name);
         if (result.kind === "started" || result.kind === "already-on-feature") {
           runtime.state.invalidateRepos();
-          await runtime.state.refresh(git, agent, runtime.config);
+          await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
         }
         return reportStart(result);
       },
@@ -284,10 +285,11 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
         }
 
         const git = gitClient(runtime.runner, cwd);
-        const result = await completeFlow(depsFor(runtime, agent, git, invocation.signal));
+        const deps = depsFor(runtime, agent, git, invocation.signal);
+        const result = await completeFlow(deps);
         if (result.kind === "merged") {
           runtime.state.invalidateRepos();
-          await runtime.state.refresh(git, agent, runtime.config);
+          await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
         }
         return reportComplete(result);
       },

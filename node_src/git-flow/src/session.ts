@@ -25,7 +25,15 @@ export interface AgentLike {
     /** Durable session id. */
     readonly id: string;
     /** Immutable creation metadata; `cwd` is the absolute working directory. */
-    readonly header: { readonly cwd?: string | undefined };
+    readonly header: {
+      readonly cwd?: string | undefined;
+      /** The session this one was delegated or forked from, when it is a delegate. */
+      readonly parentSession?: string | undefined;
+      /** `'subagent'` for a session created as a subagent child. */
+      readonly origin?: string | undefined;
+      /** Absent (zero) for a top-level session, parent depth + 1 for a subagent child. */
+      readonly delegationDepth?: number | undefined;
+    };
     /** Derive the message history synchronously. */
     deriveMessages(): readonly unknown[];
     /**
@@ -81,11 +89,72 @@ export function sessionCwd(agent: AgentLike): string | undefined {
 /**
  * The session's id.
  *
+ * This is the raw id, which is **not** what this plugin keys its state by: see
+ * {@link sessionRoot}. It is still the right answer when something genuinely needs
+ * to name the exact session, such as a log line.
+ *
  * @param agent - the calling agent.
  * @returns the durable session id.
  */
 export function sessionId(agent: AgentLike): string {
   return agent.session.id;
+}
+
+/** The slice of the session registry the root walk reads. `SessionStore` satisfies it. */
+export interface SessionRegistryLike {
+  /**
+   * Look up a resident session.
+   *
+   * @param id - the session id to find.
+   * @returns the session, or `undefined` when it is not resident.
+   */
+  get(id: string): { readonly header: { readonly parentSession?: string | undefined } } | undefined;
+}
+
+/**
+ * Tell whether this session is a delegate rather than a session the human opened.
+ *
+ * @param agent - the calling agent.
+ * @returns whether the harness classified this session as a subagent child or gave
+ *   it a delegation depth.
+ */
+export function isDelegate(agent: AgentLike): boolean {
+  const header = agent.session.header;
+  return header.origin === "subagent" || (header.delegationDepth ?? 0) > 0;
+}
+
+/**
+ * The topmost session in this session's delegation chain — itself, when it is
+ * top-level.
+ *
+ * This is the identity every decision in this plugin is keyed by, and the reason is
+ * that a family shares one checkout: a subagent runs in its parent's working
+ * directory, so a branch opened for one of them is opened for all of them. Keyed by
+ * the immediate session, whichever of the two wrote first would own the record, and
+ * the other would then see a stranger and open a *second* branch in the same tree —
+ * moving it out from under the first. Keyed by the root, they share one record and
+ * one branch whoever writes first, which is also what keeps a subagent from being
+ * handed a worktree of its own.
+ *
+ * The walk stops at the first ancestor that is no longer resident, so a chain whose
+ * middle has been disposed resolves to the highest ancestor still reachable rather
+ * than failing: that is a coarser identity, not a wrong one.
+ *
+ * @param agent - the calling agent.
+ * @param sessions - the session registry, used to follow the chain upwards.
+ * @returns the id of the topmost ancestor, or this session's own id when top-level.
+ */
+export function sessionRoot(agent: AgentLike, sessions: SessionRegistryLike): string {
+  let root = agent.session.id;
+  let parent = agent.session.header.parentSession;
+  const seen = new Set<string>([root]);
+
+  while (parent !== undefined && !seen.has(parent)) {
+    seen.add(parent);
+    root = parent;
+    parent = sessions.get(parent)?.header.parentSession;
+  }
+  return root;
 }
 
 /**

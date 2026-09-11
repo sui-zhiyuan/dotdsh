@@ -21,7 +21,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionSnapshot } from "./state.js";
-import { sessionId, type AgentLike } from "./session.js";
+import { sessionRoot, type AgentLike, type SessionRegistryLike } from "./session.js";
 
 /**
  * Order of the workflow section.
@@ -101,13 +101,13 @@ export function renderState(snapshot: SessionSnapshot | undefined): string {
 /**
  * Register the workflow section and the state context.
  *
- * @param ctx - the plugin context, with `systemPrompt` injected.
- * @param snapshotOf - reads the last snapshot for a session id.
+ * @param ctx - the plugin context, with `systemPrompt` and `sessions` injected.
+ * @param snapshotOf - reads the last snapshot for a workflow identity.
  * @returns a disposer that removes both contributions.
  */
 export function registerPrompt(
   ctx: Context,
-  snapshotOf: (id: string) => SessionSnapshot | undefined,
+  snapshotOf: (identity: string) => SessionSnapshot | undefined,
 ): () => void {
   const disposeSection = ctx.systemPrompt.section({
     name: SECTION_NAME,
@@ -121,7 +121,9 @@ export function registerPrompt(
     text: (assembly) => {
       const agent = assembly.agent;
       if (agent === undefined) return "";
-      return renderState(snapshotOf(sessionId(agent)));
+      // The registry read is synchronous, so the provider stays synchronous while
+      // still resolving the same identity the rest of the plugin uses.
+      return renderState(snapshotOf(sessionRoot(agent, ctx.sessions as SessionRegistryLike)));
     },
   });
 

@@ -83,7 +83,14 @@ async function scratchRepo() {
  * @param options - overrides for name, arguments, cwd, session id and prompt.
  * @returns a `ToolExecution`-shaped object the guard reads.
  */
-function callFor({ name = "write", args = { file_path: "notes.txt", content: "x\n" }, cwd, sessionId = "session-a", prompt = "Add the login redirect" }) {
+function callFor({
+  name = "write",
+  args = { file_path: "notes.txt", content: "x\n" },
+  cwd,
+  sessionId = "session-a",
+  prompt = "Add the login redirect",
+  header = {},
+}) {
   return {
     callId: "call-1",
     rootCallId: "call-1",
@@ -92,7 +99,7 @@ function callFor({ name = "write", args = { file_path: "notes.txt", content: "x\
     agent: {
       session: {
         id: sessionId,
-        header: { cwd },
+        header: { cwd, ...header },
         deriveMessages: () => [{ role: "user", source: { kind: "user" }, content: [{ type: "text", text: prompt }] }],
       },
     },
@@ -102,14 +109,20 @@ function callFor({ name = "write", args = { file_path: "notes.txt", content: "x\
 }
 
 /** The runtime the guard reads, with the standalone runner and a fresh cache. */
-function runtimeFor(config = CONFIG, namer) {
+function runtimeFor(config = CONFIG, namer, sessions = { get: () => undefined }) {
   return {
     runner: nodeRunner,
     state: new GitFlowState(),
     config,
     pid: process.pid,
+    sessions,
     ...(namer === undefined ? {} : { namerFor: () => namer }),
   };
+}
+
+/** A registry that answers with the given headers, so a chain can be walked. */
+function registry(headers) {
+  return { get: (id) => (id in headers ? { header: headers[id] } : undefined) };
 }
 
 /** The continuation: what a call reaching the rest of the pipeline decides. */
@@ -131,6 +144,70 @@ async function addLiveSession(git, root, branch = "feature/other") {
     },
   });
 }
+
+await verify("lets a subagent write in its parent's checkout", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // A subagent runs in its parent's working directory, so the parent's branch is
+    // the branch it is working on — the same workflow, not a second one. Judged by
+    // the immediate session id it looked like a stranger occupying the checkout, and
+    // every write a subagent made was refused.
+    await git.text(["switch", "-c", "feature/parent"]);
+    await writeLedger(git, {
+      "session-parent": {
+        sessionId: "session-parent",
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        branch: "feature/parent",
+        worktreePath: null,
+        integration: "master",
+        baseCommit: await git.text(["rev-parse", "HEAD"]),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    const sessions = registry({ "session-child": { cwd: root, parentSession: "session-parent", origin: "subagent", delegationDepth: 1 }, "session-parent": { cwd: root } });
+    const subagent = callFor({
+      cwd: root,
+      sessionId: "session-child",
+      header: { parentSession: "session-parent", origin: "subagent", delegationDepth: 1 },
+    });
+    const decision = await decideToolCall(runtimeFor(CONFIG, undefined, sessions), subagent, allow);
+    assert.deepEqual(decision, { kind: "allow" }, `a subagent is family, not a competitor: ${JSON.stringify(decision)}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("still refuses a sibling in the same checkout", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // The control for the case above: a session with no parent is a competitor, and
+    // writing here would land on the other session's branch.
+    await git.text(["switch", "-c", "feature/parent"]);
+    await writeLedger(git, {
+      "session-parent": {
+        sessionId: "session-parent",
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        branch: "feature/parent",
+        worktreePath: null,
+        integration: "master",
+        baseCommit: await git.text(["rev-parse", "HEAD"]),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    const sibling = callFor({ cwd: root, sessionId: "session-sibling" });
+    const decision = await decideToolCall(runtimeFor(), sibling, allow);
+    assert.equal(decision.kind, "deny");
+    assert.ok(decision.reason.includes("same checkout"), `got: ${decision.reason}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 console.log("pre-write guard");
 

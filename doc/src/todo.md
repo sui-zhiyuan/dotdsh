@@ -70,18 +70,12 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   that git *does* stage a gitlink without it, so the premise cannot rot) and the merge semantics
   (asserting the rebase really happened, by reading the parents of the resulting merge commit back
   out of git). Design rationale in [Design decisions](./design.md)
-- [ ] **Isolate a second sibling session instead of adopting the first one's branch.** Found by
-  running the flow twice against one scratch repository: session A starts in place (so the shared
-  main tree is on `feature/a`), then session B runs `/git-start` — and B sees "already on a feature
-  branch", takes the adoption path, and joins A's branch with no worktree. Requirement 8 fails in
-  the most ordinary concurrency case, and B's writes are then refused by the guard with advice
-  (`/git-start`) that leads straight back to the adoption path. The same over-broad rule denies a
-  *subagent* every write while its parent has a branch, because a subagent shares the parent's
-  checkout. Both want one missing distinction: family versus stranger. `SessionHeader` carries what
-  it takes — `parentSession`, `origin: 'subagent'`, `delegationDepth` — so a record should carry its
-  owner's `parentSession`, and a session should treat a claimant in its own ancestry as family
-  (adopt, and allow the write) and anyone else as a stranger (isolate in a worktree, and refuse the
-  write in a checkout they own)
+- [ ] Decide what a delegate's own branch does to the family record. A subagent that names a branch
+  explicitly is isolated — correct, since switching the shared checkout would repoint its parent's
+  work — but it records under the family's key, so the family's record now names the *newest* branch
+  and the parent's own branch would never be completed by `/git-complete`. Either a delegate that
+  diverges takes its own key (it has become a separate workflow), or the record keeps a list of the
+  branches the family opened. The first is smaller and matches what the divergence means
 - [ ] Let the model open a feature branch. `/git-start` is a human command, so when the guard
   refuses — the parallel-session case, where it will not pick a branch over another session's work
   — the model can only ask the human to type it. A `git_start` tool would close that gap; it needs

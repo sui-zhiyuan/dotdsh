@@ -27,7 +27,7 @@
 import type { Git } from "./exec.js";
 import { currentBranch, defaultIntegrationBranch, readLedger, repoRoot, worktreeList } from "./repo.js";
 import type { FlowConfig } from "./flow.js";
-import { sessionId, sessionCwd, type AgentLike } from "./session.js";
+import { sessionCwd, type AgentLike } from "./session.js";
 
 /** What the prompt and the guard know about one session. */
 export interface SessionSnapshot {
@@ -114,10 +114,19 @@ export class GitFlowState {
    * @param git - a client bound to the session's working directory.
    * @param agent - the calling agent.
    * @param config - the resolved settings.
+   * @param identity - the workflow's identity: the root of the session's delegation
+   *   chain, which is also the key the ledger records under. A subagent refreshing
+   *   with its own id would read no record and be told it has no worktree — losing
+   *   exactly the containment that keeps a family's edits inside the one it shares.
    * @returns the fresh snapshot.
    */
-  async refresh(git: Git, agent: AgentLike, config: FlowConfig): Promise<SessionSnapshot> {
-    const id = sessionId(agent);
+  async refresh(
+    git: Git,
+    agent: AgentLike,
+    config: FlowConfig,
+    identity: string,
+  ): Promise<SessionSnapshot> {
+    const id = identity;
     const cwd = sessionCwd(agent) ?? git.cwd;
     const facts = await this.repoOf(git, config);
 

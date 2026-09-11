@@ -353,6 +353,72 @@ await verify("a start that creates no worktree still keeps its state out of git"
   }
 });
 
+await verify("isolates a session instead of adopting a branch a stranger owns", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // The ordinary way to hit this: two top-level sessions, one working directory.
+    // The first opens a branch there, so the second no longer sees the integration
+    // branch — it sees the first session's branch. Adopting it would put two
+    // sessions' work on one branch, and refusing would send the human back to
+    // /git-start, which is what adopted it in the first place.
+    await git.text(["switch", "-c", "feature/theirs"]);
+    await writeLedger(git, {
+      "session-other": {
+        sessionId: "session-other",
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        branch: "feature/theirs",
+        worktreePath: null,
+        integration: "main",
+        baseCommit: await git.text(["rev-parse", "HEAD"]),
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    const result = await startFlow(depsFor(git, "session-B"), "add the login redirect");
+    assert.equal(result.kind, "started", "it must not adopt a stranger's branch");
+    assert.equal(result.branch, "feature/login-redirect", "it gets a branch of its own");
+    assert.ok(result.worktreePath !== null, "isolated in a worktree, which is the point");
+    assert.equal(await currentBranch(git), "feature/theirs", "and the stranger's checkout is untouched");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("a delegate asking for a branch of its own is isolated too", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // A subagent normally shares its parent's branch and never gets a worktree. When
+    // it names one explicitly it asked for its own — and switching the shared
+    // checkout would silently repoint its parent's work at a different branch.
+    const result = await startFlow(
+      depsFor(git, "session-parent", { isDelegate: true }),
+      undefined,
+      "subagent-side-quest",
+    );
+    assert.equal(result.kind, "started");
+    assert.ok(result.worktreePath !== null, "the shared checkout must not be repointed");
+    assert.equal(await currentBranch(git), "main", "so the main tree stays where it was");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("keeps a lone delegate in place when it asks for nothing of its own", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // The default for a family: one checkout, one branch, no worktree per subagent.
+    await git.text(["switch", "-c", "feature/parents-branch"]);
+    const result = await startFlow(depsFor(git, "session-parent", { isDelegate: true }), "add login");
+    assert.equal(result.kind, "already-on-feature", "a delegate adopts its parent's branch");
+    assert.equal(result.branch, "feature/parents-branch");
+    assert.equal(result.worktreePath, null, "and is not handed a checkout of its own");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 console.log("git flow");
 
 await verify("derives a branch name from the session's intent", async () => {

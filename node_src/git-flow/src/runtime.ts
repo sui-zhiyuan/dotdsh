@@ -44,7 +44,7 @@ import type {} from "@deepseek-ai/dsh-llm";
 import type { Runner } from "./exec.js";
 import type { FlowConfig } from "./flow.js";
 import { NAMING_SYSTEM, namingPrompt, type IntentNamer, type NamingAttempt } from "./namer.js";
-import type { AgentLike } from "./session.js";
+import type { AgentLike, SessionRegistryLike } from "./session.js";
 import type { GitFlowState } from "./state.js";
 
 /** Per-call output cap for a git child, above which the harness spills to a file. */
@@ -94,6 +94,12 @@ export interface Runtime {
   namerFor?: (agent: AgentLike) => IntentNamer;
   /** This process's id, recorded in the ledger so dead sessions can be pruned. */
   readonly pid: number;
+  /**
+   * The session registry, used to follow a delegation chain to its root. Every
+   * decision is keyed by that root, so a subagent and its parent are one workflow
+   * rather than two.
+   */
+  readonly sessions: SessionRegistryLike;
 }
 
 /**
