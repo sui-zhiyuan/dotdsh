@@ -22,7 +22,6 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitClient, nodeRunner } from "../lib/exec.js";
-import { nodeFileAccess } from "../lib/file-access.js";
 import { cleanupFlow } from "../lib/cleanup.js";
 import { completeFlow, startFlow } from "../lib/flow.js";
 import { commonDir, currentBranch, readLedger, writeLedger } from "../lib/repo.js";
@@ -122,7 +121,6 @@ function registryOf(...resident) {
 function depsFor(git, sessionId = "session-a", extra = {}) {
   return {
     git,
-    files: nodeFileAccess,
     sessionId,
     pid: process.pid,
     registry: registryOf(),

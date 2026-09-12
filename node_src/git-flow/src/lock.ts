@@ -27,6 +27,13 @@
  *   beyond any plausible section, which is what a foreign lock from a shared mount
  *   looks like — justifies breaking in.
  *
+ * One ordering detail decides whether any of that holds: `open(…, "wx")` creates the
+ * file *before* its contents are written, so another process can legitimately read a
+ * lock file that is **empty**. An empty file is therefore not "a crash" — a crash is
+ * an empty file that is *old*. Breaking a fresh one admits the creator and the reader
+ * to the same critical section, which is exactly the failure this lock exists to
+ * prevent, and it was observed doing so before the age test was added here.
+ *
  * Two limits are worth naming. On a network mount `O_EXCL` is emulated client-side
  * by older NFS and the pid describes another machine's process space, so exclusion
  * there is best-effort and only the age test recovers a dead holder. And two
@@ -37,7 +44,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Git } from "./exec.js";
 import { isProcessAlive, localDir } from "./repo.js";
@@ -69,23 +76,30 @@ export interface LockHolder {
 }
 
 /**
- * Tell whether a lock file is abandoned.
+ * Tell whether a lock file may be broken.
  *
- * Exported for the committed check: the difference between "held" and "abandoned"
- * is the whole safety argument for breaking one, and it is a plain function of the
- * holder and the clock.
+ * Exported for the committed check: the difference between "held" and "abandoned" is
+ * the whole safety argument for breaking one, and it is a plain function of what the
+ * file says and the clock.
  *
- * A holder with no pid is one whose file was created but never written — a crash
- * between the two — so nobody is inside a section that never started.
+ * A **blank** file is judged by its age alone, because it is ambiguous by
+ * construction: the creator is between `open` and `write` for a moment, and a process
+ * that died in that same moment leaves the same bytes behind. Fresh means "someone is
+ * arriving"; old means "someone died" — and only the second is safe to break.
  *
- * @param holder - what the lock file said.
+ * A held file with a live pid and no timestamp is left alone: there is no age to
+ * judge, and breaking on a guess is worse than waiting.
+ *
+ * @param state - what the lock file looks like.
  * @param now - the current time in milliseconds.
  * @returns whether the lock may be broken.
  */
-export function isAbandoned(holder: LockHolder, now: number): boolean {
-  if (!isProcessAlive(holder.pid)) return true;
-  if (holder.at === "") return false;
-  return now - Date.parse(holder.at) > HARD_STALE_MS;
+export function isAbandoned(state: LockState, now: number): boolean {
+  if (state.kind === "absent") return false;
+  if (state.kind === "blank") return now - state.mtimeMs > HARD_STALE_MS;
+  if (!isProcessAlive(state.holder.pid)) return true;
+  if (state.holder.at === "") return false;
+  return now - Date.parse(state.holder.at) > HARD_STALE_MS;
 }
 
 /** Thrown when the lock could not be taken in time. */
@@ -99,6 +113,17 @@ export class LockTimeoutError extends Error {
     this.name = "LockTimeoutError";
   }
 }
+
+/**
+ * What the lock file looks like right now.
+ *
+ * `blank` is not a failure mode of its own: it is the window between creating the
+ * file and writing it, and its age is what tells a creator from a corpse.
+ */
+export type LockState =
+  | { readonly kind: "absent" }
+  | { readonly kind: "held"; readonly holder: LockHolder }
+  | { readonly kind: "blank"; readonly mtimeMs: number };
 
 /** A held lock. */
 export interface LockHandle {
@@ -144,23 +169,50 @@ function sleep(ms: number): Promise<void> {
  * @param path - the lock file.
  * @returns the holder, or `undefined` when the file is gone or unreadable.
  */
-async function readHolder(path: string): Promise<LockHolder | undefined> {
+async function inspect(path: string): Promise<LockState> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
   } catch {
-    return undefined;
+    return { kind: "absent" };
   }
+
   try {
     const parsed = JSON.parse(raw) as Partial<LockHolder>;
-    if (typeof parsed.token !== "string" || typeof parsed.pid !== "number") return undefined;
-    return { token: parsed.token, pid: parsed.pid, at: typeof parsed.at === "string" ? parsed.at : "" };
+    if (typeof parsed.token === "string" && typeof parsed.pid === "number") {
+      return {
+        kind: "held",
+        holder: { token: parsed.token, pid: parsed.pid, at: typeof parsed.at === "string" ? parsed.at : "" },
+      };
+    }
   } catch {
-    // A half-written lock file is what a crash between create and write looks
-    // like. Treating it as a holder with no pid means the next pass breaks it,
-    // which is the right outcome: nobody is inside a section that never started.
-    return { token: "", pid: 0, at: "" };
+    // Empty or half-written: the creator is inside the window between creating the
+    // file and writing it. Fall through to the age test rather than guessing.
   }
+
+  const mtimeMs = await stat(path).then(
+    (stats) => stats.mtimeMs,
+    () => Date.now(),
+  );
+  return { kind: "blank", mtimeMs };
+}
+
+/**
+ * Tell whether two observations describe the same lock.
+ *
+ * Used to make a break compare-and-delete: the file must look the same after the
+ * decision as it did before it, or a holder that released — and a successor that
+ * acquired — would have its lock deleted by this pass.
+ *
+ * @param before - the first observation.
+ * @param after - the second observation.
+ * @returns whether the lock file is unchanged.
+ */
+function sameState(before: LockState, after: LockState): boolean {
+  if (before.kind !== after.kind) return false;
+  if (before.kind === "held" && after.kind === "held") return before.holder.token === after.holder.token;
+  if (before.kind === "blank" && after.kind === "blank") return before.mtimeMs === after.mtimeMs;
+  return false;
 }
 
 /**
@@ -191,8 +243,8 @@ async function tryCreate(path: string, token: string): Promise<LockHandle | unde
 
   return {
     async release(): Promise<void> {
-      const current = await readHolder(path);
-      if (current?.token !== token) return;
+      const current = await inspect(path);
+      if (current.kind !== "held" || current.holder.token !== token) return;
       await unlink(path).catch(() => undefined);
     },
   };
@@ -211,12 +263,11 @@ async function tryCreate(path: string, token: string): Promise<LockHandle | unde
  * @returns whether a stale lock was removed, so the caller can retry at once.
  */
 async function breakIfStale(path: string): Promise<boolean> {
-  const first = await readHolder(path);
-  if (first === undefined) return false;
+  const first = await inspect(path);
   if (!isAbandoned(first, Date.now())) return false;
 
-  const second = await readHolder(path);
-  if (second === undefined || second.token !== first.token) return false;
+  const second = await inspect(path);
+  if (!sameState(first, second)) return false;
   await unlink(path).catch(() => undefined);
   return true;
 }

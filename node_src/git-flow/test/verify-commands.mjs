@@ -77,8 +77,6 @@ function started(overrides = {}) {
     worktreePath: null,
     baseCommit: "0".repeat(40),
     ignoreChanged: false,
-    gitignorePath: undefined,
-    gitignorePattern: undefined,
     parallelSessions: 0,
     trackedGitlink: false,
     outstandingBranches: [],

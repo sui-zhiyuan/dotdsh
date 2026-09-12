@@ -16,14 +16,13 @@
  * argv passing removes. This plugin takes argv-exactness instead, and does not
  * confine its git children.
  *
- * The `.gitignore` write is not routed through `ctx.fs` either, for a related
- * reason: the plugin's file mutation is dominated by git subprocesses, which
- * write the repository directly and are not sandbox-confined by the choice above,
- * so fencing one `.gitignore` write would not be a boundary — it would only be an
- * inconsistency. It would also be a hazard: `dsh-fs-sandbox` falls back to the
- * *deployment* policy when no session policy is passed, which would refuse a
- * write the session itself is entitled to make. `FileAccess` remains a seam, so
- * this is a decision that can be reversed in one place rather than scattered.
+ * The one file this plugin writes itself is the claims ledger, and that goes
+ * through `node:fs` directly rather than `ctx.fs`. Going through `ctx.fs` would
+ * fence that single write while the git subprocesses that do the bulk of the
+ * plugin's file mutation stay unconfined — an inconsistency rather than a
+ * boundary. It would also be a hazard: `dsh-fs-sandbox` falls back to the
+ * *deployment* policy when no session policy is passed, so the write would be
+ * refused under a policy the session itself is not under.
  *
  * @module @dsh-external/dotdsh-git-flow/runtime
  */

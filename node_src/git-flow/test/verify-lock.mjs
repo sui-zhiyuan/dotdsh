@@ -16,7 +16,7 @@
 // timeouts are what keep two contenders from starving, not the lock.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -168,14 +168,50 @@ await verify("releasing a lock that is no longer ours leaves the new holder's fi
 await verify("a live, fresh holder is never treated as abandoned", async () => {
   // The rule that keeps the same-process case safe: two sessions share a pid, so a
   // holder that is merely slow must not be broken. Only a dead pid breaks it.
-  assert.equal(isAbandoned(liveHolder("a"), Date.now()), false);
-  assert.equal(isAbandoned({ token: "a", pid: 1073741824, at: new Date().toISOString() }, Date.now()), true);
-  assert.equal(isAbandoned(liveHolder("a", new Date(Date.now() - 120_000).toISOString()), Date.now()), true);
-  assert.equal(
-    isAbandoned({ token: "", pid: 0, at: "" }, Date.now()),
-    true,
-    "a crash between creating the file and writing it leaves no holder at all",
-  );
+  const held = (holder) => ({ kind: "held", holder });
+  assert.equal(isAbandoned(held(liveHolder("a")), Date.now()), false);
+  assert.equal(isAbandoned(held({ token: "a", pid: 1073741824, at: new Date().toISOString() }), Date.now()), true);
+  assert.equal(isAbandoned(held(liveHolder("a", new Date(Date.now() - 120_000).toISOString())), Date.now()), true);
+  assert.equal(isAbandoned({ kind: "absent" }, Date.now()), false, "nothing there is nothing to break");
+});
+
+await verify("a freshly created, not yet written lock is not broken", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // `open(…, "wx")` creates the file before its contents are written, so the window
+    // in which a lock file is empty is one a *live* creator is inside. Breaking that
+    // window admitted both processes to the same section — observed, as two
+    // interleaved sections in the two-process case above, before the age test landed.
+    const fresh = { kind: "blank", mtimeMs: Date.now() };
+    assert.equal(isAbandoned(fresh, Date.now()), false, "fresh and blank means someone is arriving");
+    assert.equal(
+      isAbandoned({ kind: "blank", mtimeMs: Date.now() - 120_000 }, Date.now()),
+      true,
+      "old and blank means someone died between creating the file and writing it",
+    );
+
+    // And the end-to-end half: a blank lock file left by a crash must not wedge the
+    // repository, while one written this instant must make the claimant wait.
+    const path = await lockPath(git);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "");
+    const past = new Date(Date.now() - 120_000);
+    await utimes(path, past, past);
+    let ran = false;
+    await withLock(git, async () => {
+      ran = true;
+    });
+    assert.equal(ran, true, "an abandoned blank lock is broken");
+
+    await writeFile(path, "");
+    await assert.rejects(
+      withLock(git, async () => undefined, { timeoutMs: 50 }),
+      (error) => error instanceof LockTimeoutError,
+      "a blank lock written just now is a creator, not a corpse",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 await verify("gives up with a reason instead of hanging forever", async () => {
