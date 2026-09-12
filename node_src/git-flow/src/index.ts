@@ -7,7 +7,7 @@
  * | Requirement | Where it lives |
  * | --- | --- |
  * | `/git-start`, `/git-complete` | {@link registerCommands} — plugin-owned commands |
- * | the "global information" and the per-step commit contract | {@link registerPrompt} — a system-prompt section plus a state context |
+ * | the "global information" and the per-step commit contract | {@link registerPrompt} — one static system-prompt section |
  * | the commit-message convention | {@link registerSkill} — a bundled skill shipped as a package asset |
  * | the pre-write branch guard | {@link registerGuard} — the `tools/pre-execute` waterfall |
  * | worktree isolation for parallel sessions | `flow.ts` — driven by all of the above |
@@ -143,8 +143,8 @@ export function apply(ctx: Context, config: Config): void {
   }, "git-flow: commit-message skill");
 
   ctx.effect(
-    () => registerPrompt(ctx, (id) => runtime.state.snapshot(id)),
-    "git-flow: workflow section and state context",
+    () => registerPrompt(ctx),
+    "git-flow: workflow section",
   );
 
   ctx.effect(() => registerCommands(ctx, runtime), "git-flow: /git-start and /git-complete");

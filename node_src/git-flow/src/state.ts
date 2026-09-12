@@ -1,64 +1,37 @@
 /**
- * The plugin's short-lived memory of where each session is.
+ * Where one session stands: the repository facts around it, and the tree it may
+ * write in.
  *
- * Two consumers cannot afford to ask git themselves:
+ * The guard asks this on every file-mutating call and the commands ask it once, so
+ * what is cached here is deliberately the expensive, stable part — the working tree
+ * and the integration branch of a directory, which cost several subprocesses to
+ * resolve and do not change while a session runs. Everything that can change under
+ * the session's feet is re-read on every call: the branch, and which tree the family
+ * is assigned, because those are the facts the guard acts on.
  *
- * - the system-prompt contribution is a **synchronous** text provider, so it can
- *   only read a value someone else already computed;
- * - the pre-write guard runs on **every** file-mutating tool call, so an
- *   unbounded number of git subprocesses per turn is not acceptable.
- *
- * So this cache is refreshed by the two paths that run anyway — the pre-write
- * guard and the commands — and read by the prompt. The split is deliberate about
- * what may be stale:
- *
- * - **the branch** is re-read on every refresh, because it is the fact the guard
- *   acts on and it is one cheap `symbolic-ref`;
- * - **the repository root and integration branch** are cached per working
- *   directory, because resolving them costs several subprocesses and neither
- *   changes while a session runs.
- *
- * A prompt that is one step stale about the branch is harmless: the guard, not
- * the prompt, is what enforces the invariant.
+ * There used to be a per-session cache here as well, filled so that a *synchronous*
+ * system-prompt provider could report the session's branch. That is gone with the
+ * injection it existed for (see `prompt.ts`): the model is not told where it stands,
+ * so the only readers left are the guard and the commands, and both can afford to ask.
  *
  * @module @dsh-external/dotdsh-git-flow/state
  */
 
 import type { Git } from "./exec.js";
-import {
-  currentBranch,
-  defaultIntegrationBranch,
-  readLedger,
-  repoRoot,
-  worktreeList,
-  type ClaimTree,
-} from "./repo.js";
+import { currentBranch, defaultIntegrationBranch, readLedger, repoRoot } from "./repo.js";
 import type { FlowConfig } from "./flow.js";
-import { sessionCwd, type AgentLike } from "./session.js";
+import type { AgentLike } from "./session.js";
 
-/** What the prompt and the guard know about one session. */
-export interface SessionSnapshot {
-  /** Absolute path of the session's working directory. */
-  readonly cwd: string;
+/** Where one session stands, as of the call that asked. */
+export interface SessionPosition {
   /** Absolute path of the working tree this session's directory belongs to. */
   readonly repoRoot: string | undefined;
-  /** Absolute path of the repository's main working tree, shared by every worktree. */
-  readonly mainTree: string | undefined;
   /** The branch the session's tree has checked out, when not detached. */
   readonly branch: string | undefined;
   /** The branch features merge back into. */
   readonly integration: string | undefined;
-  /** This session's worktree, when it has one. */
+  /** Absolute path of this session's worktree, when its claim names one. */
   readonly worktreePath: string | null;
-  /**
-   * The tree this family is assigned, from its claim.
-   *
-   * Not the same as {@link worktreePath}: a family can be assigned a tree of its own
-   * before that tree exists, which is the state the prompt has to describe honestly
-   * — "you will work elsewhere, name the branch" — instead of telling the model it is
-   * free to edit here.
-   */
-  readonly tree: ClaimTree | undefined;
   /** Whether the session's tree is on the integration branch. */
   readonly onIntegration: boolean;
 }
@@ -67,28 +40,23 @@ export interface SessionSnapshot {
 interface RepoFacts {
   /** The working tree this directory belongs to. */
   readonly repoRoot: string | undefined;
-  /**
-   * The repository's main working tree, which is what tells "someone else is in
-   * *my* checkout" from "someone else is in theirs" — a distinction the guard
-   * needs and a session id alone cannot make.
-   */
-  readonly mainTree: string | undefined;
+  /** The branch features merge back into, as this clone currently answers it. */
   readonly integration: string | undefined;
 }
 
 /**
- * Per-session and per-repository facts, refreshed by the paths that already run
- * git and read by the synchronous prompt provider.
+ * Repository facts for the directories this session has asked about.
+ *
+ * Not a cache of *positions*: a session's branch and worktree are answered fresh
+ * every time, because the guard's decisions turn on them and both can change between
+ * two tool calls.
  */
 export class GitFlowState {
   /** Repository facts keyed by the directory git was asked about. */
   readonly #repos = new Map<string, RepoFacts>();
-  /** The latest snapshot per session id. */
-  readonly #sessions = new Map<string, SessionSnapshot>();
 
   /**
-   * Resolve, and cache, the repository root and integration branch for a
-   * directory.
+   * Resolve, and cache, a directory's working tree and integration branch.
    *
    * @param git - a client bound to the directory.
    * @param config - the resolved settings.
@@ -105,10 +73,9 @@ export class GitFlowState {
         config.integrationBranch !== undefined && config.integrationBranch !== ""
           ? config.integrationBranch
           : await defaultIntegrationBranch(git);
-      const trees = await worktreeList(git);
-      facts = { repoRoot: root, mainTree: trees[0]?.path ?? root, integration };
+      facts = { repoRoot: root, integration };
     } catch {
-      facts = { repoRoot: undefined, mainTree: undefined, integration: undefined };
+      facts = { repoRoot: undefined, integration: undefined };
     }
     this.#repos.set(git.cwd, facts);
     return facts;
@@ -117,60 +84,43 @@ export class GitFlowState {
   /**
    * Drop cached repository facts, so the next lookup re-reads them.
    *
-   * Called after this plugin changes a branch itself, and available to callers
-   * that know a manual change happened.
+   * The integration branch is read from refs — `origin/HEAD`, `main`, `master` — and a
+   * clone can gain or change those under a running session, so callers that know
+   * something changed invalidate rather than trust the answer forever.
    */
   invalidateRepos(): void {
     this.#repos.clear();
   }
 
   /**
-   * Re-read this session's position and remember it.
+   * Resolve where this session is standing now.
    *
    * @param git - a client bound to the session's working directory.
    * @param agent - the calling agent.
    * @param config - the resolved settings.
    * @param identity - the workflow's identity: the root of the session's delegation
-   *   chain, which is also the key the ledger records under. A subagent refreshing
-   *   with its own id would read no record and be told it has no worktree — losing
-   *   exactly the containment that keeps a family's edits inside the one it shares.
-   * @returns the fresh snapshot.
+   *   chain, which is also the key the ledger records under. A subagent asking with
+   *   its own id would read no claim and be told it has no worktree — losing exactly
+   *   the containment that keeps a family's edits inside the one it shares.
+   * @returns the position as of this call.
    */
-  async refresh(
+  async position(
     git: Git,
     agent: AgentLike,
     config: FlowConfig,
     identity: string,
-  ): Promise<SessionSnapshot> {
-    const id = identity;
-    const cwd = sessionCwd(agent) ?? git.cwd;
+  ): Promise<SessionPosition> {
     const facts = await this.repoOf(git, config);
 
     const branch = facts.repoRoot === undefined ? undefined : await currentBranch(git);
-    const claim = facts.repoRoot === undefined ? undefined : (await readLedger(git))[id];
-    const worktreePath = claim?.worktreePath ?? null;
+    const claim = facts.repoRoot === undefined ? undefined : (await readLedger(git))[identity];
 
-    const snapshot: SessionSnapshot = {
-      cwd,
+    return {
       repoRoot: facts.repoRoot,
-      mainTree: facts.mainTree,
       branch,
       integration: facts.integration,
-      worktreePath,
-      tree: claim?.tree,
+      worktreePath: claim?.worktreePath ?? null,
       onIntegration: branch !== undefined && facts.integration !== undefined && branch === facts.integration,
     };
-    this.#sessions.set(id, snapshot);
-    return snapshot;
-  }
-
-  /**
-   * The last snapshot taken for a session.
-   *
-   * @param id - the session id.
-   * @returns the snapshot, or `undefined` before the session's first refresh.
-   */
-  snapshot(id: string): SessionSnapshot | undefined {
-    return this.#sessions.get(id);
   }
 }

@@ -139,37 +139,31 @@ export async function decideToolCall(
   const cwd = sessionCwd(agent);
   if (cwd === undefined) return next();
 
-  const git = gitClient(runtime.runner, cwd);
-  const identity = sessionRoot(agent, runtime.sessions);
-
-  // A read-only call is not guarded, but it is **observed**.
-  //
-  // The prompt's state line is rendered from a snapshot that only an asynchronous
-  // path can fill, and read-only tools are where a session spends its opening turn:
-  // exploring the repository, and settling a branch and worktree name with the human.
-  // Without this the model would be told nothing about where it is standing exactly
-  // while that matters most. It writes nothing — no claim, no ledger — which is the
-  // whole reason claiming lives on the write path instead of here.
-  //
-  // (`agent/pre-step` would observe before the very first request rather than at the
-  // first tool call, which is strictly better; it is not used because it would make
-  // `@deepseek-ai/dsh-agent` a package dependency for one line of freshness.)
-  if (!isFileTool && !isBash) {
-    await runtime.state.refresh(git, agent, config, identity);
-    return next();
-  }
+  // Nothing else is this plugin's business. A read-only call is not guarded, not
+  // claimed, and not observed: the model is not told where it stands (see
+  // `prompt.ts`), so there is no cached fact for a read to keep fresh.
+  if (!isFileTool && !isBash) return next();
 
   const declared = isFileTool ? declaredTarget(exec.name, exec.arguments) : undefined;
   if (isFileTool && declared === undefined) return next();
 
-  const snapshot = await runtime.state.refresh(git, agent, config, identity);
-  if (snapshot.repoRoot === undefined) return next();
+  const git = gitClient(runtime.runner, cwd);
+  const identity = sessionRoot(agent, runtime.sessions);
+  const here = await runtime.state.position(git, agent, config, identity);
+  const root = here.repoRoot;
+  if (root === undefined) return next();
 
-  // Everything below decides where this session may write, and the first fact that
-  // needs is which tree it is assigned. Claiming here rather than before the model
-  // thinks is what keeps read-only work free: a session can explore, and settle a
-  // branch and worktree name with the human, without declaring anything. A claim
-  // exists to precede a write, and this is the last moment before one.
+  // A write that goes somewhere else is not this plugin's business at all, and that
+  // is decided *before* claiming: a claim means "this family works in this repository",
+  // and a session whose first edit lands outside it has not said that.
+  const target = declared === undefined ? undefined : resolve(cwd, declared);
+  if (target !== undefined && !isInside(root, target)) return next();
+
+  // Everything below decides where this session may write, and the first fact it needs
+  // is which tree it is assigned. Claiming here rather than before the model thinks is
+  // what keeps read-only work free: a session can explore, and settle a branch and
+  // worktree name with the human, without declaring anything. A claim exists to precede
+  // a write, and this is the last moment before one.
   const claim = await ensureClaim({
     git,
     sessionId: identity,
@@ -181,22 +175,22 @@ export async function decideToolCall(
   });
   if (claim.kind === "blocked") return { kind: "deny", reason: claim.reason };
 
-  // The claim may have just changed the assignment, and every test below reads it.
-  // This is the same re-refresh `startFlow` needs, for the same reason.
-  if (claim.changed) {
-    runtime.state.invalidateRepos();
-    await runtime.state.refresh(git, agent, config, identity);
-  }
-  const position = runtime.state.snapshot(identity) ?? snapshot;
-
-  const target = declared === undefined ? undefined : resolve(cwd, declared);
-  if (target !== undefined && !isInside(position.repoRoot ?? snapshot.repoRoot, target)) return next();
+  // The claim may have just decided the assignment, and every test below reads it, so
+  // the position is taken again rather than reused. Nothing about a *position* is
+  // cached — the branch and the worktree are exactly the facts that can change between
+  // two tool calls.
+  const position = claim.changed ? await runtime.state.position(git, agent, config, identity) : here;
 
   // Isolation is only real if it is enforced. A session that has a worktree must
   // edit inside it: the point of the worktree is that simultaneous edits cannot
   // collide, and a write to the main tree would collide with whoever is there.
+  //
+  // This refusal is also the only place the model is ever told where to write, since
+  // the prompt no longer says which branch or worktree a session has. That is why the
+  // message carries both paths rather than a diagnosis: for the model it *is* the
+  // instruction.
   if (target !== undefined && position.worktreePath !== null && !isInside(position.worktreePath, target)) {
-    const redirected = join(position.worktreePath, relative(position.repoRoot ?? snapshot.repoRoot, target));
+    const redirected = join(position.worktreePath, relative(root, target));
     return {
       kind: "deny",
       reason:
@@ -228,11 +222,10 @@ export async function decideToolCall(
   // opening a branch: another family's checkout while this session is already on a
   // feature branch — or isolation switched off, in which case starting in place would
   // create the very collision this test prevents.
-  const here = position.repoRoot ?? snapshot.repoRoot;
   const { others } = await otherLiveClaims(git, identity, runtime.sessions, runtime.pid);
   const claimant = others.find((record) => {
     const owned = ownedTreeOf(record);
-    return owned !== undefined && resolve(owned) === resolve(here);
+    return owned !== undefined && resolve(owned) === resolve(root);
   });
   if (claimant !== undefined && !(position.onIntegration && config.useWorktreeWhenBusy)) {
     return {
@@ -284,8 +277,6 @@ export async function decideToolCall(
   );
 
   if (result.kind === "started" || result.kind === "already-on-feature") {
-    runtime.state.invalidateRepos();
-    await runtime.state.refresh(git, agent, config, identity);
 
     // A start that isolated this session leaves the write that triggered it
     // pointing at the tree the session just left. Allowing it would defeat the
@@ -293,7 +284,7 @@ export async function decideToolCall(
     // inside the worktree instead — the redirect the seam cannot perform itself.
     const worktreePath = result.worktreePath;
     if (worktreePath !== null && target !== undefined && !isInside(worktreePath, target)) {
-      const redirected = join(worktreePath, relative(snapshot.repoRoot ?? position.repoRoot ?? "", target));
+      const redirected = join(worktreePath, relative(root, target));
       return {
         kind: "deny",
         reason:

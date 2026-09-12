@@ -410,22 +410,19 @@ await verify("a stale record does not block a free tree", async () => {
   }
 });
 
-await verify("ignores tools that do not write files, but still observes where the session is", async () => {
+await verify("ignores tools that do not write files, and touches nothing", async () => {
   const { root, git } = await scratchRepo();
   try {
-    // A read is not guarded and must never be refused — but it is the only moment the
-    // plugin gets to fill the snapshot the prompt's state line is rendered from, and a
-    // session's opening turn is made of reads. Nothing is written: no claim, no ledger.
-    const runtime = runtimeFor();
+    // A read is not guarded, not claimed, and not observed: the model is not told where
+    // it stands, so there is nothing for a read-only call to keep fresh. What a read
+    // must never do is leave a trace in the repository.
     const read = await decideToolCall(
-      runtime,
+      runtimeFor(),
       callFor({ cwd: root, name: "read", args: { file_path: "file.txt" } }),
       allow,
     );
     assert.deepEqual(read, { kind: "allow" });
-    const observed = runtime.state.snapshot("session-a");
-    assert.equal(observed?.branch, "master", "the state line has something to say after a read");
-    assert.equal(await exists(join(root, ".dsh.local")), false, "and observing writes nothing at all");
+    assert.equal(await exists(join(root, ".dsh.local")), false, "a read claims nothing and writes nothing");
     // `str_replace_editor view` is a read wearing a mutating tool's name: a guard
     // that blocked it would be worse than no guard.
     const view = await decideToolCall(

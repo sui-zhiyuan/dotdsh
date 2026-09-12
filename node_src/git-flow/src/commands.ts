@@ -336,7 +336,7 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
         const result = await startFlow(deps, sessionIntent(agent), normalized.name);
         if (result.kind === "started" || result.kind === "already-on-feature") {
           runtime.state.invalidateRepos();
-          await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
+          await runtime.state.position(git, agent, runtime.config, deps.sessionId);
           // The claim's branch just changed, so the next write re-reads the ledger
           // rather than trusting this process's warm cache.
           runtime.latch.forget(deps.sessionId);
@@ -398,7 +398,7 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
         const result = await completeFlow(deps);
         if (result.kind === "merged") {
           runtime.state.invalidateRepos();
-          await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
+          await runtime.state.position(git, agent, runtime.config, deps.sessionId);
           // The claim is gone, so the cache must not keep saying it is there: a warm
           // latch would let the next write skip claiming entirely and land in a tree
           // nobody recorded this family in.
