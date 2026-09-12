@@ -63,6 +63,42 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   namespace and field-name agreement it checks against `client/index.js` is a name-level check —
   what the page does with an adopted section stays the browser half's own check, and whether dsh
   resolves and persists a section is settled by loading the page once
+- [x] Build the git workflow as one node-only plugin (`node_src/git-flow`): `/git-start` and
+  `/git-complete`, the `tools/pre-execute` branch guard, the system-prompt contract and state
+  context, a bundled `git-commit` skill, and worktree isolation for parallel sessions. Two
+  committed checks cover the parts that fail silently — the ignore guard (including an assertion
+  that git *does* stage a gitlink without it, so the premise cannot rot) and the merge semantics
+  (asserting the rebase really happened, by reading the parents of the resulting merge commit back
+  out of git). Design rationale in [Design decisions](./design.md)
+- [ ] Decide what a delegate's own branch does to the family record. A subagent that names a branch
+  explicitly is isolated — correct, since switching the shared checkout would repoint its parent's
+  work — but it records under the family's key, so the family's record now names the *newest* branch
+  and the parent's own branch would never be completed by `/git-complete`. Either a delegate that
+  diverges takes its own key (it has become a separate workflow), or the record keeps a list of the
+  branches the family opened. The first is smaller and matches what the divergence means
+- [ ] Let the model open a feature branch. `/git-start` is a human command, so when the guard
+  refuses — the parallel-session case, where it will not pick a branch over another session's work
+  — the model can only ask the human to type it. A `git_start` tool would close that gap; it needs
+  its own decision about naming (who chooses the name when the model calls it) because the whole
+  value of the deny path is that a branch is not opened on a guess
+- [ ] Decide whether stacked feature branches should be replayed. `/git-complete` replays the branch
+  being finished, with `--onto` and an explicit upstream so only that branch's own commits move. A
+  branch cut *from* another feature is detected by nothing today: after its parent merges, its
+  branch point is stale and it will be replayed on the next `/git-complete` — but the human is not
+  told that this is why
+- [ ] Reconsider a `commit-msg` hook alongside the skill. The skill shapes the message before it is
+  written, which is the right instrument for a convention; a hook is the right one for a rule a
+  human must not be able to talk past (a missing `Refs:` on a repo that requires one). Adding it
+  means an installer, because `.git/hooks` is unversioned
+- [x] Record multi-session liveness authoritatively. Done as part of the claim design
+  ([git-flow: many sessions in one repository](./git-flow-multi-session.md)): a **claim** records which
+  working tree a family writes in, it is written before the first write rather than when a branch is
+  opened, and liveness comes from the harness's own session registry first — a claim whose session is
+  resident is live whatever the pid says, and a claim naming a session of this process that is no
+  longer resident is dead, which is the phantom neighbour a pid could never see. The pid is the
+  fallback for a claim from another process, and the ledger is still the only channel that reaches
+  across processes, because the registry is in memory. `/git-cleanup` is the interactive counterpart
+  for the sessions that never finished
 
 ## Home config
 
