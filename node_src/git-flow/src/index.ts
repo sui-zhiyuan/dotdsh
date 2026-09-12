@@ -22,6 +22,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
+import { ClaimLatch } from "./claim.js";
 import { registerCommands } from "./commands.js";
 import type { FlowConfig } from "./flow.js";
 import { registerGuard } from "./guard.js";
@@ -126,6 +127,7 @@ export function apply(ctx: Context, config: Config): void {
     state: new GitFlowState(),
     config: resolved,
     pid: process.pid,
+    latch: new ClaimLatch(),
     log: ctx.logger,
     sessions: ctx.sessions,
   };

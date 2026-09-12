@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm build && node test/verify-ignore.mjs && node test/verify-flow.mjs && node test/verify-namer.mjs && node test/verify-guard.mjs && node test/verify-commands.mjs && node test/verify-session.mjs && node test/verify-lock.mjs",
+    "test": "pnpm build && node test/verify-ignore.mjs && node test/verify-flow.mjs && node test/verify-namer.mjs && node test/verify-guard.mjs && node test/verify-commands.mjs && node test/verify-session.mjs && node test/verify-claim.mjs && node test/verify-lock.mjs",
     "prepublishOnly": "pnpm build"
   },
   "license": "MIT",

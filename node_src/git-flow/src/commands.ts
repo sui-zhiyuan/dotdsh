@@ -16,6 +16,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import type { CommandInvocation } from "@deepseek-ai/dsh-commands";
+import { ensureClaim, type ClaimDeps } from "./claim.js";
 import { gitClient, type Git } from "./exec.js";
 import { hasBranchPrefix } from "./branch.js";
 import { nodeFileAccess } from "./file-access.js";
@@ -56,6 +57,32 @@ function depsFor(runtime: Runtime, agent: AgentLike, git: Git, signal: AbortSign
     config: runtime.config,
     ...(namer === undefined ? {} : { namer }),
     signal,
+  };
+}
+
+/**
+ * Assemble the claim dependencies for one invocation.
+ *
+ * Both commands claim before they act. `/git-start` is a write intent — opening a
+ * branch is the first thing that changes this checkout — and a family that opens a
+ * branch without a claim is invisible to every other session, which is the hole the
+ * claim exists to close. `/git-complete` claims so that a session that never wrote
+ * anything still has a record to release.
+ *
+ * @param runtime - the plugin runtime.
+ * @param deps - the flow dependencies, which already carry the family identity.
+ * @param git - a client bound to the session's working directory.
+ * @returns what the claim path needs.
+ */
+function claimDepsFor(runtime: Runtime, deps: FlowDeps, git: Git): ClaimDeps {
+  return {
+    git,
+    sessionId: deps.sessionId,
+    pid: runtime.pid,
+    registry: runtime.sessions,
+    config: runtime.config,
+    latch: runtime.latch,
+    ...(runtime.log === undefined ? {} : { log: runtime.log }),
   };
 }
 
@@ -263,10 +290,16 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
         const normalized = await normalizeName(git, invocation.rawInput, runtime.config.branchPrefix);
         if ("error" in normalized) return { kind: "error", text: normalized.error };
 
+        const claim = await ensureClaim(claimDepsFor(runtime, deps, git));
+        if (claim.kind === "blocked") return { kind: "error", text: claim.reason };
+
         const result = await startFlow(deps, sessionIntent(agent), normalized.name);
         if (result.kind === "started" || result.kind === "already-on-feature") {
           runtime.state.invalidateRepos();
           await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
+          // The claim's branch just changed, so the next write re-reads the ledger
+          // rather than trusting this process's warm cache.
+          runtime.latch.forget(deps.sessionId);
         }
         return reportStart(result);
       },
@@ -287,10 +320,17 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
 
         const git = gitClient(runtime.runner, cwd);
         const deps = depsFor(runtime, agent, git, invocation.signal);
+        const claim = await ensureClaim(claimDepsFor(runtime, deps, git));
+        if (claim.kind === "blocked") return { kind: "error", text: claim.reason };
+
         const result = await completeFlow(deps);
         if (result.kind === "merged") {
           runtime.state.invalidateRepos();
           await runtime.state.refresh(git, agent, runtime.config, deps.sessionId);
+          // The claim is gone, so the cache must not keep saying it is there: a warm
+          // latch would let the next write skip claiming entirely and land in a tree
+          // nobody recorded this family in.
+          runtime.latch.forget(deps.sessionId);
         }
         return reportComplete(result);
       },

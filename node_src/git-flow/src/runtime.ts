@@ -41,6 +41,7 @@ import type { SubprocessRuntime } from "@deepseek-ai/dsh-subprocess";
 // activating — a profile without them simply gets a flow that asks for a name.
 import type {} from "@deepseek-ai/dsh-agent-default-model";
 import type {} from "@deepseek-ai/dsh-llm";
+import type { ClaimLatch } from "./claim.js";
 import type { Runner } from "./exec.js";
 import type { FlowConfig } from "./flow.js";
 import { NAMING_SYSTEM, namingPrompt, type IntentNamer, type NamingAttempt } from "./namer.js";
@@ -94,6 +95,13 @@ export interface Runtime {
   namerFor?: (agent: AgentLike) => IntentNamer;
   /** This process's id, recorded in the ledger so dead sessions can be pruned. */
   readonly pid: number;
+  /**
+   * The per-process claim skip.
+   *
+   * A cache with no authority over the ledger: it keeps a once-per-family write out
+   * of a gate that runs on every file-mutating call, and its loss is a cache miss.
+   */
+  readonly latch: ClaimLatch;
   /**
    * The session registry, used to follow a delegation chain to its root. Every
    * decision is keyed by that root, so a subagent and its parent are one workflow

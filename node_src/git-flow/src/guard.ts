@@ -36,10 +36,11 @@
 import { isAbsolute, relative, resolve, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
+import { ensureClaim } from "./claim.js";
 import { gitClient } from "./exec.js";
 import { nodeFileAccess } from "./file-access.js";
 import { startFlow } from "./flow.js";
-import { otherLiveClaims } from "./repo.js";
+import { otherLiveClaims, type SessionClaim } from "./repo.js";
 import type { Runtime } from "./runtime.js";
 import { isDelegate, sessionCwd, sessionIntent, sessionRoot, type AgentLike } from "./session.js";
 
@@ -92,6 +93,21 @@ function isInside(parent: string, child: string): boolean {
 }
 
 /**
+ * The working tree a claim owns, when it owns one.
+ *
+ * A claim owns a tree only once that tree exists. An assignment to an own tree
+ * whose worktree has not been created yet competes for nothing, which is what keeps
+ * a claim written at the first write from refusing writes that would not collide.
+ *
+ * @param claim - another family's claim.
+ * @returns the absolute path of the tree it owns, or `undefined`.
+ */
+function ownedTreeOf(claim: SessionClaim): string | undefined {
+  if (claim.tree === "own") return claim.worktreePath ?? undefined;
+  return claim.repoRoot === "" ? undefined : claim.repoRoot;
+}
+
+/**
  * Decide one file-mutating call.
  *
  * Exported for the committed check: the decision is a plain function of a runtime,
@@ -133,55 +149,89 @@ export async function decideToolCall(
   const snapshot = await runtime.state.refresh(git, agent, config, identity);
   if (snapshot.repoRoot === undefined) return next();
 
+  // Everything below decides where this session may write, and the first fact that
+  // needs is which tree it is assigned. Claiming here rather than before the model
+  // thinks is what keeps read-only work free: a session can explore, and settle a
+  // branch and worktree name with the human, without declaring anything. A claim
+  // exists to precede a write, and this is the last moment before one.
+  const claim = await ensureClaim({
+    git,
+    sessionId: identity,
+    pid: runtime.pid,
+    registry: runtime.sessions,
+    config,
+    latch: runtime.latch,
+    ...(runtime.log === undefined ? {} : { log: runtime.log }),
+  });
+  if (claim.kind === "blocked") return { kind: "deny", reason: claim.reason };
+
+  // The claim may have just changed the assignment, and every test below reads it.
+  // This is the same re-refresh `startFlow` needs, for the same reason.
+  if (claim.changed) {
+    runtime.state.invalidateRepos();
+    await runtime.state.refresh(git, agent, config, identity);
+  }
+  const position = runtime.state.snapshot(identity) ?? snapshot;
+
   const target = declared === undefined ? undefined : resolve(cwd, declared);
-  if (target !== undefined && !isInside(snapshot.repoRoot, target)) return next();
+  if (target !== undefined && !isInside(position.repoRoot ?? snapshot.repoRoot, target)) return next();
 
   // Isolation is only real if it is enforced. A session that has a worktree must
   // edit inside it: the point of the worktree is that simultaneous edits cannot
   // collide, and a write to the main tree would collide with whoever is there.
-  if (target !== undefined && snapshot.worktreePath !== null && !isInside(snapshot.worktreePath, target)) {
-    const redirected = join(snapshot.worktreePath, relative(snapshot.repoRoot, target));
+  if (target !== undefined && position.worktreePath !== null && !isInside(position.worktreePath, target)) {
+    const redirected = join(position.worktreePath, relative(position.repoRoot ?? snapshot.repoRoot, target));
     return {
       kind: "deny",
       reason:
-        `this session works in its own worktree at ${snapshot.worktreePath}, because another session is using ` +
+        `this session works in its own worktree at ${position.worktreePath}, because another session is using ` +
         `the main tree. Write to ${redirected} instead of ${target}.`,
     };
   }
 
-  // Whether another session is in *this* checkout, which is a different question
-  // from whether other sessions exist at all. Two sessions sharing one working
-  // directory is the dangerous shape: the first opens a feature branch there, so
-  // the second no longer sees the integration branch checked out — it sees the
-  // first session's branch — and would quietly write onto it. So this test has to
-  // run *before* the integration-branch test, not after it: the case it catches is
-  // precisely a branch that is not the integration branch.
+  // Whether another family owns *this* tree, which is a different question from
+  // whether other families exist. Two sessions sharing one working directory is the
+  // dangerous shape: the first opens a feature branch there, so the second no longer
+  // sees the integration branch checked out — it sees the first session's branch —
+  // and would quietly write onto it. So this test has to run *before* the
+  // integration-branch test, not after it: the case it catches is precisely a branch
+  // that is not the integration branch.
   //
-  // The claim is verified against git rather than trusted from the ledger: a record
-  // whose branch is not the one actually checked out here is stale — the human
-  // switched back, or that session finished without `/git-complete` — and a stale
-  // record must not block a tree nobody is using.
+  // The comparison is on **trees**, not branches. Ownership is what the ledger
+  // records, and a recorded branch goes stale the moment a human switches branches
+  // by hand, while "which tree does this family own" does not. A claim owns a tree
+  // only once that tree exists: an assignment to an own tree that has not been
+  // created yet competes for nothing.
+  //
+  // The refusal below is scoped to what the auto-start cannot fix. On the integration
+  // branch with isolation enabled, another family owning this tree is *not* a refusal
+  // — it is the situation the auto-start exists for, and it answers by giving this
+  // session a tree of its own and sending the triggering write there. Refusing would
+  // send the human to `/git-start` to do what the guard was about to do. What is left
+  // for this test is the tree a session stands in and cannot be moved out of by
+  // opening a branch: another family's checkout while this session is already on a
+  // feature branch — or isolation switched off, in which case starting in place would
+  // create the very collision this test prevents.
+  const here = position.repoRoot ?? snapshot.repoRoot;
   const { others } = await otherLiveClaims(git, identity, runtime.sessions, runtime.pid);
-  const inMainTree = snapshot.mainTree !== undefined && snapshot.mainTree === snapshot.repoRoot;
-  const claimant = others.find(
-    (record) =>
-      record.branch === snapshot.branch &&
-      (record.worktreePath === null
-        ? inMainTree
-        : resolve(record.worktreePath) === resolve(snapshot.repoRoot ?? "")),
-  );
-  if (claimant !== undefined) {
+  const claimant = others.find((record) => {
+    const owned = ownedTreeOf(record);
+    return owned !== undefined && resolve(owned) === resolve(here);
+  });
+  if (claimant !== undefined && !(position.onIntegration && config.useWorktreeWhenBusy)) {
     return {
       kind: "deny",
       reason:
-        `another live session is working in this same checkout on \`${claimant.branch}\`, so writing here would ` +
-        "land on its branch. Run `/git-start` so this session gets its own branch and its own worktree.",
+        `another live session is working in this same checkout${
+          claimant.branch === null ? "" : ` on \`${claimant.branch}\``
+        }, so writing here would land on its branch. Run \`/git-start\` so this session gets its own branch and ` +
+        "its own worktree.",
     };
   }
 
-  if (!snapshot.onIntegration) return next();
+  if (!position.onIntegration) return next();
 
-  const branch = snapshot.branch ?? "the integration branch";
+  const branch = position.branch ?? "the integration branch";
   if (config.guard === "block") {
     return {
       kind: "deny",
@@ -228,7 +278,7 @@ export async function decideToolCall(
     // inside the worktree instead — the redirect the seam cannot perform itself.
     const worktreePath = result.worktreePath;
     if (worktreePath !== null && target !== undefined && !isInside(worktreePath, target)) {
-      const redirected = join(worktreePath, relative(snapshot.repoRoot ?? "", target));
+      const redirected = join(worktreePath, relative(snapshot.repoRoot ?? position.repoRoot ?? "", target));
       return {
         kind: "deny",
         reason:

@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaimLatch } from "../lib/claim.js";
 import { gitClient, nodeRunner } from "../lib/exec.js";
 import { decideToolCall } from "../lib/guard.js";
 import { commonDir, currentBranch, writeLedger } from "../lib/repo.js";
@@ -108,13 +109,25 @@ function callFor({
   };
 }
 
-/** The runtime the guard reads, with the standalone runner and a fresh cache. */
-function runtimeFor(config = CONFIG, namer, sessions = { get: () => undefined }) {
+/**
+ * The runtime the guard reads, with the standalone runner and a fresh cache.
+ *
+ * The latch is per runtime, because a runtime is what one dsh process has: a case
+ * that wants to watch the claim path run twice has to pass its own.
+ *
+ * @param config - the resolved settings for the case.
+ * @param namer - the model-backed namer, when the case has one.
+ * @param sessions - the registry slice.
+ * @param latch - the claim latch, defaulting to a fresh one.
+ * @returns the runtime.
+ */
+function runtimeFor(config = CONFIG, namer, sessions = { get: () => undefined }, latch = new ClaimLatch()) {
   return {
     runner: nodeRunner,
     state: new GitFlowState(),
     config,
     pid: process.pid,
+    latch,
     sessions,
     ...(namer === undefined ? {} : { namerFor: () => namer }),
   };
