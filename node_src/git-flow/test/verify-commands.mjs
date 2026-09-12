@@ -88,11 +88,11 @@ function started(overrides = {}) {
 
 console.log("slash commands");
 
-await verify("registers exactly the two names the client dispatches", () => {
+await verify("registers exactly the names the client dispatches", () => {
   const names = capture()
     .map((definition) => definition.name)
     .sort();
-  assert.deepEqual(names, ["git-complete", "git-start"]);
+  assert.deepEqual(names, ["git-cleanup", "git-complete", "git-start"]);
 });
 
 await verify("every command carries a description for the menu", () => {
@@ -110,13 +110,15 @@ await verify("git-start declares an argument, so picking it completes instead of
   assert.ok(/branch/i.test(definition.input.hint), `the hint must say what to type, got ${definition.input.hint}`);
 });
 
-await verify("git-complete stays bare, so one pick still runs it", () => {
-  const definition = capture().find((entry) => entry.name === "git-complete");
-  assert.equal(
-    definition.input,
-    undefined,
-    "declaring input would force a second Enter on a command that takes no argument",
-  );
+await verify("git-cleanup and git-complete stay bare, so one pick still runs them", () => {
+  for (const name of ["git-cleanup", "git-complete"]) {
+    const definition = capture().find((entry) => entry.name === name);
+    assert.equal(
+      definition.input,
+      undefined,
+      `${name}: declaring input would force a second Enter on a command that takes no argument`,
+    );
+  }
 });
 
 await verify("a start reports where to work and what it changed underneath", () => {

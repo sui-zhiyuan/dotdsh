@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitClient, nodeRunner } from "../lib/exec.js";
 import { nodeFileAccess } from "../lib/file-access.js";
+import { cleanupFlow } from "../lib/cleanup.js";
 import { completeFlow, startFlow } from "../lib/flow.js";
 import { commonDir, currentBranch, readLedger, writeLedger } from "../lib/repo.js";
 
@@ -678,6 +679,86 @@ await verify("blocks rather than rewriting history over uncommitted work", async
     assert.ok(collected.collectedCommit !== undefined, "with collection enabled, the work is committed first");
     const subjects = await git.text(["log", "--format=%s", "main"]);
     assert.ok(subjects.includes("collect work in progress"), "the collected commit must be visible in history");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("cleanup removes a worktree nothing is using and keeps the branch", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    // What a session that was closed mid-feature leaves: a claim, a worktree and a
+    // branch. The branch has commits the integration branch does not have, so it is
+    // reported and never deleted — that is work, and nothing else records whose it was.
+    const worktree = join(root, ROOT, "abandoned");
+    await git.text(["worktree", "add", "-q", "-b", "feature/abandoned", worktree]);
+    await writeFile(join(worktree, "file.txt"), "unfinished\n", "utf8");
+    await git.withCwd(worktree).text(["commit", "-qam", "feat: half a feature"]);
+    await writeLedger(git, {
+      "session-gone": claim("session-gone", {
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        tree: "own",
+        worktreePath: worktree,
+        branch: "feature/abandoned",
+        integration: "main",
+        pid: 1073741824,
+      }),
+    });
+
+    const result = await cleanupFlow({ git, config: CONFIG, registry: registryOf(), pid: process.pid });
+    assert.deepEqual(result.removedWorktrees, [worktree], "a clean worktree nobody owns is removed");
+    assert.deepEqual(result.unmergedBranches, ["feature/abandoned"], "and its branch is reported, not deleted");
+    assert.deepEqual(result.forgottenClaims, ["feature/abandoned"], "the claim is dropped, naming what it left");
+    assert.equal(await exists(worktree), false);
+    assert.ok((await git.text(["branch", "--list", "feature/abandoned"])).includes("feature/abandoned"));
+    assert.equal((await readLedger(git))["session-gone"], undefined, "and the ledger no longer holds the claim");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+await verify("cleanup leaves a dirty worktree and a live session alone", async () => {
+  const { root, git } = await scratchRepo();
+  try {
+    const dirty = join(root, ROOT, "dirty");
+    await git.text(["worktree", "add", "-q", "-b", "feature/dirty", dirty]);
+    await writeFile(join(dirty, "file.txt"), "not committed\n", "utf8");
+
+    const live = join(root, ROOT, "live");
+    await git.text(["worktree", "add", "-q", "-b", "feature/live", live]);
+    await writeLedger(git, {
+      "session-dirty": claim("session-dirty", {
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        tree: "own",
+        worktreePath: dirty,
+        branch: "feature/dirty",
+        pid: 1073741824,
+      }),
+      "session-live": claim("session-live", {
+        repoKey: await commonDir(git),
+        repoRoot: root,
+        tree: "own",
+        worktreePath: live,
+        branch: "feature/live",
+      }),
+    });
+
+    const result = await cleanupFlow({
+      git,
+      config: CONFIG,
+      registry: registryOf("session-live"),
+      pid: process.pid,
+    });
+    assert.deepEqual(result.removedWorktrees, [], "nothing is removed");
+    assert.equal(result.keptWorktrees.length, 1, "the dirty one is kept");
+    assert.equal(result.keptWorktrees[0].path, dirty, "and it is the dirty one");
+    assert.ok(result.keptWorktrees[0].reason.includes("uncommitted"), `got: ${result.keptWorktrees[0].reason}`);
+    assert.equal(await exists(dirty), true, "uncommitted work is never removed");
+    assert.equal(await exists(live), true, "and neither is a live session's worktree");
+    assert.equal(result.liveClaims, 1, "whose claim is left in force");
+    assert.equal((await readLedger(git))["session-live"] !== undefined, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

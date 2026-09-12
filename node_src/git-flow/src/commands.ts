@@ -17,6 +17,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { CommandInvocation } from "@deepseek-ai/dsh-commands";
 import { ensureClaim, type ClaimDeps } from "./claim.js";
+import { cleanupFlow, type CleanupResult } from "./cleanup.js";
 import { gitClient, type Git } from "./exec.js";
 import { hasBranchPrefix } from "./branch.js";
 import { completeFlow, startFlow, type CompleteResult, type FlowDeps, type StartResult } from "./flow.js";
@@ -30,6 +31,10 @@ const START_DESCRIPTION =
 /** The description shown in command discovery for `/git-complete`. */
 const COMPLETE_DESCRIPTION =
   "Replay the feature branch if the integration branch moved, merge it with --no-ff, remove its worktree, delete it";
+
+/** The description shown in command discovery for `/git-cleanup`. */
+const CLEANUP_DESCRIPTION =
+  "Remove worktrees no session is using, and report the branches and dirty worktrees left by sessions that ended";
 
 /**
  * Assemble the flow dependencies for one invocation.
@@ -241,7 +246,59 @@ export function reportComplete(result: CompleteResult): { readonly kind: "succes
 }
 
 /**
- * Register both slash commands.
+ * Render the outcome of `/git-cleanup`.
+ *
+ * Exported for the committed check, for the same reason as {@link reportStart}: what
+ * this command refuses to delete is the part a human has to act on, and it is text.
+ *
+ * @param result - what cleaning up found.
+ * @returns the text the human sees.
+ */
+export function reportCleanup(result: CleanupResult): { readonly kind: "success" | "error"; readonly text: string } {
+  const lines: string[] = [];
+
+  if (result.removedWorktrees.length > 0) {
+    lines.push(`Removed ${String(result.removedWorktrees.length)} worktree(s) nothing was using:`);
+    for (const path of result.removedWorktrees) lines.push(`  ${path}`);
+  } else {
+    lines.push("No unused worktree to remove.");
+  }
+
+  if (result.forgottenClaims.length > 0) {
+    lines.push(
+      "",
+      `${String(result.forgottenClaims.length)} session(s) left a claim behind without finishing. Their records are`,
+      "gone, and nothing can resume them:",
+      ...result.forgottenClaims.map((what) => `  ${what}`),
+    );
+  }
+
+  if (result.unmergedBranches.length > 0) {
+    lines.push(
+      "",
+      `${String(result.unmergedBranches.length)} branch(es) here have commits the integration branch does not have.`,
+      "Nothing was deleted — this is work:",
+      ...result.unmergedBranches.map((branch) => `  ${branch}`),
+      "Merge them with `/git-complete` from the session that owns them, or delete them by hand when you know.",
+    );
+  }
+
+  if (result.keptWorktrees.length > 0) {
+    lines.push("", "Left in place:");
+    for (const kept of result.keptWorktrees) lines.push(`  ${kept.path} — ${kept.reason}`);
+  }
+
+  lines.push(
+    "",
+    result.liveClaims === 0
+      ? "No live session is working in this repository."
+      : `${String(result.liveClaims)} live session(s) are working here; their claims and worktrees were not touched.`,
+  );
+  return { kind: "success", text: lines.join("\n") };
+}
+
+/**
+ * Register the slash commands.
  *
  * @param ctx - the plugin context, with `commands` injected.
  * @param runtime - the plugin runtime.
@@ -285,6 +342,38 @@ export function registerCommands(ctx: Context, runtime: Runtime): () => void {
           runtime.latch.forget(deps.sessionId);
         }
         return reportStart(result);
+      },
+    }),
+    ctx.commands.register({
+      name: "git-cleanup",
+      description: CLEANUP_DESCRIPTION,
+      // Bare, like `/git-complete`: its whole input is "now", and a command that
+      // declares `input` can never be run by a single pick.
+      async handler(invocation: CommandInvocation) {
+        const agent = invocation.agent;
+        const cwd = sessionCwd(agent);
+        if (cwd === undefined) {
+          return { kind: "error", text: "This session has no working directory, so there is no repository to use." };
+        }
+
+        const git = gitClient(runtime.runner, cwd);
+        try {
+          const result = await cleanupFlow({
+            git,
+            config: runtime.config,
+            registry: runtime.sessions,
+            pid: runtime.pid,
+            ...(invocation.signal === undefined ? {} : { signal: invocation.signal }),
+          });
+          return reportCleanup(result);
+        } catch (error) {
+          return {
+            kind: "error",
+            text: `This session's working directory is not inside a git repository: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+        }
       },
     }),
     ctx.commands.register({

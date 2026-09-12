@@ -195,7 +195,7 @@ export type CompleteResult =
  * @param config - the resolved settings.
  * @returns the integration branch name.
  */
-async function integrationOf(git: Git, config: FlowConfig): Promise<string> {
+export async function integrationOf(git: Git, config: FlowConfig): Promise<string> {
   if (config.integrationBranch !== undefined && config.integrationBranch !== "") return config.integrationBranch;
   return defaultIntegrationBranch(git);
 }
