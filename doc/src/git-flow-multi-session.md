@@ -178,6 +178,43 @@ the first write of every session that writes, two processes whose first writes l
 an empty ledger and each write their own record, and one claim would disappear. (Reads stay lock-free: a
 reader that catches a half-visible state can only be wrong for one step, and the next step re-reads.)
 
+### Why one lock covers both cases
+
+`O_EXCL` is enforced by the kernel, not by the process, so it excludes **within** one process exactly as well
+as between two — which matters, because two sessions of one dsh process are the ordinary case, and a lock that
+only worked across processes would leave the common one unguarded. Measured rather than assumed: 200
+concurrent `open(path, "wx")` calls in one process produce exactly one winner, and two processes racing 100
+times each both make progress.
+
+Working from a filesystem does add four obligations, and each one has a failure that is silent if it is
+skipped:
+
+- **The critical section must not await git.** Two sessions in one process share an event loop, so a holder
+  waiting on a subprocess leaves the other session's write spinning behind it. Everything the decision needs
+  from git — the main tree, the worktrees, the current branch, the integration branch — is computed *before*
+  the lock is taken; inside it, only the ledger is read and written.
+- **Waiting must be asynchronous.** A busy-wait would block the event loop, which in the same-process case
+  blocks the very holder whose release is being waited for: a deadlock, not a delay. Retry on a timer, with
+  jitter — the fairness the measured 45/3 split lacks.
+- **Release must be compare-and-delete on a token** (the pid plus a per-acquisition id), never a bare unlink.
+  When a stale lock is broken, the old holder is still inside its critical section with no idea it lost the
+  lock; if it then releases blindly it deletes the *new* holder's file and a third claimant walks in. This is
+  the one failure the measurement caught directly.
+- **A live holder is never broken on a timeout alone.** With the critical section bounded to filesystem work,
+  a pid that is alive means the holder is progressing, so only a dead pid — or a timestamp far beyond any
+  plausible section — justifies breaking in.
+
+Two limits are worth naming rather than discovering. On a network mount, `O_EXCL` is emulated client-side by
+older NFS and the pid test describes another machine's process space, so exclusion there is best-effort and
+only the timeout recovers a dead holder; two machines sharing one checkout are out of scope for the same
+reason the ledger holds absolute machine-local paths. And this is POSIX behaviour as verified on Linux —
+`wx` maps to a create-new open on Windows too, but the pid liveness rule does not port unchanged.
+
+The alternative that was considered and rejected: **one ledger file per family**, which removes the shared
+read-modify-write entirely. It does not remove the decision — two families can still read "the main tree is
+free" at the same instant — so it needs either a lock anyway or a second round that resolves the tie, and the
+claim decision is precisely "choose over the whole set", which is what a lock is for.
+
 ## Liveness from the registry, claims across processes from the ledger
 
 The two sources answer two different questions, and neither is about where a session happens to sit:
