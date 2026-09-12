@@ -155,6 +155,19 @@ premise cannot rot: the test proves the gitlink *is* staged that way and that th
 staging is not. `FileAccess` and the whole ignore module went with it; the plugin now writes no
 repository file of its own except the ledger, which it writes through `node:fs`.
 
+**The plugin tells the model the workflow, not the session's position.** An earlier version
+contributed two things to the prompt: a static section carrying the contract, and a context naming
+the current branch and worktree, kept fresh by a per-session cache. The context is gone, because it
+answered a question the model does not need answered. Whether a write is allowed is decided by the
+guard, by running git — a model told the wrong branch writes exactly as it would have otherwise. The
+one useful fact, *which worktree to write in*, already reaches the model through the guard's refusal,
+which names the worktree and the exact file to write instead: just in time, and never stale. And an
+injected branch can contradict reality the moment a human switches branches by hand, so the line
+could be not merely useless but wrong; a model that wants to know runs `git branch --show-current`
+and is right. What remains is one static section, pinned by
+`node_src/git-flow/test/verify-prompt.mjs` — that check exists so "the model should know where it is"
+cannot be re-added without an argument.
+
 **A command's `input` declaration is what decides whether the menu completes it or runs
 it.** The web client reads exactly one field to tell a command that takes an argument from one that
 does not: a host command declaring `input` produces a *claim* — the composer inserts `/git-start `

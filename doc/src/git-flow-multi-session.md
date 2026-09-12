@@ -1,16 +1,20 @@
 # git-flow: many sessions in one repository
 
-**Status: implemented, with two deviations recorded below.** This note specifies the claim design in
+**Status: implemented, with three deviations recorded below.** This note specifies the claim design in
 `node_src/git-flow`; the plugin as it ships is described in [Design decisions](./design.md), and the
 sections here that describe *why* rather than *what* are the record of the reasoning.
 
-Two things did not land as written:
+Three things did not land as written:
 
-- **The observation lives on `tools/pre-execute`, not `agent/pre-step`.** A read-only tool call now
-  refreshes the snapshot and writes nothing, which is what keeps the prompt's state line filled while
-  a session explores. `agent/pre-step` would observe before the *first request* rather than at the
-  first tool call — strictly better — but it would make `@deepseek-ai/dsh-agent` a package dependency
-  for one line of freshness. The trade is recorded in `guard.ts` where it is made.
+- **There is no observation at all, and the model is not told where it stands.** This note argued for
+  an observation point — first at `agent/pre-step`, then (in an even earlier draft) at the first
+  read-only tool call — so that the prompt could name the session's branch and worktree. That whole
+  thread was deleted, and the reasoning is in `prompt.ts` and in `test/verify-prompt.mjs`: the guard
+  decides writes by running git rather than by reading the prompt, the one useful fact (which
+  worktree to write in) already reaches the model through the guard's refusal just in time, and a
+  cached branch can contradict reality the moment a human switches branches by hand. The claim design
+  below is unaffected — it never depended on the prompt — and this note's "What the model is told"
+  section is kept only as a record of what was argued and rejected.
 - **`/git-cleanup` removes a clean orphan worktree even when its branch is unmerged.** This note first
   said to keep it, on the grounds that it is one step away from unmerged work. That was wrong:
   `git worktree remove` takes the checkout, not the branch, and the report names the branch either
@@ -19,11 +23,11 @@ Two things did not land as written:
 ## The hole
 
 The plugin learns that a session exists at the moment that session **opens a branch**, and never before.
-`rememberSession` has exactly one call site — `flow.ts:258`, inside `record()` — and `record()` is called
-only from `startFlow` (`flow.ts:388`, `:478`, `:511`), which runs only for `/git-start` or for the guard's
+`rememberSession` has exactly one call site — `record()` in `flow.ts` — and `record()` is called
+only from `startFlow` (the three `record()` calls inside `startFlow`), which runs only for `/git-start` or for the guard's
 auto-start. The guard reaches its auto-start only when the integration branch is checked out; every other
-path leaves through `guard.ts:182` (`if (!snapshot.onIntegration) return next()`) without writing anything.
-`/git-complete`'s adoption path (`resolveRecord`, `flow.ts:552`) builds a record for a branch that is
+path leaves through `decideToolCall`'s `if (!position.onIntegration) return next()` (`if (!snapshot.onIntegration) return next()`) without writing anything.
+`/git-complete`'s adoption path (`resolveRecord`, `resolveRecord`) builds a record for a branch that is
 checked out but unrecorded, and then does not persist it.
 
 So a session standing on a feature branch that it did not open through `startFlow` is invisible: a branch
@@ -34,11 +38,11 @@ ledger answers "which sessions have declared a branch", and the plugin reads it 
 What that costs is one step earlier than it first appears. The same peer list feeds two different
 decisions, and the first is not a check at all:
 
-- `flow.ts:466` — `wantsOwnCheckout = others.length > 0 || (isDelegate && explicitName !== undefined)`
+- `startFlow`'s `wantsOwnCheckout` — `wantsOwnCheckout = others.length > 0 || (isDelegate && explicitName !== undefined)`
   decides whether a starting session is **isolated**. With an invisible neighbour this is `false`, so the
-  session opens its branch **in place** (`flow.ts:473-491`) and records `worktreePath: null`. Two families
+  session opens its branch **in place** (`startFlow`'s in-place branch) and records `worktreePath: null`. Two families
   now share one tree and one branch, and the plugin arranged it.
-- `guard.ts:164-180` — the claimant test. That is the second chance, and by then the shared state exists.
+- the claimant test in `decideToolCall` — the claimant test. That is the second chance, and by then the shared state exists.
 
 The observed failure had exactly this shape: one ledger record (its owner's, written when it started in
 place because it saw no peers), one unrecorded session, two sessions writing the same files on the same
@@ -97,31 +101,39 @@ Two properties follow, and they are why this timing is better rather than merely
   intent. Split across two seams, those inputs would be resolved twice, at two moments, with no defined answer for
   what to do when they disagree.
 
-### One thing does belong before thinking: the observation
+### And nothing belongs before thinking
 
-Not the claim — the **observation** that lets the prompt say where the session is standing. `renderState` reads a
-snapshot that exists only after `state.refresh` has run, and under this timing that happens on the write path; a
-session that spends its first turn reading would be told nothing about its branch, which is exactly what it needs
-in order to negotiate a name. So `agent/pre-step` keeps a read-only role: refresh the snapshot, write nothing.
+An earlier draft of this section argued for an **observation** at `agent/pre-step`: a read-only refresh, writing
+nothing, so the prompt could name the session's branch and worktree before the first request. It was implemented at
+the first read-only tool call instead, and then removed altogether — not moved, deleted — because it was answering a
+question the model does not need answered. The reasons, in the order they turned out to matter:
 
-It is a suitable seam for it: a waterfall, awaited, carrying the turn's `signal`, and not agent-scoped — a listener
-on the plugin's own context receives every agent, and `sessionRoot` folds subagents onto their parent
-(`session.ts:147`), so one registration observes every session. It also runs before `agent/request`, and the prompt
-is assembled for the step being entered, so a snapshot refreshed there is visible to *that* step; today it can be a
-step stale.
+- **The enforcement never needed it.** Whether a write is allowed is decided by the guard, by running git. A model
+  told the wrong branch writes exactly as it would have otherwise.
+- **Its useful half already arrives at the right moment.** A session isolated into a worktree learns the path from
+  the guard's refusal, which names both the worktree and the exact file to write instead of the one it aimed at.
+  Just in time, and never stale.
+- **A cached branch can lie.** It changes when a human switches branches by hand, so the injected line could
+  contradict reality in the transcript. A model that wants to know can run `git branch --show-current` and be right.
+
+So the guard is the only thing that tells the model anything about position — by refusing a write and saying where
+to make it instead.
 
 ### Order inside the guard
 
-1. filter to file tools, resolve cwd and identity, read the repo facts;
-2. **`ensureClaim()`** — inside the lock: read the ledger, assign a tree, write the ledger;
-3. refresh again, because the claim may have just changed the assignment (the guard already re-refreshes after
-   `startFlow`, `guard.ts:220-222`, for the same reason);
-4. containment, claimant test, integration-branch test — in the order they run today.
+1. filter to file tools; resolve cwd, identity and the session's position;
+2. resolve the declared target and return early when it is **outside the repository** — decided before claiming,
+   because a claim means "this family works in this repository", which a session whose first edit lands in `/tmp`
+   has not said;
+3. **`ensureClaim()`** — inside the lock: read the ledger, assign a tree, write the ledger;
+4. read the position again when the claim decided something, because every test below depends on it and nothing
+   about a position is cached;
+5. containment, claimant test, integration-branch test — in the order they run today.
 
 `ensureClaim` decides only the **tree**; `branch` and `worktreePath` are still filled in by `startFlow` or by the
 redirect path, which is why the record can honestly hold nulls (see [The claim record](#the-claim-record)). When
 it has already changed the tree, the write that triggered it points at the tree the session has just left — the
-case the guard's redirect already handles (`guard.ts:229-237`), so the claim needs no new mechanism there; it is a
+case the guard's redirect already handles (the redirect at the end of `decideToolCall`), so the claim needs no new mechanism there; it is a
 second producer of a case that is already covered.
 
 **The guarantee is bounded by the seam.** It holds for the file tools. `bash` is deliberately not guarded by
@@ -150,7 +162,7 @@ it is named here because this design leans on it.
 }
 ```
 
-Three changes from today's `SessionRecord` (`repo.ts:55-74`):
+Three changes from today's `SessionRecord` (`SessionClaim`):
 
 - **`branch` becomes nullable.** A claim is written before any branch exists — the honest state for a family
   that has claimed a tree and is still standing on the integration branch. It also settles a case the old
@@ -163,9 +175,9 @@ Three changes from today's `SessionRecord` (`repo.ts:55-74`):
   does not go stale that way.
 - **`note` in the file.** JSON has no comments, so the explanation is a field. It is advisory only: the
   plugin does not depend on anyone reading it, and the guard's enforcement does not depend on a model
-  choosing to respect it. See [Open decisions](#open-decisions).
+  choosing to respect it. See [Decisions taken](#decisions-taken).
 
-`state.refresh` keeps reading `worktreePath` from this record (`state.ts:134`), and it must: a session's
+`GitFlowState.position()` keeps reading `worktreePath` from this record, and it must: a session's
 working directory is immutable, so after isolation its cwd is still the main tree, and only the record says
 where it is supposed to write. That fact is *not* derivable from the session's cwd.
 
@@ -299,7 +311,7 @@ Its three existing jobs stay, with one addition ahead of them:
 - **containment** — unchanged in shape, now fed by a claim that exists before the first write, so a session
   isolated mid-life is redirected for the rest of its life rather than from the write that created the worktree.
 - **claimant test** — becomes "does another live claim own the tree I am about to write into", comparing trees
-  instead of branches (`guard.ts:166-180` loses its `record.branch === snapshot.branch` conjunct, and gains
+  instead of branches (the claimant test in `decideToolCall` loses its `record.branch === snapshot.branch` conjunct, and gains
   correctness for a peer that switched branches by hand). The tree comparison subsumes the branch one because
   git allows a branch in at most one working tree, so a family's branch can only be checked out in the tree it
   owns.
@@ -312,15 +324,13 @@ a branch, or an entry in a "branches nobody completed" report — the eager vers
 checkout for every session that merely starts, and the existing abandoned-branch reporting in
 `startFlow` shows what those leftovers cost.
 
-## What the model is told
+## What the model is told (rejected: it is told nothing about position)
 
-The injection already exists and already covers subagents: `registerPrompt` registers a root-scoped section
-and context, and the context's text provider resolves identity with `sessionRoot(agent, ctx.sessions)`
-(`prompt.ts:126`), so a subagent renders its family's text. What is missing is only the guarantee that it is
-*not empty* — `renderState(undefined)` returns `""`, and a snapshot exists only after some asynchronous path
-refreshed it. The pre-step observation is what fills that gap, and it has to be the observation rather than the
-claim: a session that reads first and negotiates a name needs to know where it is standing *before* it writes
-anything.
+This section argued that the plugin's root-scoped prompt context already covered subagents, because its text
+provider resolved identity through `sessionRoot`, and that only the guarantee of non-empty text was missing. The
+section is kept as the record of an argument that did not survive contact with the question "what does the model do
+differently for knowing?" — nothing, except in the one case the guard already handles better by refusing a write
+and naming the path. The plugin now contributes a static section and no context at all.
 
 Two things stay as they are, deliberately:
 
@@ -336,56 +346,45 @@ Two things stay as they are, deliberately:
 
 - **`/git-start`** — unchanged in intent, one meaning narrower: it attaches a branch to the tree the family
   already claimed, instead of being the act that creates the family's existence.
-- **`/git-complete`** — unchanged, plus releasing the claim (already `forgetSession`, `flow.ts:771`) and
+- **`/git-complete`** — unchanged, plus releasing the claim (already `forgetSession`, `dropClaim` at the end of `completeFlow`) and
   clearing the latch.
 - **`/git-cleanup`** (new) — the counterpart to a session that was closed without finishing. It prunes claims
   whose owner is provably gone, removes orphan worktrees that are clean, and **reports** what it will not
   delete: worktrees with uncommitted changes, and branches with unmerged commits. It never deletes unmerged
-  work — that rule already exists (`repo.ts:47-52`, the outstanding-branch report) and the command is its
+  work — that rule already exists (`OutstandingBranch` in `repo.ts`, the outstanding-branch report) and the command is its
   interactive form. Bare, with no `input` declaration, for the reason `/git-complete` is bare
   (`doc/src/design.md`): a command whose whole input is "now" should run on one pick.
 - **an exit hook is best-effort, not the mechanism** — `agent/disposed` is an emit and a thread killed
   outright never reaches it. `/git-cleanup` and the existing prune-on-read are the backstop, and cleanup
   reports rather than silently forgets.
 
-## Open decisions
+## Decisions taken
 
-**1. The `.gitignore` check — needs a ruling.** The current design verifies (and if needed writes) the
-`.dsh.local` rule before any state is written, and refuses to create a worktree whose rule a later negation
-would defeat (`ignore.ts`, called at `flow.ts:458` and `:608`). The proposal is to drop the check and rely on
-(a) the rule being a one-time addition per repository and (b) the model understanding that `.dsh.local` is
-not repository content. The conflict is concrete, and two of its three failure modes do not involve a model
-at all:
+**1. The `.gitignore` check: dropped (option A), with one thing added.** The rule is a one-time addition
+per repository and the model is trusted not to commit a directory whose own first line says what it is —
+so the plugin neither verifies nor writes `.gitignore`, and `ignore.ts`, the `FileAccess` seam that
+existed for that one write, and the ten checks pinning its behaviour are gone.
 
-- `/git-complete` runs `git add --all` **itself** when a branch has uncommitted work (`flow.ts:631`, default
-  `commitUncommittedBeforeMerge: true`). It would commit the ledger — a file whose contents are absolute
-  machine-local paths, which this repository forbids in committed files.
-- A linked worktree inside the repository is staged as a **gitlink** (mode 160000) when the rule is absent.
-  `test/verify-ignore.mjs` asserts this deliberately, so the premise is verified rather than assumed.
-- A human running `git add -A` is unaffected by any model's judgement.
+What was added is not a check: the plugin's **own** git commands exclude the directory by pathspec
+(`git add --all -- . :!.dsh.local`, and the same on `git status`), because the command that would
+otherwise commit a ledger of absolute machine-local paths — or stage a linked worktree as a gitlink —
+is this plugin's own. `test/verify-flow.mjs` asserts both halves: that a careless `git add --all` *does*
+stage the worktree, and that the plugin's own staging does not.
 
-Options:
+**2. What happens to a claim whose process died without a hook.** `otherLiveClaims` drops it and
+`/git-start` reports the branch it left, which is unchanged from before. `/git-cleanup` is the
+interactive form of the same policy: it removes a worktree no live family owns when that worktree is
+clean — including when the branch checked out there is unmerged, since `git worktree remove` takes the
+checkout and not the branch — and it never deletes a branch, because the branch is where the work is.
+Cleanup does not keep a dead claim in the ledger to preserve the information: the branch is re-derivable
+from git, the report is the channel, and one policy for the whole plugin is better than two.
 
-| Option | What it costs |
-| --- | --- |
-| **A. Trust the file contents** (as proposed) | Nothing at runtime; accepts the three failures above |
-| **B. Move the claim out of the working tree** — back to `<git-common-dir>`, which needs no rule because git never stages it | Reverses the `.dsh.local` decision in [Design decisions](./design.md); the worktree rule is still needed, but only on the isolation path |
-| **C. Verify once per repository, cached in the latch** (recommended) | One check per process per repository, on the write path only |
+**3. Whether the guard should stop re-reading the ledger on every call.** It keeps reading, and the
+latch still only suppresses writes. Nothing about a *position* is cached any more: the branch and the
+worktree are exactly the facts that can change between two tool calls, and the read is one small file.
 
-C is the recommendation, and the timing decided above is what makes it cheap enough to be the answer: the
-check runs when a session first writes, which is the same moment the ledger is first written, and a session
-that only reads never pays it. The proposal's premise — that the rule is one-time work per repository — is
-exactly right; C implements that premise instead of assuming it, and it costs nothing that A does not also
-cost, because in a repository that already has the rule the check only reads.
-
-**2. Where the claim is broken when a process dies without a hook.** Recommended: a claim is pruned only
-when its owner is provably gone *and* nothing of its work remains to be reported; a claim whose worktree or
-branch still exists is kept and reported, because the alternative is a silently forgotten branch — the one
-thing the ledger must not do (`doc/src/design.md`).
-
-**3. Whether the guard should stop re-reading the ledger per call.** With a warm latch, the file read per
-file-mutating call is avoidable. Recommended: keep it. It is one small read, and it is what makes a change
-made by another process (a cleanup, another session taking the main tree) visible without a restart.
+**4. Whether the model should be told where it stands.** No. This is the one decision this note first
+got wrong; see the "deviations" note at the top and `prompt.ts` for the reasons.
 
 ## Test plan
 
