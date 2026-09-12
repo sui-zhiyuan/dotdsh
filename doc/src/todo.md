@@ -90,14 +90,15 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   written, which is the right instrument for a convention; a hook is the right one for a rule a
   human must not be able to talk past (a missing `Refs:` on a repo that requires one). Adding it
   means an installer, because `.git/hooks` is unversioned
-- [ ] Record multi-session liveness authoritatively. The ledger judges a session by whether its
-  owning *process* is alive, which is wrong in both directions: two sessions share one harness
-  process (a closed session keeps its record, so new sessions get an unneeded worktree), and a
-  restart kills every pid at once (sessions that are still open read as dead — see the note in
-  [Design decisions](./design.md) for why an abandoned branch is therefore reported rather than
-  stored). The harness's own session registry would answer the real question; the ledger is the
-  fallback that needs no service. Worth doing when a second use for the ledger appears, since the
-  current error is bounded in one direction and merely noisy in the other
+- [x] Record multi-session liveness authoritatively. Done as part of the claim design
+  ([git-flow: many sessions in one repository](./git-flow-multi-session.md)): a **claim** records which
+  working tree a family writes in, it is written before the first write rather than when a branch is
+  opened, and liveness comes from the harness's own session registry first — a claim whose session is
+  resident is live whatever the pid says, and a claim naming a session of this process that is no
+  longer resident is dead, which is the phantom neighbour a pid could never see. The pid is the
+  fallback for a claim from another process, and the ledger is still the only channel that reaches
+  across processes, because the registry is in memory. `/git-cleanup` is the interactive counterpart
+  for the sessions that never finished
 
 ## Home config
 

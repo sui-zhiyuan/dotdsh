@@ -142,12 +142,18 @@ argv-exactness and does not confine its git children. Every dsh consumer package
 seam; only the provider layer imports `node:child_process`, and the committed tests use that direct
 runner so a clean checkout can run them with no harness and no profile.
 
-**The `.gitignore` write does not go through `ctx.fs` either, for a related reason.** Routing it
-through `ctx.fs` would fence one file write while the git subprocesses that do the bulk of this
-plugin's file mutation stay unconfined — an inconsistency rather than a boundary. It would also be a
-hazard: `dsh-fs-sandbox` falls back to the *deployment* policy when no session policy is passed, so
-the write would be refused under a policy the session itself is not under. `FileAccess` stays a
-seam, so the decision is reversible in one place.
+**The plugin adds no ignore rule, and does not check one.** An earlier version wrote `.dsh.local/`
+into the tracked `.gitignore` and verified it with `git check-ignore`, refusing to proceed when a
+later `!` rule defeated it. That is gone, and the reason is a ruling rather than a discovery: the
+rule is one-time work per repository, and the model can be trusted not to commit a directory whose
+own first line says it is machine-local. What replaced it is narrower and verifies nothing — this
+plugin's **own** git commands exclude the directory by pathspec (`git add --all -- . :!.dsh.local`,
+and the same on `git status`), because the command that would otherwise commit a ledger of absolute
+paths, or a linked worktree as a gitlink, is this plugin's own. The residual risk — a human's
+careless `git add --all` — is asserted in `test/verify-flow.mjs` rather than described, so the
+premise cannot rot: the test proves the gitlink *is* staged that way and that the plugin's own
+staging is not. `FileAccess` and the whole ignore module went with it; the plugin now writes no
+repository file of its own except the ledger, which it writes through `node:fs`.
 
 **A command's `input` declaration is what decides whether the menu completes it or runs
 it.** The web client reads exactly one field to tell a command that takes an argument from one that
@@ -198,41 +204,50 @@ interesting while it is the real one. The same probe is why the guard has a comm
 the guard is this plugin's only *enforcement* point — everything else is prompt text the model may or
 may not follow — and until then it was verified by a human remembering to try it.
 
-**"Another session is running" is a proxy, and it is worth being explicit about which one.** The
-plugin keeps a per-clone ledger of open branches and asks whether the owning process is still alive.
-That is not the same question as "is another session executing right now", and the difference matters
-in both directions:
+**Liveness is not ownership, and the pid answers neither well.** The plugin keeps a per-clone ledger
+of **claims** — which family may write in which working tree — and asks two separate questions of
+it: does this claim exist, and is its owner still there. The second is answered by the harness's own
+session registry first, and by the pid only when the claim belongs to another process:
 
-- An **idle** session — one that has stopped and is waiting for its human — counts as present. That
-  is deliberate: idle is not finished, its branch is unmerged, and it can resume mid-turn and write.
-  Treating it as gone would reintroduce exactly the collision a worktree exists to prevent.
-- A session that **closed while its process lives** keeps its record, because two sessions can share
-  one harness process and a pid cannot separate them. The cost is a phantom neighbour: new sessions
-  in that repository get a worktree they did not strictly need. Bounded and harmless.
-- A **restart** kills every recorded pid at once, so sessions that are still open read as dead. This
-  is why an abandoned branch is *reported* at the moment its record is dropped rather than stored as
-  durable state: a persisted "abandoned" flag would be wrong after every restart. The authoritative
-  fix is the harness's own session registry, which is on the [TODO](./todo.md) list.
+- A claim whose session is **resident in this process** is live, whatever the pid says.
+- A claim naming a session **of this process** that is no longer resident is dead. This is the case
+  a pid can never see, because two sessions share one harness process: a closed session's claim kept
+  a pid that was very much alive, so every later session was handed a worktree it did not need. That
+  phantom neighbour is fixed, and `SessionStore.get` is what fixes it.
+- Anything else belongs to **another process**, where the pid is the only signal there is. It is
+  wrong across a restart in both directions, which is why an abandoned branch is *reported* at the
+  moment its claim is dropped rather than stored as durable state: a persisted "abandoned" flag
+  would be wrong after every restart.
 
-The one thing the ledger must not do is silently forget. A dead session's record is dropped — it
-cannot be resumed — but if its branch still exists, that branch is unmerged work, and `/git-start`
-says so. Deleting the record and the fact together is how work goes missing in a repository.
+An **idle** session counts as present, deliberately: idle is not finished, its branch is unmerged,
+and it can resume mid-turn and write. Treating it as gone would reintroduce the collision a worktree
+exists to prevent — which is also why `agent/status` is read for reports and never for decisions.
+
+The one thing the ledger must not do is silently forget. A dead family's claim is dropped — it
+cannot be resumed — but if its branch still exists, that branch is unmerged work, and both
+`/git-start` and `/git-cleanup` say so, at the moment the claim is dropped. Deleting the record and
+the fact together is how work goes missing in a repository. `/git-cleanup` is the interactive form
+of that rule: it removes a clean worktree nobody owns, including when the branch there is unmerged
+(`git worktree remove` takes the checkout, not the branch), and it never deletes a branch, because
+the branch is where the work is.
 
 Two smaller choices follow from the same "use the seam the harness uses" rule. The commit-message
 convention ships as a **bundled skill provider** — the shape `dsh-skill-badge` establishes, with the
 body read from a packaged asset through a `new URL(..., import.meta.url)` locator — rather than as a
 `pre-commit` hook, which is unversioned, needs installing per clone, and can only reject a message
-after it has been composed. And the per-session ledger lives beside them, in `<repo>/.dsh.local/git-flow.json` — one ignored
-directory for everything this plugin leaves on this machine. It moved there from
-`<git-common-dir>/dsh-git-flow/state.json`, and the move is worth recording because it trades a
-property git gave away for free: the common directory is the same from every worktree, while a
+after it has been composed. And the per-session ledger lives beside them, in `<repo>/.dsh.local/git-flow.json` — one
+directory for everything this plugin leaves on this machine, holding **claims** that name the tree
+each family works in beside the branch it opened, with the branch nullable because a claim is
+written at the first write and the branch only exists once `/git-start` or the guard opens one. It
+moved there from `<git-common-dir>/dsh-git-flow/state.json`, and the move is worth recording because
+it trades a property git gave away for free: the common directory is the same from every worktree, while a
 directory in the working tree is not. A ledger resolved from the session's own directory would give
 each linked worktree its own copy, and the copy a worktree session reads is exactly the one that
 cannot tell it a second session is already working here — concurrency detection would fail silently
 in the one case that needs it. So the path is anchored to the repository's main working tree (git
 lists it first, which is what makes that reliable from anywhere), and the whole `.dsh.local`
-directory is ignored by one rule, verified after writing, before any state is written at all. The
-name matters too: `.dsh.local` rather than `.dsh`, because `<project>/.dsh/skills` holds project
+directory is anchored there by the ledger's own path, and the plugin keeps its own git commands away
+from it by pathspec rather than by an ignore rule (see above). The name matters too: `.dsh.local` rather than `.dsh`, because `<project>/.dsh/skills` holds project
 skills that are meant to be committed.
 
 ## Constraints worth remembering

@@ -20,7 +20,7 @@
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase. Both are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases` |
-| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start` and `/git-complete` commands, a pre-write guard that opens a branch instead of letting an edit land on the integration branch, a system-prompt contract plus a live state context, a bundled `git-commit` skill (Conventional Commits 1.0.0), and git-worktree isolation for parallel sessions |
+| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands, a pre-write guard that opens a branch instead of letting an edit land on the integration branch, a per-family **claim** that records which working tree a session writes in, a system-prompt contract plus a live state context, a bundled `git-commit` skill (Conventional Commits 1.0.0), and git-worktree isolation for parallel sessions |
 
 ## The git-flow workflow
 
@@ -29,6 +29,7 @@ Two slash commands, and one invariant that holds whether or not anyone remembers
 ```
 /git-start [<name>]   open a feature branch for this session
 /git-complete         replay it if the integration branch moved, merge it, remove its worktree, delete it
+/git-cleanup          remove worktrees nothing is using, and report what sessions left behind
 ```
 
 `/git-start` names the branch from what the session is working on — the first line of the opening
@@ -68,9 +69,11 @@ Two sessions sharing one checkout is the shape the guard actually has to catch, 
 same question as "are other sessions live". The first session opens a feature branch in that
 checkout, so the second no longer sees the integration branch — it sees the first session's branch —
 and would write onto it without ever triggering the branch rule. The guard therefore also refuses
-when another live session is in *this* working tree, and it decides that by asking git which branch
-is really checked out rather than trusting the ledger: a record whose branch is not the one in the
-tree is stale, and a stale record must not block a tree nobody is using.
+when another live family **owns this working tree**, which it reads from the claims ledger rather
+than from the branch checked out here: a recorded branch goes stale the moment a human switches
+branches by hand, while "which tree does this family own" does not. A read-only call is not refused
+and not claimed either — it only refreshes the state the prompt is rendered from, which is what lets
+a session explore and agree a branch name before it writes anything.
 
 ### Parallel sessions and worktrees
 
@@ -96,28 +99,23 @@ instead.
 
 ### `.dsh.local`
 
-Everything this plugin leaves on this machine lives in one ignored directory at the repository
-root: the worktrees, and a ledger of the open feature branches (`git-flow.json`). `.dsh.local`
-rather than `.dsh` because the harness reads `<project>/.dsh/skills` for *project* skills, which are
-meant to be committed and shared — a rule ignoring `.dsh/` would quietly stop a team's skills from
-being tracked. A name of its own can be ignored wholesale, and the `.local` half says what it is.
+Everything this plugin leaves on this machine lives in one directory at the repository root: the
+worktrees, and a ledger of the claims (`git-flow.json`). `.dsh.local` rather than `.dsh` because the
+harness reads `<project>/.dsh/skills` for *project* skills, which are meant to be committed and
+shared. The `.local` half says what this is: this machine's, not the repository's.
 
-`/git-start` adds `.dsh.local/` to the tracked `.gitignore` with a comment explaining it, and then
-**verifies with `git check-ignore`** rather than trusting the write. Two reasons, both silent when
-they go wrong:
+**The plugin does not add an ignore rule for it, and does not check one.** The rule is a one-time
+addition per repository made by hand, and the file itself opens with a note saying what it is and
+that it must not be committed. What the plugin guarantees instead is narrower and does not depend on
+anyone's judgement: *its own* git commands exclude the directory by pathspec. `git add --all` at
+`/git-complete` is this plugin's command, and a ledger of machine-local absolute paths — or a linked
+worktree staged as a gitlink, which is what a `git worktree` inside the repository looks like to
+`git add --all` — must not enter a commit because of it. `git status` gets the same exclusion, so a
+tree holding nothing but the plugin's own state never reads as dirty.
 
-- A `git worktree` inside the repository is a linked repository, and a `git add --all` from the main
-  tree does not stage its thousands of files — it stages **one** entry, a gitlink recording a commit
-  id that stops being reachable the moment `/git-complete` deletes the branch. A clone could never
-  reproduce it, and this plugin's own per-step commits would commit it for you.
-  (`node_src/git-flow/test/verify-ignore.mjs` asserts that failure really happens without the guard,
-  so the guard's premise cannot rot unnoticed.)
-- The ledger holds **absolute paths belonging to this machine**, and it is written by every start —
-  including the single-session one that creates no worktree at all. So the rule is ensured before
-  the first state write, not only on the path that creates a worktree.
-
-A rule that another rule overrides — a later `!` line, a parent directory's ignore — makes the
-plugin refuse to proceed rather than leave state that only looks protected.
+The residual risk is real and is written down rather than hidden: a careless `git add --all` typed
+by a human, or run by another tool, *does* stage the worktree as a gitlink. `test/verify-flow.mjs`
+asserts that it does, and that the plugin's own staging does not.
 
 The directory is anchored to the repository's **main** working tree, never to the session's own:
 a path resolved from the session's directory would give every linked worktree its own ledger, and

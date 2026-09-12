@@ -1,8 +1,20 @@
 # git-flow: many sessions in one repository
 
-**Status: proposed.** This note specifies a change to `node_src/git-flow` that is not implemented yet.
-It refers to today's behaviour only as the thing being replaced; the plugin as it ships is described in
-[Design decisions](./design.md).
+**Status: implemented, with two deviations recorded below.** This note specifies the claim design in
+`node_src/git-flow`; the plugin as it ships is described in [Design decisions](./design.md), and the
+sections here that describe *why* rather than *what* are the record of the reasoning.
+
+Two things did not land as written:
+
+- **The observation lives on `tools/pre-execute`, not `agent/pre-step`.** A read-only tool call now
+  refreshes the snapshot and writes nothing, which is what keeps the prompt's state line filled while
+  a session explores. `agent/pre-step` would observe before the *first request* rather than at the
+  first tool call — strictly better — but it would make `@deepseek-ai/dsh-agent` a package dependency
+  for one line of freshness. The trade is recorded in `guard.ts` where it is made.
+- **`/git-cleanup` removes a clean orphan worktree even when its branch is unmerged.** This note first
+  said to keep it, on the grounds that it is one step away from unmerged work. That was wrong:
+  `git worktree remove` takes the checkout, not the branch, and the report names the branch either
+  way. What must never be deleted is the work, and the work is the branch.
 
 ## The hole
 
