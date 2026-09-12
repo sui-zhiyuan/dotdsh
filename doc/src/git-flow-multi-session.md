@@ -39,8 +39,9 @@ branch.
 - **Assignment** — which tree a family *should* work in, and therefore whether a worktree must be created
   and a branch attached to it. Expensive: a branch, a tree, a name, and cleanup by `/git-complete`.
 
-The change is to produce occupancy as its own act, at a defined moment, and leave assignment where it is —
-at the first write, where the naming decision already lives.
+The change is to produce occupancy as its own act rather than as a side effect of opening a branch — and to
+produce it at the **write**, where assignment already lives, rather than at the start of thought. That second
+half is a correction to the first draft of this note, and it is argued in the next section rather than assumed.
 
 ## The claim
 
@@ -57,23 +58,64 @@ that in. The word is not new to this plugin: `guard.ts` already calls the peer t
 
 ## When a claim is made
 
-`agent/pre-step`. It is a waterfall, it is awaited, it runs before every step of every turn, it carries the
-turn's `signal`, and its decision type (`{kind: 'reject'} | {kind: 'enter', messages, startsRequestSeries?}`)
-means it can also refuse a step. Three properties decide the choice:
+At the **write**, in the guard the plugin already has (`tools/pre-execute`, `guard.ts`). The first draft of this
+note put it at `agent/pre-step`, on the theory that earlier must be safer. Earlier is not the same as needed, and
+the difference is the whole of the argument:
 
-- **It is before thinking.** Anything it does is complete before the model can call a tool, so no write can
-  race the claim.
-- **It is awaited, unlike `agent/session-start`.** That event is declared `@mode emit` and documented as "a
-  notification, not a veto"; asynchronous work there is not ordered before the first request.
-- **It is not agent-scoped.** A listener registered on the plugin's own context receives every agent, so one
-  registration covers subagents, and `sessionRoot` folds them onto their parent (`session.ts:147`). This is
-  the same property the guard already relies on.
+- **A claim exists to precede a write, not to precede a thought.** Nothing a read-only session does can collide
+  with anyone, so a claim taken while reading buys nothing and costs something. It would make every session that
+  merely starts declare itself — the side effect the current design is careful to avoid, since today nothing is
+  written until a branch is opened.
+- **It would invert a dependency.** Naming a branch and a worktree is a judgement, and this design wants that
+  judgement made *with* the human, after the model has looked at the repository. A claim demanded before the model
+  may think forces a name before the discussion that produces it: the naming tiers would run against an opening
+  prompt that has not been explored yet, and the honest outcomes are a guess or a denial. There is no literal
+  recursion here — the claim path calls no model at all, which stays a rule — but there is an ordering inversion,
+  and the guard is where that dependency already runs the right way round: `startFlow` is called from the guard,
+  the three naming tiers (mechanical → model → human) live there, and the human is reachable at that moment.
 
-Ordering matters for the prompt as well: pre-step runs before `agent/request`, and the system prompt is
-assembled for the step being entered, so a snapshot refreshed in the handler is visible to *that* step's
-prompt. Today the prompt can be one step stale; under this design the first step is never stale.
+Two properties follow, and they are why this timing is better rather than merely cheaper:
 
-The cost per step is one map lookup. The expensive part runs once per family per repository, latched.
+- **Read-only work stays free.** `read`, `grep` and `glob` never reach the guard, so a session can explore the
+  repository and agree on an approach before it commits to a branch name or a working tree. That is the moment a
+  deliberate name can be chosen instead of derived, and it is what makes "discuss the name with the user" an
+  available move rather than a fallback.
+- **The claim and the branch decision happen together.** Both are consequences of "this session is about to change
+  files here", and both need the same inputs — which tree am I in, who else is live, what is this session's
+  intent. Split across two seams, those inputs would be resolved twice, at two moments, with no defined answer for
+  what to do when they disagree.
+
+### One thing does belong before thinking: the observation
+
+Not the claim — the **observation** that lets the prompt say where the session is standing. `renderState` reads a
+snapshot that exists only after `state.refresh` has run, and under this timing that happens on the write path; a
+session that spends its first turn reading would be told nothing about its branch, which is exactly what it needs
+in order to negotiate a name. So `agent/pre-step` keeps a read-only role: refresh the snapshot, write nothing.
+
+It is a suitable seam for it: a waterfall, awaited, carrying the turn's `signal`, and not agent-scoped — a listener
+on the plugin's own context receives every agent, and `sessionRoot` folds subagents onto their parent
+(`session.ts:147`), so one registration observes every session. It also runs before `agent/request`, and the prompt
+is assembled for the step being entered, so a snapshot refreshed there is visible to *that* step; today it can be a
+step stale.
+
+### Order inside the guard
+
+1. filter to file tools, resolve cwd and identity, read the repo facts;
+2. **`ensureClaim()`** — inside the lock: read the ledger, assign a tree, write the ledger;
+3. refresh again, because the claim may have just changed the assignment (the guard already re-refreshes after
+   `startFlow`, `guard.ts:220-222`, for the same reason);
+4. containment, claimant test, integration-branch test — in the order they run today.
+
+`ensureClaim` decides only the **tree**; `branch` and `worktreePath` are still filled in by `startFlow` or by the
+redirect path, which is why the record can honestly hold nulls (see [The claim record](#the-claim-record)). When
+it has already changed the tree, the write that triggered it points at the tree the session has just left — the
+case the guard's redirect already handles (`guard.ts:229-237`), so the claim needs no new mechanism there; it is a
+second producer of a case that is already covered.
+
+**The guarantee is bounded by the seam.** It holds for the file tools. `bash` is deliberately not guarded by
+default (`guardBash: false`), so a session can still mutate the repository through the shell without a claim, and
+"read-only" is a property of the tools, not of the session. That is the same boundary the plugin already documents;
+it is named here because this design leans on it.
 
 ## The claim record
 
@@ -120,37 +162,50 @@ where it is supposed to write. That fact is *not* derivable from the session's c
 Claiming is a read-modify-write of one JSON file shared by every process working in the repository, so it
 happens inside a lock:
 
-1. open `<repo>/.dsh.local/git-flow.lock` with `O_EXCL`, writing the pid and a timestamp;
+1. open the lock file beside the ledger with `O_EXCL`, writing the pid and a timestamp;
 2. on `EEXIST`, read the holder; if its pid is gone or its timestamp is older than a generous timeout, break
    the lock and retry once, otherwise wait briefly and retry;
 3. inside the lock: read the ledger, decide, write it (`writeLedger`'s tmp+rename is already atomic per
    write), release.
 
-Whoever holds the lock first and finds the main tree unclaimed takes it; everyone else is assigned an own
-tree. That rule needs the ledger inside the lock, because "is the main tree free" is exactly what the lock
-protects. The lock does **not** decide whether anyone is physically standing in the main tree — that is git's
-answer (`worktree list --porcelain`), and it is what the guard checks before allowing a write.
+Whoever holds the lock first and finds the main tree **free** — unclaimed, and with no other live session
+resident in it — takes it; everyone else is assigned an own tree. That rule needs the ledger inside the lock,
+because "is the main tree free" is exactly what the lock protects. The lock does **not** decide whether anyone
+is physically standing in the main tree — that is git's answer (`worktree list --porcelain`) and the
+registry's — and it is what the guard checks before allowing a write.
 
 The lock also removes the lost-update race that this design would otherwise make ordinary: with claiming on
-every session's first step, two processes starting at once would each read an empty ledger and each write
-their own record, and one claim would disappear. (Reads stay lock-free: a reader that catches a
-half-visible state can only be wrong for one step, and the next step re-reads.)
+the first write of every session that writes, two processes whose first writes land together would each read
+an empty ledger and each write their own record, and one claim would disappear. (Reads stay lock-free: a
+reader that catches a half-visible state can only be wrong for one step, and the next step re-reads.)
 
 ## Peer liveness from the registry, peers across processes from the ledger
 
-`ctx.sessions` is the harness's own in-memory store: `get(id)` and `list()` ("all live sessions, in creation
-order"), each session carrying `header.cwd`, `parentSession`, `origin` and `delegationDepth`. That answers
-occupancy for **this process** exactly and without a single write — including sessions that have not claimed
-anything yet, which is precisely the case a write-based mechanism cannot cover.
+The two sources answer two different questions, and the difference matters more now that claiming is tied to
+writing:
+
+- the **ledger** records *claims* — what a session has declared it is about to do;
+- the **registry** (`ctx.sessions`: `get(id)`, `list()` — "all live sessions, in creation order", each with
+  `header.cwd`, `parentSession`, `origin`, `delegationDepth`) reports *residence* — where live sessions
+  physically are, in this process, with no write involved.
+
+Residence is what keeps the claim rule honest. A session can sit in the main tree for an hour without writing,
+and it has no claim during that hour; if "free" meant only "unclaimed", a second session could claim the tree
+out from under it and both would be in it, one of them told to work elsewhere. So a tree is free when **no
+claim owns it and no other live session's cwd is inside it** — the first half comes from the ledger, the second
+from the registry, and both are needed for the sentence to be true. The exclusion of *other* is not a detail:
+a session claiming a tree is, by definition, standing in it, so a rule without it would never let anyone claim
+anything.
 
 Peer identity is folded through `sessionRoot` before it counts, or a family's own subagents register as
 strangers and flip `wantsOwnCheckout` — the bug `03fd42c` fixed, reintroduced through a new data source.
 
-The ledger stays, for the case the registry cannot see: a second dsh process working in the same repository.
-The division is clean and worth stating as a rule:
+The ledger stays for what the registry cannot see: a second dsh process in the same repository. Stated as a
+rule:
 
-- **same process** — the registry is authoritative, and needs no claim at all;
-- **other processes** — the ledger is the only channel, and it requires that session to have claimed;
+- **same process** — the registry is authoritative for residence, the ledger for claims;
+- **other processes** — the ledger is the only channel, and it requires that session to have claimed, which
+  under this timing means it has written;
 - **neither is a veto on the other**: a peer is a peer if either source reports it.
 
 `agent/status` (`idle ⇄ running`) is available and deliberately *not* used to decide whether a peer is in
@@ -169,20 +224,26 @@ repository in this process?" — and never answers "is the recorded state still 
 - **Invalidation is explicit** at `/git-start` (the claim's branch changed) and `/git-complete` (the claim is
   released), and the state is re-read, not assumed.
 - **It suppresses writes, never checks.** The guard keeps asking git what is true on every file-mutating
-  call; the latch only stops the claim path from rewriting the ledger on every step.
+  call; the latch only stops the claim path from rewriting the ledger when nothing has changed.
 
 ## The guard after this change
 
-Two of its three jobs get simpler and one gets earlier:
+Its three existing jobs stay, with one addition ahead of them:
 
-- **containment** — unchanged in shape, but now fed by a claim that exists from the first step, so a session
-  isolated mid-life is redirected for its whole life rather than from the write that created the worktree.
-- **claimant test** — becomes "does another live claim own the tree I am about to write into", comparing
-  trees instead of branches (`guard.ts:166-180` loses its `record.branch === snapshot.branch` conjunct, and
-  gains correctness for a peer that switched branches by hand).
-- **the integration-branch test** — the auto-start it triggers still happens where it does today: at the
-  first write, when the session's intent is available and a name can be derived or asked for. Claiming does
-  not open a branch, so nothing about naming moves.
+- **`ensureClaim()` runs first**, because every later decision depends on knowing which tree this family owns.
+  The guard becomes the single place where a session's existence is established — which is the point of the
+  timing: it is the last moment before the invariant can be broken, and the first moment at which breaking it
+  would matter.
+- **containment** — unchanged in shape, now fed by a claim that exists before the first write, so a session
+  isolated mid-life is redirected for the rest of its life rather than from the write that created the worktree.
+- **claimant test** — becomes "does another live claim own the tree I am about to write into", comparing trees
+  instead of branches (`guard.ts:166-180` loses its `record.branch === snapshot.branch` conjunct, and gains
+  correctness for a peer that switched branches by hand). The tree comparison subsumes the branch one because
+  git allows a branch in at most one working tree, so a family's branch can only be checked out in the tree it
+  owns.
+- **the integration-branch test** — unchanged: the auto-start it triggers still happens at the first write,
+  when the session's intent is available and a name can be derived or asked for. Claiming does not open a
+  branch, so nothing about naming moves.
 
 Assignment stays lazy on purpose. A session that asks a question and never writes should not get a worktree,
 a branch, or an entry in a "branches nobody completed" report — the eager version of this design pays a full
@@ -195,14 +256,19 @@ The injection already exists and already covers subagents: `registerPrompt` regi
 and context, and the context's text provider resolves identity with `sessionRoot(agent, ctx.sessions)`
 (`prompt.ts:126`), so a subagent renders its family's text. What is missing is only the guarantee that it is
 *not empty* — `renderState(undefined)` returns `""`, and a snapshot exists only after some asynchronous path
-refreshed it. Claiming at pre-step is what fills that gap for the first step.
+refreshed it. The pre-step observation is what fills that gap, and it has to be the observation rather than the
+claim: a session that reads first and negotiates a name needs to know where it is standing *before* it writes
+anything.
 
 Two things stay as they are, deliberately:
 
 - **the prompt is advisory; the guard is the enforcement.** Text that says "write in your worktree" does not
   stop a write; the deny-and-redirect in the guard does, and it must keep naming the absolute path.
-- **no model call is added to the claim path.** Claiming is fixed logic: no naming, no judgement, no
-  latency the step has to wait on.
+- **no model call is added to the claim path.** Claiming is fixed logic: no naming, no judgement, no latency
+  the write has to wait on. The naming conversation happens in the open, between the model and the human, during
+  the read-only window — and `/git-start <name>` is what records its outcome, with a `git_start` tool as the
+  model-side counterpart if that gap is ever worth closing (it is the same open item as in
+  [TODO](./todo.md)).
 
 ## Commands
 
@@ -242,7 +308,13 @@ Options:
 | --- | --- |
 | **A. Trust the file contents** (as proposed) | Nothing at runtime; accepts the three failures above |
 | **B. Move the claim out of the working tree** — back to `<git-common-dir>`, which needs no rule because git never stages it | Reverses the `.dsh.local` decision in [Design decisions](./design.md); the worktree rule is still needed, but only on the isolation path |
-| **C. Verify once per repository, cached in the latch** | One check per process per repository — the same "one-time work" the proposal assumes, without trusting anyone |
+| **C. Verify once per repository, cached in the latch** (recommended) | One check per process per repository, on the write path only |
+
+C is the recommendation, and the timing decided above is what makes it cheap enough to be the answer: the
+check runs when a session first writes, which is the same moment the ledger is first written, and a session
+that only reads never pays it. The proposal's premise — that the rule is one-time work per repository — is
+exactly right; C implements that premise instead of assuming it, and it costs nothing that A does not also
+cost, because in a repository that already has the rule the check only reads.
 
 **2. Where the claim is broken when a process dies without a hook.** Recommended: a claim is pruned only
 when its owner is provably gone *and* nothing of its work remains to be reported; a claim whose worktree or
@@ -260,9 +332,10 @@ neither of which opened a branch through `startFlow`, must not both end up allow
 Beyond it:
 
 - `verify-claim.mjs` — the latch (claim once, then skip; loss is a miss), keying by delegation root, the
-  lock (two claimers racing for the main tree: exactly one gets it), and the nullable-branch record.
+  lock (two claimers racing for the main tree: exactly one gets it), the free-tree rule (a resident session
+  with no claim still blocks claiming the tree it is in), and the nullable-branch record.
 - `verify-guard.mjs` (extend) — the claimant test on trees, including the peer that switched branches by
-  hand.
+  hand, and the read-only path: a `read`/`grep` call must write nothing at all.
 - `verify-flow.mjs` (extend) — `/git-cleanup`: an orphan worktree is removed, a dirty one and an unmerged
   branch are reported and left alone.
 
