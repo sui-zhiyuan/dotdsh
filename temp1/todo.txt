@@ -1,0 +1,26 @@
+我需要创建一个插件（或者其他什么东西？） ， 实现如下功能， 你先搜索 github 上是否有完美实现， 如果有，告诉我，我决定直接使用还是仿照写一个。
+
+1. 主要针对开发过程中 git 使用。
+2. 增加两个指令 /git-start 和 /git-complete
+3. git-start 创建一个 feature 分支， 如果用户已经明确当前session 做什么， 则选择一个合适的 feature 分支名称， 如果没有，则询问用户， 获取答案。
+4. git-complete 将 feature 分支回合 mater ， 并且删除原来分支， 指定 no-ff ， 如果 不是直接下游，则 将所有分支 rebase --onto。
+5. 增加全局信息， 每个步骤后 commit
+6. 增加 Skill ， 规范 commit message 书写 。（或者使用 pre-commit 钩子？？）
+7. 增加 dsh 钩子， 任何修改文件前， 判断是否在 feature 分支， 如果在 master 分支，则自动执行 /git-start
+8. （暂定） 增加并行session 支持， 需要判断当前目录是否有其他 dsh 正在执行（看dsh 是否有合适的接口， 最差办法， 放一个 .dsh_working 的文件标记），如果有，则创建一个  worktree （放在当前repo/.dsh/worktree/xxx 或者其他合适为主， 主要考虑避免文件修改沙盒频繁授权) ，并注册全局提示信息， 当前session 都要在  对应 worktree 下执行， 并且 /git-complete 时要清理对应 workstree。
+
+
+open(path,"wx") 锁间隙问题
+lock.ts 实现为何不直接用文件 指针？
+
+pid 没有意义， session id 可以跨 process 存在。
+（todo  如何判断一个 session 已经结束）
+
+新分支名称 - read-understand？(没有走大模型) （branch.ts 意义是什么？ （name.ts 可以直接用， 可能需要重构整个调用链） ）
+
+切换分支报错
+
+git-flow. 配置文件 "version": 2， 改为 0.1.0 (暂时忽略)
+改为 toml 文件 ，提供注释语义。 
+
+git-complete 没有修改 .gitignore

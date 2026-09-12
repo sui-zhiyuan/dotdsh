@@ -1,0 +1,535 @@
+# `git-flow` 架构说明
+
+`@dsh-external/dotdsh-git-flow` — 一个 dsh 插件，把 feature 分支工作流实现为
+`/git-start`、`/git-complete`、`/git-cleanup` 三个命令 + 一个写前守卫 + 一个
+commit-message skill。
+
+> **这是机器本地快照，不是仓库文档。** 它放在 `.dsh.local/` 下，而该目录按设计
+> 不属于仓库内容（见 `repo.ts` 里 `LOCAL_DIR` 的注释）：插件不给它加 ignore 规则，
+> 改为在自己的 `git status` / `git add --all` 里排除它（`localStatePathspec`）。
+> 因此本文可以引用本机绝对路径。**不要提交它，也不要 `git add --all` 让它进提交。**
+>
+> 若本文要被提升为仓库文档（`doc/src/`），AGENTS.md 要求文档语言为英文，
+> 届时需要重写为英文版。
+
+## 快照来源
+
+| 项 | 值 |
+|---|---|
+| 仓库 | `/home/suine/projects/dotdsh` |
+| 提交 | `844c9d8` — `docs(git-flow): record that the model is not told where it stands` |
+| 提交时间 | 2026-09-12 15:38:09 +0800 |
+| 包版本 | `@dsh-external/dotdsh-git-flow` 0.1.0 |
+| 源码规模 | `src/` 16 个文件，4473 行 |
+| 测试结果 | `pnpm test` 90 项检查全绿（8 个文件） |
+
+**陈旧性自检**：下表是写作时每个文件的行数。若某个文件的行数变了，它那一节
+就需要重读——尤其是 `flow.ts`、`repo.ts`、`guard.ts`。
+
+| 文件 | 行数 | | 文件 | 行数 |
+|---|---:|---|---|---:|
+| `flow.ts` | 725 | | `exec.ts` | 204 |
+| `repo.ts` | 608 | | `branch.ts` | 193 |
+| `commands.ts` | 415 | | `cleanup.ts` | 191 |
+| `runtime.ts` | 394 | | `namer.ts` | 170 |
+| `guard.ts` | 326 | | `index.ts` | 167 |
+| `lock.ts` | 324 | | `state.ts` | 126 |
+| `claim.ts` | 231 | | `skill.ts` | 96 |
+| `session.ts` | 230 | | `prompt.ts` | 73 |
+
+---
+
+# 一、整体分层
+
+依赖只向下指，共 5 层。**16 个文件里有 10 个完全不含 `@deepseek-ai` 导入**——这是这个包能被
+`pnpm test` 在无 harness 环境下跑完整生命周期的前提。
+
+```
+第 4 层 组合根     index.ts ──────────────── 唯一把各行接起来的地方
+第 3 层 适配器     commands.ts  guard.ts  prompt.ts  skill.ts  │ runtime.ts(模型半)
+第 2 层 决策/流程   claim.ts  flow.ts  cleanup.ts  state.ts   │ runtime.ts(配置半)
+第 1 层 仓库事实    repo.ts(账本+事实)   lock.ts(跨进程锁)
+第 0 层 无依赖      exec.ts(进程)  session.ts(会话)  branch.ts  namer.ts
+```
+
+依赖图（`<-` 后是它 import 的本地模块）：
+
+| 模块 | 导入 | 含 harness 依赖 |
+|---|---|---|
+| `exec.ts` | — | 否 |
+| `session.ts` | — | 否 |
+| `branch.ts` | — | 否 |
+| `namer.ts` | branch | 否 |
+| `repo.ts` | exec | 否 |
+| `lock.ts` | exec, repo | 否 |
+| `claim.ts` | exec, flow(t), lock, repo | 否 |
+| `flow.ts` | branch, exec, namer, repo | 否 |
+| `cleanup.ts` | exec, flow(**值**:`integrationOf`), lock, repo | 否 |
+| `state.ts` | exec, flow(t), repo, session | 否 |
+| `runtime.ts` | claim(t), exec, flow, namer, session, state | **是** (`dsh-llm` 值导入) |
+| `prompt.ts` | — | **是** (cordis 类型) |
+| `skill.ts` | — | **是** (`dsh-skill` 值导入) |
+| `commands.ts` | branch, claim, cleanup, exec, flow, runtime, session | **是** (类型) |
+| `guard.ts` | claim, exec, flow, repo, runtime, session | **是** (类型) |
+| `index.ts` | 以上全部 | **是** |
+
+`(t)` = 仅类型导入。三条反向边只有 `cleanup.ts → flow.ts` 是运行时的。
+
+**两条缝决定了全部可测性**：`exec.ts` 是唯一的进程出口（生产用 `ctx.subprocess`，
+测试用 `nodeRunner`），`repo.ts` 是唯一的仓库事实出口。`flow.ts` 因此完全无 harness，
+能拿一个临时仓库跑 rebase/merge/worktree 全流程。
+
+---
+
+# 二、逐文件导出清单
+
+## 第 0 层：无依赖内核
+
+### `exec.ts` — git 客户端与进程缝
+
+**目的**：定义全包唯一的进程启动点，以及其它模块共用的 git 词汇。选
+`ctx.subprocess.spawn({argv})` 而非 `ctx.shell` 是有代价的决定：argv 永不经 shell 解释
+（分支名、路径、commit message 都是人和模型给的字符串），代价是放弃 shell 那侧的沙箱约束。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `RunResult` | interface | `Runner` 实现者、`GitError` | 一次进程结果：code/stdout/stderr，被信号杀死时 code 为 `-1` |
+| `Runner` | type | `Git.run/text/ok` 调用它；`subprocessRunner`、`nodeRunner` 实现它 | 跑一个进程的抽象，argv 数组 + cwd/signal/env |
+| `GitCallOptions` | interface | 所有 `Git` 方法的调用方 | 单次调用的 `signal` / `env` 附加 |
+| `GitError` | class | `Git.text` 抛出；调用方用 `.catch(() => …)` 容忍失败（如 `revParse` 取不存在的 ref） | 非零退出的 git 调用，带 args/code/stderr 三个字段供报告 |
+| `GIT_ENV` | const | 仅 `gitClient`（同文件） | 强制 `LC_ALL=C`、`GIT_TERMINAL_PROMPT=0`、`GIT_OPTIONAL_LOCKS=0`；最后一条让 guard 能在别人提交时读 git |
+| `Git` | interface | `repo.ts`/`flow.ts`/`claim.ts`/`cleanup.ts` 每个函数的第一参数 | 绑定到某工作目录的 git：`run`/`text`/`ok`/`withCwd` |
+| `gitClient(runner, cwd)` | function | `guard.ts:150`、`commands.ts`（三处 handler） | 把 runner 绑到目录；`withCwd` 是"在另一个工作树里执行"的唯一手段 |
+| `nodeRunner` | const | 全部 8 个测试文件；任何没有 harness 的调用方 | `node:child_process` 无 shell 实现 |
+
+### `session.ts` — 读会话：做什么、在哪、以谁的身份
+
+**目的**：从 harness 取三个事实（cwd、session id、对话），并把"身份"从**会话**提升为
+**委托链的根**。最后一点是全插件的键：子 agent 跑在父 agent 的工作目录里，按直接会话记键
+会让先写的那一方成为记录主人，另一方看到陌生人再开第二个分支——把第一个的分支从底下挪走。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `AgentLike` | interface | `state.position`、`guard`、`commands`、`createModelNamer` 的参数类型 | 结构化描述 agent（不 import harness），`Agent` 天然满足 |
+| `sessionCwd(agent)` | function | `guard.decideToolCall`、`commands` 三个 handler | `agent.session.header.cwd`；空串归一为 `undefined` |
+| `sessionId(agent)` | function | **无调用方**（定义之外零处） | 原始 session id；文档说明它**不是**插件记键用的东西 |
+| `SessionRegistryLike` | interface | `index.apply` 传 `ctx.sessions`；`sessionRoot` | 只需要 `get(id)` 的注册表切片，`SessionStore` 满足 |
+| `isDelegate(agent)` | function | `guard`、`commands.depsFor` | `origin === "subagent"` 或有委托深度 |
+| `sessionRoot(agent, sessions)` | function | `guard:151`、`commands.depsFor:51` | **全插件的身份键**：沿 `parentSession` 向上走到最顶；中断在第一个不再驻留的祖先（得到更粗但不错的身份） |
+| `sessionIntents(agent)` | function | 仅同文件 `sessionIntent` | 取前 8 条真人 prompt，最旧优先——开场的 prompt 说明目的，最近一条常是"好，继续" |
+| `sessionIntent(agent)` | function | `guard:276`、`commands` 的 `/git-start` | `sessionIntents()[0]`，即分支命名的输入 |
+
+### `branch.ts` — 机械命名规则
+
+**目的**：需求"会话已说明在做什么就取名"的前半段。`undefined` 是它的"我判断不了"信号，
+这才让"问人"成为可达路径而不是永不触发的 fallback。非拉丁语句故意返回 `undefined`：
+只因为句子里出现 `github` 就命名成 `feature/github` 是**看起来有意、实际没有**的错误名字，
+比问一句贵得多。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `slugify(text)` | function | `branchNameFromIntent`、`worktreeDirectoryName`、`namer.slugFromCandidate`、`namer.stripPrefixWord` | 一切非 `[a-z0-9]` 塌成 `-`；去首个动词、去停用词、最多 6 词 48 字符 |
+| `branchNameFromIntent(intent, prefix)` | function | `flow.startFlow:347` | 非拉丁先拒；再 slugify；返回完整分支名或 `undefined` |
+| `hasBranchPrefix(branch, prefix)` | function | `flow.startFlow/completeFlow/resolveRecord`、`commands.normalizeName` | 前缀判定，且前缀后必须还有名字 |
+| `worktreeDirectoryName(branch, prefix)` | function | `flow.startFlow:428` | `feature/add-login` → `add-login`；结果永不含 `/`，故永不逃出 worktree 根 |
+
+模块私有：`LEADING_VERBS`（26 个）、`STOP_WORDS`、`isLatinScript`（拉丁字母数 vs 非拉丁
+字母数比较，让 "add support for 中文 filenames" 仍能命名而 "修复 login 跳转" 去问人）。
+
+### `namer.ts` — 机械规则失效时的第二策略
+
+**目的**：模型兜底，且**永远最后**才用。三条不变量：模型输出是**输入不是名字**
+（一律重跑 slug 规则）；任何失败都答 `undefined`（绝不从写前门抛出）；`unnamed` 带 reason
+而不是裸 `undefined`——"没名字"有几种不同成因，需要不同修法，而 harness logger 并非每个面
+都可见，reason 只能走"调用方展示的那条消息"这个永远可见的通道。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `NamingAttempt` | type | `createModelNamer` 产出；`flow.startFlow:360-371` 消费；最终进入 `StartResult.need-name.reason` | `{named, candidate}` 或 `{unnamed, reason}` |
+| `IntentNamer` | type | `FlowDeps.namer`、`Runtime.namerFor`；由 `createModelNamer` 实现 | `(intent, signal?) => Promise<NamingAttempt>` |
+| `slugFromCandidate(candidate)` | function | `flow.startFlow:365` | 剥装饰/标签，**按词数(>6)和 `[.!?]` 拒散文**——这是 `i-am-not-sure-what-call` 那次教训的产物 |
+| `stripPrefixWord(slug, prefix)` | function | `flow.startFlow:366` | 防止模型答 `feature/login` 变成 `feature/feature-login`；不会把 slug 清空 |
+| `namingPrompt(intent)` | function | `runtime.oneNamingAttempt:335` | user 轮正文：2–5 词、kebab、忽略"顺带提到"的词 |
+| `NAMING_SYSTEM` | const | `runtime.oneNamingAttempt:347` | system 槽一句话 |
+
+## 第 1 层：仓库事实与持久化
+
+### `repo.ts` — 仓库事实 + 每 clone 的 claim 账本（608 行，最大）
+
+**目的**：账本记录"**哪个 family 在哪个工作树里工作**"，它是"谁可以写哪里"的权威。
+claim 与分支**解耦**：claim 先于分支存在（所以 `branch` 可空），`startFlow` 只填它自己开的
+分支——记录"碰巧签出的是什么"会让 `/git-complete` 提议合并陌生人的分支。账本锚在**主工作树**：
+从会话自己目录解析会给每个 linked worktree 一份副本，而 worktree 会话读到的那份恰恰就是
+无法告诉它"已经有别的会话在这里"的那份。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `WorktreeEntry` | interface | `worktreeList`/`worktreeWithBranch` 返回；`flow.TreeFacts.trees`、`claim`、`cleanup` 消费 | 一个工作树：path/head/branch/prunable |
+| `OutstandingBranch` | interface | `otherLiveClaims` 产出 → `StartResult.outstandingBranches` → `reportStart` | 死会话留下的分支；记录被丢弃，这是唯一一次报告 |
+| `ClaimTree` | type | `SessionClaim.tree`；`claim.ensureClaim`、`flow.record` 写入 | `"main"` \| `"own"` |
+| `SessionClaim` | interface | 全插件读写账本的记录类型 | sessionId/repoKey/repoRoot/tree/worktreePath/**可空 branch**/integration/baseCommit/pid/claimedAt |
+| `ClaimRegistry` | interface | `ClaimDeps.registry`、`FlowDeps.registry`、`CleanupDeps.registry`；由 `ctx.sessions` 实现 | 活性判定只需 `get(id): unknown` |
+| `ClaimPatch` | interface | `claim.ensureClaim`、`flow.record` 构造；`updateClaim` 消费 | 可空字段的补丁；**只带调用方真正决定了的字段** |
+| `LOCAL_DIR` = `.dsh.local` | const | `localStatePathspec`；`localDir` | 机器本地状态目录。叫 `.local` 而非 `.dsh`，因为 harness 已把 `<project>/.dsh/skills` 当**项目** skill 读，忽略 `.dsh/` 会静默让团队的 skill 不被跟踪 |
+| `LEDGER_FILE` = `git-flow.json` | const | 仅同文件 `ledgerPath` | 按属主命名而非 `state.json`：`.dsh.local` 是共享命名空间 |
+| `repoRoot(git)` | function | `state.repoOf`、`claim.ensureClaim`、`cleanup.cleanupFlow`、`flow.treeFacts`、`mainWorktree` 兜底 | `rev-parse --show-toplevel` |
+| `commonDir(git)` | function | `claim`、`cleanup`、`flow.record`、`otherLiveClaims` | `--git-common-dir`；**所有 worktree 相同 → 这才是仓库身份** |
+| `currentBranch(git)` | function | `state.position`、`flow` 三处 | 分离头指针时 `undefined` |
+| `branchExists(git, branch)` | function | `defaultIntegrationBranch`、`otherLiveClaims`、`flow` | `show-ref --verify` |
+| `defaultIntegrationBranch(git)` | function | `state.repoOf`、`claim.integrationOf`、`flow.integrationOf` | 顺序：`origin/HEAD` → `main` → `master`；都没有才抛 |
+| `isAncestor(git, a, b)` | function | `cleanup`（未合并分支判定）、`flow.isDirectDescendant` | `merge-base --is-ancestor` |
+| `mergeBase(git, a, b)` | function | `flow.startFlow`（记 baseCommit）、`flow.completeFlow`（rebase 判据） | 最佳共同祖先 |
+| `revParse(git, rev)` | function | `flow`（baseCommit/mergeCommit/collectedCommit/integrationTip）、`cleanup` | 解析成 commit id（`^{commit}`） |
+| `localStatePathspec(mainTree, worktreeRoot)` | function | `flow.completeFlow`、`cleanup.cleanupFlow` | 返回 `:!.dsh.local`（必要时再加 worktreeRoot）。**这个包不加 ignore 规则**，改为在自己的 `status`/`add --all` 里排除——避免 `git add --all` 把机器本地绝对路径或 gitlink 提进提交 |
+| `isClean(git, exclude)` | function | `flow.completeFlow`（3 处）、`cleanup` | `status --porcelain` 为空 |
+| `worktreeList(git)` | function | `claim`、`cleanup`、`flow.treeFacts`、`mainWorktree`、`worktreeWithBranch` | 解析 porcelain；git 保证主树在第一位 |
+| `worktreeWithBranch(git, branch)` | function | `flow.completeFlow`（rebase 树、merge 树各一次） | 哪个工作树签出了这个分支——git 保证至多一个 |
+| `mainWorktree(git)` | function | 仅同文件 `localDir` | 主工作树绝对路径；`.dsh.local` 的锚点 |
+| `localDir(git)` | function | `lock.lockPath`；同文件 `ledgerPath` | `<主树>/.dsh.local` |
+| `readLedger(git)` | function | `state.position`、`claim`、`flow`（两处）、`cleanup`、`otherLiveClaims`、`updateClaim`、`dropClaim` | 缺失/损坏/版本不符一律读作 `{}`：账本是簿记，丢了可以孤立一个 worktree，但**绝不能挡住 git 流程** |
+| `writeLedger(git, claims)` | function | `updateClaim`、`dropClaim`、`otherLiveClaims`(persist)、`cleanup` | 写临时文件再 rename（原子） |
+| `updateClaim(git, id, patch)` | function | `claim.ensureClaim:192/204`、`flow.record:254` | **写 claim 的唯一途径**。读-改-写合并是重点：claim 路径决定 tree，flow 决定 branch，谁写整条记录都会抹掉对方的决定 |
+| `dropClaim(git, id)` | function | `flow.completeFlow:697` | 删除一条记录 |
+| `isProcessAlive(pid)` | function | `isClaimLive`、`lock.isAbandoned` | `process.kill(pid,0)`；`EPERM` 也算活着 |
+| `isClaimLive(claim, registry, ownPid)` | function | `claim.ensureClaim`、`cleanup`、`otherLiveClaims` | **三档**：注册表里有→活；pid 等于自己但注册表里没有→死（**pid 永远看不见的情形**：多会话共享一个进程，关闭的会话留着活 pid）；其余看 pid |
+| `otherLiveClaims(git, own, registry, pid, {persist})` | function | `guard:225`、`flow.startFlow`（3 处） | 返回其它活 claim + repoKey + 待认领分支。`persist` 只在**被要求改变什么**的命令里为真；guard 每次写文件都调它，但只写自己那条——门卫不该在热路径上扫别人的记录 |
+
+### `lock.ts` — claim 的仓库级锁
+
+**目的**：claim 是共享 JSON 的读-改-写，必须在锁下进行。用 `open(…, "wx")` 让**内核**
+而不是进程来保证互斥，一个机制同时覆盖"同进程两会话"（常态）和"两个 dsh 进程"。
+四条义务各有其静默失败模式：临界区**不得 await git**（同进程共享事件循环）；等待必须异步且
+带抖动（实测不公平锁会 45/3 分裂）；释放是**按 token 比较后删除**（被抢锁的旧持有者仍在
+临界区内）；**仅凭超时不破活锁**。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `LockHolder` | interface | `tryCreate` 写入、`inspect` 读取 | `{token, pid, at}`；token 让释放能辨认是不是自己的锁 |
+| `isAbandoned(state, now)` | function | `breakIfStale`；**`test/verify-lock.mjs`** | "持有"与"遗弃"之分是整个破锁安全论证，所以导出为纯函数。**空文件只按年龄判**：`open` 先于 `write` 建文件，别人合法读到空文件；新=有人正在到，旧=有人死了 |
+| `LockTimeoutError` | class | `acquire` 抛出；**`claim.ensureClaim` 捕获**并转成 `{kind:"blocked"}` | 超时未能取锁 |
+| `LockState` | type | `inspect` 产出；`isAbandoned`/`sameState` 消费 | `absent` \| `held` \| `blank{mtimeMs}` |
+| `LockHandle` | interface | `acquire`/`tryCreate` 返回；`withLock` 消费 | `release()`——锁已不是自己的时是 no-op |
+| `lockPath(git)` | function | 仅同文件 `withLock` | `<主树>/.dsh.local/git-flow.lock`，与账本同目录，所有 worktree/进程解析到同一文件 |
+| `withLock(git, body, {timeoutMs})` | function | **`claim.ensureClaim:183`、`cleanup.cleanupFlow:115`**（全部调用方） | 在锁下跑一次读-改-写；`body` 必须只做文件系统工作 |
+
+## 第 2 层：决策与流程
+
+### `claim.ts` — claim 路径：确保这个 family 声明了它写在哪棵树
+
+**目的**：claim 是为了**写**而存在的，不是为了让模型思考。它决定**树**（主树还是自己的
+一棵），**不决定分支**——claim 写在任何分支存在之前。"树空闲"的判据是**没有 claim 拥有它**，
+物理在场不算数：会话的工作目录永不改变，被隔离到 worktree 的会话终生以主树为 `cwd`，
+按 `cwd` 判会让主树永远"被占用"。`ClaimLatch` 是**无权缓存**：它只回答"本进程里这个 family
+在本仓库 claim 过吗"，丢失只是 miss。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `ClaimLatch` | class | `index.apply:130` 实例化；`claim.ensureClaim`、`commands`(forget) 使用 | 把"每 family 一次"的文件写挡在"每工具调用"的门之外。`static key(repoKey, sessionId)` / `has` / `mark` / `forget`（流程改变 claim 内容时清缓存） |
+| `ClaimDeps` | interface | `guard.decideToolCall:167`、`commands.claimDepsFor:81` 构造 | git/sessionId/pid/registry/config/latch/log |
+| `ClaimResult` | type | `guard`（blocked→deny）、`commands`（blocked→error） | `{claimed, changed}` 或 `{blocked, reason}` |
+| `ensureClaim(deps)` | function | **`guard:167`（每次写文件）、`commands` 的 `/git-start` 与 `/git-complete`** | 全部 git 询问都在**锁外**完成（同进程共享事件循环，锁内 await git 会让另一会话的写自旋）；锁内只读账本、判 tree 归属、写一条 patch |
+
+这里就是"插件看不见还没开分支的 session"那个洞的**修复点**：`guard` 在放行路径上调用
+`ensureClaim`，所以一个会话在**第一次要写文件**时就已经进账本了，而不是等到它开分支。
+`ClaimLatch` 让这件事对后续每次工具调用零 I/O。
+
+### `flow.ts` — 两个工作流，作为 git 操作（725 行）
+
+**目的**：无 harness。只接收已经提取好的事实（session id、intent 字符串）和 git 客户端。
+核心语义在 `/git-complete`：`--no-ff` 让"特性从哪开始"留在历史里，但一旦集成分支移动过，
+merge base 就陈旧了，此时先用 `rebase --onto <integration> <merge-base> <branch>` 重放。
+显式 upstream 是安全性所在：只有 `<merge-base>..<branch>` 被重放，分支点以下不会被拖进来。
+冲突一律 abort + 报告，**绝不自动解决，绝不 force-push**。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `FlowConfig` | interface | `ResolvedConfig extends FlowConfig`；`repo`/`claim`/`cleanup` 只 import 类型 | 流程需要的设置子集（6 项，不含 guard 两项） |
+| `FlowDeps` | interface | `commands.depsFor:48`、`guard.decideToolCall:265` 构造 | git/sessionId(root)/isDelegate/pid/registry/config/namer?/signal? |
+| `StartResult` | type | `guard:279`（按 kind 分支）、`commands.reportStart` | `started` \| `already-on-feature` \| `need-name` \| `blocked` |
+| `CompleteResult` | type | `commands.reportComplete`（唯一消费者） | `merged` \| `no-changes` \| `conflicted`（带 during: rebase/merge）\| `need-branch` \| `blocked` |
+| `integrationOf(git, config)` | function | `flow` 内部两处、**`cleanup.cleanupFlow:108`** | config 有就用，否则探测；跨模块导出给了 cleanup |
+| `startFlow(deps, intent, explicitName?)` | function | `guard:265`、`commands` 的 `/git-start` | 三级命名（机械→模型→问人）+ 采纳已在的前缀分支 + 需要时建 worktree |
+| `completeFlow(deps)` | function | 仅 `commands` 的 `/git-complete` | collect 未提交 → 判是否 rebase → 在持有集成分支的树里 `--no-ff` merge（没有则临时 worktree）→ 删 worktree → 删分支 → `dropClaim` |
+| `isDirectDescendant(git, integration, branch)` | function | **无调用方**（见缺口 3） | 文档说是"让命令层预告 /git-complete 会不会 rebase" |
+
+两处值得注意的细节：`startFlow:315` 的**陌生人分支**例外——两个顶层会话共用一个工作目录时，
+第二个看到的是第一个的分支，采纳它会把两人的工作压到一条分支上，所以它落下去走 worktree 路径。
+`completeFlow:626` 的临时 merge worktree 建在 `os.tmpdir()` 而非仓库内：只存在几秒、
+agent 从不编辑、进程中途死掉也不会在仓库里留下 linked repository。
+
+### `cleanup.ts` — `/git-cleanup`：没走完就结束的会话留下了什么
+
+**目的**：会话随时可能结束，留下 claim、worktree、分支。claim 是三者中**唯一无法从 git
+重新推导**的。所以先报告再删除，且**从不删除工作**：干净的、无主 worktree 删掉；脏的留下
+（未提交的工作别处不存在）；集成分支没有的提交所在的分支留下并报告（删未合并的工作就是
+工作丢失的方式，再多簿记也救不回来）。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `KeptWorktree` | interface | `CleanupResult.keptWorktrees` | path + reason |
+| `CleanupResult` | interface | `commands.reportCleanup`（唯一消费者） | removed/kept worktrees、unmerged branches、forgotten claims、live claims 计数 |
+| `CleanupDeps` | interface | `commands` 的 `/git-cleanup` handler 内联构造 | git/config/registry/pid/signal |
+| `cleanupFlow(deps)` | function | `commands` 的 `/git-cleanup`；**`test/verify-flow.mjs`** | 在锁下修剪死 claim（此时最后一次点名它们的分支），再处理 worktree 与分支报告 |
+
+### `state.ts` — 一个会话此刻站在哪里
+
+**目的**：guard 每次写文件都问它，命令问一次。缓存的是**昂贵且稳定**的部分（某个目录的
+工作树与集成分支，几个子进程才能解析，会话期间不变）；**每次重读**的是能在脚下改变的部分
+（分支、这个 family 被分配到哪棵树）。这里曾经还有一个 per-session 缓存，是为了让**同步的**
+system-prompt provider 报告会话分支——随那次注入一起删掉了（见 `prompt.ts`）。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `SessionPosition` | interface | `guard`（决策的全部输入） | repoRoot/branch/integration/**worktreePath**/onIntegration |
+| `GitFlowState` | class | `index.apply:127` 实例化；`guard`、`commands` 使用 | `repoOf`（内部缓存，仅 `position` 调用）/ `invalidateRepos`（克隆可能在会话期间获得或改变 refs）/ `position(git, agent, config, identity)`（**identity 是委托链根**；用子会话自己的 id 会读不到 claim，从而丢掉"family 共享一棵树"的围堵） |
+
+### `runtime.ts` — 共享运行时：一个进程缝 + 配置 + 模型命名
+
+**目的**：把进程缝、状态缓存、已解析设置串给命令层与 guard 层；另加本包唯一接触 LLM 的地方。
+关于 `ctx.fs`：本插件唯一自己写的文件是账本，走 `node:fs` 而非 `ctx.fs`——给这一个写操作上
+围栏，而做主要文件改动的 git 子进程不受围栏，那是一致性缺失而非边界；而且 `dsh-fs-sandbox`
+在没传 session 策略时会退回**部署**策略，可能按会话本身不在的策略拒绝这次写。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `GuardMode` | type | `Config.guard`、`ResolvedConfig.guard` | `auto-start` \| `block` \| `off` |
+| `ResolvedConfig` | interface | `index.apply:112` 构造；各层读取 | 已 default、已校验；`extends FlowConfig` 让 flow 层只依赖它用得到的部分 |
+| `Runtime` | interface | `index.apply:125` 构造；`commands`、`guard` 消费 | runner/state/config/log?/namerFor?/pid/latch/sessions |
+| `subprocessRunner(subprocess)` | function | `index.apply:126` | 唯一生产用 Runner。注意 `spawn` 无默认值：必须给 cwd、三种 stdio 和 `graceMs`；输出用 collector 保留到退出后才读（git 的输出只有进程结束后才完整） |
+| `NamingHost` | interface | `index.apply` 的 scoped inject 回调满足它；`createModelNamer` 消费 | `llm.stream` + `agentDefaultModel.currentSelection`；结构化的，所以测试能喂假的 |
+| `NamingLog` | interface | `ctx.logger` 满足；`Runtime.log`、`createModelNamer` | `info`/`warn` 两级 |
+| `createModelNamer(ctx, agent, timeoutMs?, log?)` | function | `index.apply:164`（`runtime.namerFor`） | **两次尝试，顺序是关键**：先要求 `reasoningEffort: "off"`，失败再不带该提示重试。适配器只为 `purpose:'session-title'` 关闭思考（这个 purpose 不是、也不能假装是它），放任模型会把 64 token 预算全花在独白上、一个字符都没吐就被截断——实测 `finish: max-tokens` 且无文本。`sessionId` 故意不传：传了会让 checkpoint-policy 在派发前 flush 持久日志，对写前路径上一个两词的分支名来说是真副作用 |
+
+## 第 3 层：适配器（harness 面）
+
+### `commands.ts` — `/git-start`、`/git-complete`、`/git-cleanup`
+
+**目的**：命令处理器的结果**不发给模型**，这正是它们值得作为命令的原因：开分支和收分支是人的
+决定，人要看结果，而不是需要信任模型去执行的指令。唯一既非成功也非失败的结果是"缺名字"——
+报成**带问句的成功**，因为什么都没出错，流程在等人。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `reportStart(result)` | function | `/git-start` handler；**`test/verify-commands.mjs`** | 渲染人要照做的文本；导出是为了让它可测——里面全是分支名、命令、路径，没有任何类型检查 |
+| `reportComplete(result)` | function | `/git-complete` handler；同上 | 同上；conflicted 按 `during` 给两套不同补救指令 |
+| `reportCleanup(result)` | function | `/git-cleanup` handler；**测试未覆盖**（见缺口 4） | 重点渲染"它拒绝删什么" |
+| `registerCommands(ctx, runtime)` | function | `index.apply:150` | 注册三个命令；返回 disposer |
+
+三处设计点：`/git-start` 声明 `input: { hint: "[<branch-name>]" }`——**声明 `input` 才让菜单
+选择变成"补全"而不是"执行"**（客户端决定表：有 `input` 的 host 命令给出 claim，插入
+`/git-start ` 并显示 hint 等参数；没有的则在被选中的瞬间 detached 执行）。`/git-complete`
+与 `/git-cleanup` **故意裸着**：只有"现在"这一个输入，而声明了 `input` 的命令永远无法一次
+Enter 跑起来。`normalizeName` 用 `check-ref-format --branch` 让人给的名字与插件造的 shape
+一致，否则 `/git-complete` 靠前缀认分支会认不出来。
+
+### `guard.ts` — 写前守卫
+
+**目的**：需求"任何文件被修改前，若签出的是集成分支，先开 feature 分支"的不变量。选
+`tools/pre-execute` 因为它能真正拦住调用（`allow`/`deny`/`ask`）。三条缝性质塑造了实现：
+**参数不可改写**（`exec.arguments` 深冻结，没有那类 decision 变体），所以守卫只能放行或拒绝，
+**修正必须写在拒绝消息里**；它是异步的（可以跑 git，但要观察 `exec.signal`）；它在热路径上，
+所以先过滤工具名、再过滤目标路径、最后才问 git。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `decideToolCall(runtime, exec, next)` | function | `registerGuard` 的监听器；**`test/verify-guard.mjs`** 直接驱动 | 导出的理由是决策是 runtime×调用×续延的纯函数，能对着临时仓库跑，从而让"任何文件写前"这条需求由 `pnpm test` 覆盖，而不是靠人记得去试 |
+| `registerGuard(ctx, runtime)` | function | `index.apply:151` | 挂 `tools/pre-execute`，返回 disposer |
+
+决策顺序（每步都有具体的失败在背后）：
+
+1. `guard === "off"` → 放行；非文件工具且非 `guardBash` 的 bash → 放行（bash 参数是命令不是
+   路径，既无法做包含性检查，也无法与 `git status` 区分——开了它，会话跑每条 shell 命令都会
+   开分支）
+2. 目标路径在仓库外 → 放行，**且在 claim 之前**（claim 意味着"这个 family 在本仓库工作"，
+   第一次编辑落在仓库外的会话还没说过这句话）
+3. `ensureClaim` → blocked 就 deny
+4. **worktree 围堵**：有自己 worktree 却在主树写 → deny，消息里给重定向后的路径。
+   这是模型唯一一次被告知该写哪（prompt 不再说会话在哪）
+5. **claimant 检查**（按**树**而非分支比较，因为手工切分支会让记录里的分支过期）→ 若对方
+   拥有这棵树且**不是**"在集成分支上且开了隔离"，则 deny 并让人跑 `/git-start`。
+   这一步必须**在**集成分支检查**之前**：它要抓的恰恰是"签出的不是集成分支"
+6. 不在集成分支 → 放行
+7. `block` 模式 → deny 并指路；否则 `startFlow`；若它隔离了这个会话，把触发写入重定向进 worktree
+
+### `prompt.ts` — "全局信息"
+
+**目的**：一个**静态 section**，承载契约：在 feature 分支上工作、每步提交、用 commit skill、
+不手工合并、不 force-push。**故意没有**描述当前分支/worktree 的 state context——早期版本有
+一个，靠 `state.ts` 的 per-session 缓存保鲜，删掉有三个理由：强制从不依赖它（放行与否由
+guard 跑 git 决定，不靠读 prompt）；它有用的一半已经在正确的时刻到达（被隔离的会话从 guard
+的拒绝里得知，那条消息给出 worktree 和该写的确切文件，及时且永不陈旧）；缓存的分支会撒谎
+（人手工切分支后，注入的行会与事实矛盾，模型可能照矛盾行动）。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `registerPrompt(ctx)` | function | `index.apply:146`；**`test/verify-prompt.mjs`** | 注册 section `git-flow:workflow`，order 550（在 plan/team 策略之后、工具 schema 之前，让它被读作运行策略而非工具文档） |
+
+### `skill.ts` — 打包的 commit-message skill
+
+**目的**：为什么是 skill 而不是 hook：hook 住在 `.git/hooks`、不受版本控制、每个 clone 要
+手工装、且只能在模型已经写好消息后**拒绝**它；skill 在消息写出前塑造它、随插件发布、
+无需安装。以插件内 Markdown 资产注册，走 harness 自己的 bundled skill 同一缝，所以机器上
+不需要 `.dsh/skills/` 目录。注册在 bundled rank，意味着 `<project>/.dsh/skills/` 里同名
+项目 skill 会**盖过**它——这是给有自己约定的仓库留的出口。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `SKILL_NAME` = `"git-commit"` | const | 仅同文件（`CANDIDATE`、`get`） | skill 名，也是项目 skill 覆盖时该用的名字 |
+| `registerSkill(ctx)` | function | `index.apply:138` | 注册 provider；每次 load 都重读正文而不缓存，让包成为文本的唯一真相源 |
+
+模块私有：`CANDIDATE`（`userInvocable: false`——本插件的人面是斜杠命令，宣传一个人类可调用的
+skill 会承诺一个行为不在本包验证范围内的选择器条目）、`provider`、`BODY_URL`（相对构建产物
+解析，安装后仍有效）。
+
+## 第 4 层：组合根
+
+### `index.ts` — 插件声明与装配
+
+**目的**：一个补丁行上交付全部四项能力。
+
+| 导出 | 种类 | 期望调用方 | 作用 |
+|---|---|---|---|
+| `name` = `"git-flow"` | const | dsh loader | 插件名（包名去 scope 去前缀） |
+| `inject` | const | dsh loader | `["commands","systemPrompt","skills","tools","subprocess","sessions"]`；`sessions` 是身份与活性所需 |
+| `Config` | interface | 补丁行作者、`apply` | 设置类型 |
+| `Config` | `z<Config>` | dsh loader（校验 + 补默认） | schemastery schema，8 个键全部带默认 |
+| `apply(ctx, config)` | function | dsh loader，每次激活一次 | default→`validate`→建 `Runtime`→四个 `ctx.effect` 注册→scoped `ctx.inject` 装模型命名器 |
+
+两个决策点：`validate()` 在**加载时大声**拒绝不安全设置（逃出仓库的 `worktreeRoot` 会让
+worktree 落在会话工作区外，harness 文件工具可能够不到，ignore 守卫也完全保护不了它）。
+模型命名器走 **scoped `ctx.inject` 而非插件级 `inject` 数组**：没有模型服务的 profile 仍应
+得到命令、守卫、prompt 贡献和 skill，只是被问要名字；把 `llm` 声明在插件级会让这些功能
+全部去等一个它们不用的服务。
+
+---
+
+# 三、几个结构性事实与已知缺口
+
+## 1. 身份键是 `sessionRoot` 而不是 `sessionId`
+
+全插件的决策（claim、账本记录、worktree 分配、liveness）都按委托链根记键。这解决了
+"子 agent 与父 agent 共用一棵树却被当成两个工作流"的问题，也让子 agent 永远不会拿到
+自己的 worktree。
+
+## 2. `flow.ts` 的无 harness 声明成立
+
+它只 import `node:*` 与 `branch`/`exec`/`namer`/`repo`，一条 `@deepseek-ai` 都没有。
+跨模块的反向依赖只有一条且是运行时的：`cleanup.ts → flow.ts (integrationOf)`。
+
+## 3. 死导出（5 个，无任何调用方）
+
+| 导出 | 情况 |
+|---|---|
+| `flow.isDirectDescendant` | 文档说"让命令层预告 /git-complete 会不会 rebase"，但 `commands.ts` 没 import 它，`StartResult`/`CompleteResult` 里也没有相应字段。要么接上，要么删掉 |
+| `session.sessionId` | 文档自己承认它"不是插件记键用的东西"，实际零调用 |
+| `session.sessionIntents` | 只有同文件 `sessionIntent` 用；导出对包外无意义 |
+| `state.GitFlowState.repoOf` | 公开方法但只有 `position` 调用 |
+| `repo.mainWorktree` | 只有同文件 `localDir` 调用 |
+
+## 4. 测试覆盖
+
+实测 `pnpm test`：**90 项检查，8 个文件，全绿**。
+
+| 文件 | 检查数 | 文件 | 检查数 |
+|---|---:|---|---:|
+| `verify-flow.mjs` | 24 | `verify-claim.mjs` | 8 |
+| `verify-namer.mjs` | 18 | `verify-lock.mjs` | 7 |
+| `verify-guard.mjs` | 16 | `verify-session.mjs` | 5 |
+| `verify-commands.mjs` | 9 | `verify-prompt.mjs` | 3 |
+
+两处缺口：
+
+- `reportCleanup` 的渲染**完全没测**（`cleanupFlow` 本身在 `verify-flow.mjs` 里有覆盖，
+  但输出文本没有）。
+- `/git-cleanup` 与 `/git-complete` 注册进 `ctx.commands` 这件事只在 `verify-commands.mjs`
+  里以桩覆盖。
+
+## 5. 一处过期的文档引用
+
+`src/index.ts:16` 说"两条缝在 `exec.ts` 和 `file-access.ts`"——`file-access.ts` 和当初的
+`ignore.ts` 都已不在树里，被 `repo.localStatePathspec` 的排除路径规格取代（设计从"给
+`.dsh.local` 加 ignore 规则"改成了"自己的命令自己排除"）。这条注释该更新。
+
+## 6. 三份 `isInside`
+
+`guard.ts:89`、`flow.ts:274`、`cleanup.ts:88` 各有一个逐字相同的路径包含判断。三处都在
+第 0 层之上，抽到一个小模块或 `repo.ts` 是直接的清理。
+
+## 7. 并行会话可见性：已修复的洞
+
+"插件看不见还没开过分支的 session"这个问题已经被这轮重构关掉了：
+
+- `guard` 现在在放行路径上调用 `ensureClaim`，会话在**第一次写文件**时就进账本；
+- `ClaimLatch` 保证后续每次工具调用零 I/O（不读账本、不取锁、不写文件）；
+- 活性判定从"只看 pid"改成"注册表优先，pid 兜底"，正是"两个会话共享一个进程"那个
+  pid 永远看不见的情形；
+- `claim.branch` 可空 + `updateClaim` 的 patch 合并语义，保证"先 claim 树、后填分支"
+  不会互相抹掉。
+
+## 8. 现场观察：写作本文时守卫真的触发了，并暴露两个缺陷（2026-09-12 16:03）
+
+写这个文件时，本会话的 `write` 被守卫拒绝并重定向。这是插件在真实会话里的端到端运行，
+留下三条事实。
+
+**a. 命名路径确实工作。** 守卫自动开了分支 `feature/git-flow`，base 为当时的 master 尖端
+`844c9d8`，worktree 建在 `.dsh.local/worktrees/git-flow`，且**主树正确地留在 master**。
+本会话的开场 prompt 是中文，机械规则必然拒绝，所以这个名字来自模型兜底层——即
+`createModelNamer` + `slugFromCandidate` + `stripPrefixWord` 这条链在活体环境里跑通了。
+
+**b. 缺陷一（已复现）：被隔离的会话之后写不进任何地方。**
+`state.position` 的 `onIntegration` 是按**会话 `cwd` 那棵树**的分支算的
+（`currentBranch(git)`，git 绑在 `cwd`），而会话被隔离后 `cwd` 永远还是主树，
+于是 `onIntegration` 恒为 true，守卫每次写入都要重跑一遍 auto-start：
+
+- 目标在 worktree **之外** → 第 4 步 deny + 重定向（这是设计意图，正确）；
+- 目标在 worktree **之内**（模型照做之后的第二次写入）→ 第 4 步放行，第 6 步因
+  `onIntegration` 仍为 true 而继续，第 7 步 `startFlow` 重新算出同一个 worktree 路径，
+  撞上 `facts.trees.some(tree => tree.path === worktreePath)` 的 blocked 分支 → deny。
+
+实测第二次写入（目标就在自己的 worktree 里）得到的原文：
+
+```
+this change would land on master, and a feature branch could not be opened automatically
+(the naming rules declined and the model produced no usable name; a worktree already exists at
+/home/suine/projects/dotdsh/.dsh.local/worktrees/git-flow (another session, or an earlier run of
+this one). Finish or remove it before starting another feature with the same name.).
+Name the feature and run `/git-start <name>`, then repeat the change.
+```
+
+后果比"写不进去"更糟：**守卫给的建议本身走同一条死路**。`/git-start` 也是
+`ensureClaim` → `startFlow` → 同一碰撞，所以"Name the feature and run `/git-start <name>`"
+不可执行；若真换一个名字，只会多出第二条分支和第二个 worktree，把第一个孤立掉。
+会话在仓库内彻底写不了文件，直到那段 worktree 被移除。
+
+判据应当取**被分配到的那棵树**的分支，而不是 `cwd` 那棵树的分支。
+`verify-guard.mjs` 覆盖不到这一半，因为它的用例通常让会话的 `cwd` 就已经在 worktree 里
+（`facts.inWorktree` 为 true），而真实会话里 `cwd` 永不变这个前提被漏掉了。
+
+**c. 缺陷二（同一次复现中暴露）：`blocked` 的拒绝消息把成因说错了。**
+`guard.ts` 结尾的 `cause` 是二选一，只看 `namer` 是否存在：
+
+```ts
+const cause =
+  namer === undefined
+    ? "this build has no model-backed namer installed, so only the naming rules could be tried"
+    : "the naming rules declined and the model produced no usable name";
+```
+
+它不区分 `result.kind`，所以 `kind === "blocked"`（真正的成因是 worktree 已存在）时也照样
+断言"命名规则拒绝、模型没给出可用名字"。同一句 reason 的开头 `this change would land on
+${branch}` 里的 `branch` 又取自 `position.branch`（还是 `cwd` 那棵树），于是对一个
+**位于 worktree 内、属于 `feature/git-flow`** 的写入，消息同时谎称"这个改动会落到 master 上"。
+一条拒绝消息里两句不实陈述，而这个 seam 唯一能传出去的修正通道就是这条消息
+（`exec.arguments` 深冻结，参数不可改写）。
+
+---
+
+## 如何复核本文
+
+```sh
+cd /home/suine/projects/dotdsh/node_src/git-flow
+pnpm test                      # 90 项检查；数量对不上就是测试变了
+wc -l src/*.ts                 # 与"快照来源"表比对，对不上就重读对应文件的章节
+git log -1 --format=%h         # 与快照提交比对
+```
+
