@@ -168,45 +168,58 @@ happens inside a lock:
 3. inside the lock: read the ledger, decide, write it (`writeLedger`'s tmp+rename is already atomic per
    write), release.
 
-Whoever holds the lock first and finds the main tree **free** — unclaimed, and with no other live session
-resident in it — takes it; everyone else is assigned an own tree. That rule needs the ledger inside the lock,
-because "is the main tree free" is exactly what the lock protects. The lock does **not** decide whether anyone
-is physically standing in the main tree — that is git's answer (`worktree list --porcelain`) and the
-registry's — and it is what the guard checks before allowing a write.
+Whoever holds the lock first and finds the main tree **unclaimed** takes it; everyone else is assigned an own
+tree. That rule needs the ledger inside the lock, because "is the main tree free" is exactly what the lock
+protects. The lock decides ownership, not occupancy: whether anyone is physically standing in a tree is git's
+answer (`worktree list --porcelain`), and a session's presence there grants it nothing.
 
 The lock also removes the lost-update race that this design would otherwise make ordinary: with claiming on
 the first write of every session that writes, two processes whose first writes land together would each read
 an empty ledger and each write their own record, and one claim would disappear. (Reads stay lock-free: a
 reader that catches a half-visible state can only be wrong for one step, and the next step re-reads.)
 
-## Peer liveness from the registry, peers across processes from the ledger
+## Liveness from the registry, claims across processes from the ledger
 
-The two sources answer two different questions, and the difference matters more now that claiming is tied to
-writing:
+The two sources answer two different questions, and neither is about where a session happens to sit:
 
-- the **ledger** records *claims* — what a session has declared it is about to do;
+- the **ledger** records *claims* — which family may write in which tree. It is the authority for that, and
+  nothing else is;
 - the **registry** (`ctx.sessions`: `get(id)`, `list()` — "all live sessions, in creation order", each with
-  `header.cwd`, `parentSession`, `origin`, `delegationDepth`) reports *residence* — where live sessions
-  physically are, in this process, with no write involved.
+  `header.cwd`, `parentSession`, `origin`, `delegationDepth`) answers *liveness* — whether the session a claim
+  names is still there, in this process, with no write involved.
 
-Residence is what keeps the claim rule honest. A session can sit in the main tree for an hour without writing,
-and it has no claim during that hour; if "free" meant only "unclaimed", a second session could claim the tree
-out from under it and both would be in it, one of them told to work elsewhere. So a tree is free when **no
-claim owns it and no other live session's cwd is inside it** — the first half comes from the ledger, the second
-from the registry, and both are needed for the sentence to be true. The exclusion of *other* is not a detail:
-a session claiming a tree is, by definition, standing in it, so a rule without it would never let anyone claim
-anything.
+**A tree is free when no claim owns it.** That is the whole rule, and the lock is what makes it sufficient: a
+claim is written by the first writer under the lock, and every later writer reads it and is assigned an own
+tree. Physical presence confers no write right — a session that has claimed nothing is denied a write into
+another claim's tree by the claimant test, so being *in* a tree without a claim cannot cause the collision that
+matters.
+
+Residence was in an earlier draft of this rule, as a second condition, and it was not merely redundant but
+wrong. A session's working directory is immutable, so a session that has been isolated into its own worktree
+still has the **main tree** as its cwd for the rest of its life — it is only *told* to write absolute paths
+inside the worktree. A rule that asked "is any other live session's cwd inside this tree" would therefore mark
+the main tree permanently occupied by a session that will never write in it again, and each isolated session
+would add one more such phantom, leaving the main tree idle while every session sat in a worktree of its own.
+Liveness is needed; residence is not, and using it would have been a leak that grows with the number of
+sessions.
+
+The cost of the narrow rule is one extra worktree, and it is worth stating as an accepted consequence rather
+than discovered later: **the race for the main tree is won by the first writer, not the first session.** A
+session that reads for an hour before writing may find the tree claimed by someone who wrote sooner, and will
+be given its own tree. Nothing can be lost in that move, because a session that had not written had nothing
+there to move.
 
 Peer identity is folded through `sessionRoot` before it counts, or a family's own subagents register as
 strangers and flip `wantsOwnCheckout` — the bug `03fd42c` fixed, reintroduced through a new data source.
 
-The ledger stays for what the registry cannot see: a second dsh process in the same repository. Stated as a
-rule:
+The ledger is also what survives a restart: a claim is a file, so a resumed session finds its own claim and
+takes it back, while the registry — being in memory — has forgotten everyone. That is the other half of why
+the ledger is the authority and the registry is a liveness oracle over it. Stated as a rule:
 
-- **same process** — the registry is authoritative for residence, the ledger for claims;
-- **other processes** — the ledger is the only channel, and it requires that session to have claimed, which
-  under this timing means it has written;
-- **neither is a veto on the other**: a peer is a peer if either source reports it.
+- **same process** — the registry answers liveness, the ledger answers ownership;
+- **other processes** — the ledger is the only channel, and pid is the fallback for liveness, which is exactly
+  where it is known to be wrong (see [TODO](./todo.md));
+- **neither is a veto on the other**: a claim counts if its owner is live by either source.
 
 `agent/status` (`idle ⇄ running`) is available and deliberately *not* used to decide whether a peer is in
 the way. In the Web GUI "idle" means the human may type at any moment, so treating idle as absent would
@@ -332,8 +345,9 @@ neither of which opened a branch through `startFlow`, must not both end up allow
 Beyond it:
 
 - `verify-claim.mjs` — the latch (claim once, then skip; loss is a miss), keying by delegation root, the
-  lock (two claimers racing for the main tree: exactly one gets it), the free-tree rule (a resident session
-  with no claim still blocks claiming the tree it is in), and the nullable-branch record.
+  lock (two claimers racing for the main tree: exactly one gets it), the free-tree rule (a session with no
+  claim is given an own tree when it finally writes, and an isolated session does not hold the main tree by
+  virtue of its unchanged cwd), and the nullable-branch record.
 - `verify-guard.mjs` (extend) — the claimant test on trees, including the peer that switched branches by
   hand, and the read-only path: a `read`/`grep` call must write nothing at all.
 - `verify-flow.mjs` (extend) — `/git-cleanup`: an orphan worktree is removed, a dirty one and an unmerged
