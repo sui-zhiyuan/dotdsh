@@ -52,6 +52,7 @@ function depsFor(runtime: Runtime, agent: AgentLike, git: Git, signal: AbortSign
     sessionId: identity,
     isDelegate: isDelegate(agent),
     pid: runtime.pid,
+    registry: runtime.sessions,
     config: runtime.config,
     ...(namer === undefined ? {} : { namer }),
     signal,

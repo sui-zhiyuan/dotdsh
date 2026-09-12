@@ -39,7 +39,7 @@ import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { gitClient } from "./exec.js";
 import { nodeFileAccess } from "./file-access.js";
 import { startFlow } from "./flow.js";
-import { otherLiveSessions } from "./repo.js";
+import { otherLiveClaims } from "./repo.js";
 import type { Runtime } from "./runtime.js";
 import { isDelegate, sessionCwd, sessionIntent, sessionRoot, type AgentLike } from "./session.js";
 
@@ -161,7 +161,7 @@ export async function decideToolCall(
   // whose branch is not the one actually checked out here is stale — the human
   // switched back, or that session finished without `/git-complete` — and a stale
   // record must not block a tree nobody is using.
-  const { others } = await otherLiveSessions(git, identity);
+  const { others } = await otherLiveClaims(git, identity, runtime.sessions, runtime.pid);
   const inMainTree = snapshot.mainTree !== undefined && snapshot.mainTree === snapshot.repoRoot;
   const claimant = others.find(
     (record) =>
@@ -210,6 +210,7 @@ export async function decideToolCall(
       sessionId: identity,
       isDelegate: isDelegate(agent),
       pid: runtime.pid,
+      registry: runtime.sessions,
       config,
       ...(namer === undefined ? {} : { namer }),
       signal: exec.signal,

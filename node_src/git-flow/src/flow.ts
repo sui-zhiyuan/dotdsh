@@ -63,19 +63,20 @@ import {
   commonDir,
   currentBranch,
   defaultIntegrationBranch,
-  forgetSession,
+  dropClaim,
   isAncestor,
   isClean,
   mergeBase,
-  otherLiveSessions,
+  otherLiveClaims,
   readLedger,
-  rememberSession,
   repoRoot,
   revParse,
+  updateClaim,
   worktreeList,
   worktreeWithBranch,
   LOCAL_DIR,
-  type SessionRecord,
+  type ClaimRegistry,
+  type SessionClaim,
   type WorktreeEntry,
 } from "./repo.js";
 
@@ -111,8 +112,10 @@ export interface FlowDeps {
   readonly sessionId: string;
   /** Whether this session is a delegate (a subagent), rather than one the human opened. */
   readonly isDelegate: boolean;
-  /** Owning process id, recorded so a later run can prune dead sessions. */
+  /** Owning process id, the fallback when the registry cannot answer liveness. */
   readonly pid: number;
+  /** The session registry, asked first about whether another family is still live. */
+  readonly registry: ClaimRegistry;
   /** The resolved plugin settings. */
   readonly config: FlowConfig;
   /**
@@ -236,7 +239,12 @@ async function treeFacts(git: Git): Promise<TreeFacts> {
 }
 
 /**
- * Record this session's branch in the ledger.
+ * Write this family's branch and worktree into its claim.
+ *
+ * A **patch**, not a whole record: the claim path owns the tree assignment and
+ * this only decides the branch and the worktree. Writing the whole record here
+ * would erase the assignment, which is what keeps a session that has been given a
+ * worktree out of the main tree.
  *
  * @param git - a client for the repository.
  * @param facts - this session's tree facts.
@@ -255,16 +263,15 @@ async function record(
   baseCommit: string,
   worktreePath: string | null,
 ): Promise<void> {
-  await rememberSession(git, {
-    sessionId: deps.sessionId,
+  await updateClaim(git, deps.sessionId, {
     repoKey: await commonDir(git),
     repoRoot: facts.mainTree,
+    tree: worktreePath === null ? "main" : "own",
     branch,
     worktreePath,
     integration,
     baseCommit,
     pid: deps.pid,
-    startedAt: new Date().toISOString(),
   });
 }
 
@@ -380,7 +387,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
   // one branch. That session is isolated instead, by falling through to the worktree
   // path below.
   if (branch !== integration && hasBranchPrefix(branch, config.branchPrefix) && explicitName === undefined) {
-    const { others } = await otherLiveSessions(git, sessionId);
+    const { others } = await otherLiveClaims(git, sessionId, deps.registry, deps.pid);
     const stranger = others.find((entry) => entry.branch === branch);
     if (stranger === undefined) {
       const existing = (await readLedger(git))[sessionId];
@@ -441,7 +448,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
   if (name === undefined) {
     // A start that could not name anything changes nothing at all — not a branch,
     // not a worktree, not `.gitignore` — so this read deliberately does not persist.
-    const { others } = await otherLiveSessions(git, sessionId);
+    const { others } = await otherLiveClaims(git, sessionId, deps.registry, deps.pid);
     return {
       kind: "need-name",
       integration,
@@ -456,7 +463,9 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
   // Everything below leaves state in this machine's working tree, so the rule that
   // keeps git out of it comes first.
   const ignore = await ensureLocalIgnored(deps, facts, git);
-  const { others, outstanding } = await otherLiveSessions(git, sessionId, { persist: true });
+  const { others, outstanding } = await otherLiveClaims(git, sessionId, deps.registry, deps.pid, {
+    persist: true,
+  });
 
   const exists = await branchExists(git, name);
   // A delegate normally shares its parent's branch and never reaches here with a name
@@ -536,38 +545,41 @@ async function conflictedFiles(git: Git): Promise<readonly string[]> {
   return [...new Set(raw.split("\n").filter((line) => line !== ""))];
 }
 
+/** The two facts finishing a feature needs about it. */
+interface BranchToFinish {
+  /** The feature branch to merge back. */
+  readonly branch: string;
+  /** The worktree holding it, when the family has one of its own. */
+  readonly worktreePath: string | null;
+}
+
 /**
- * Find this session's record, adopting a prefixed branch that is checked out but
- * was never recorded.
+ * Find the branch this session is finishing, adopting a prefixed branch that is
+ * checked out but was never claimed.
  *
  * The adoption path matters: a session may be resumed, or the ledger may have
  * been deleted, and refusing to finish a branch that is plainly already a feature
  * branch would strand the work.
  *
+ * A claim with no branch is not a candidate — it is a family that has been
+ * assigned a tree and has not opened a feature yet, so there is nothing to
+ * finish.
+ *
  * @param deps - the flow dependencies.
  * @param facts - this session's tree facts.
- * @param integration - the integration branch name.
- * @returns the record to operate on, or `undefined` when there is nothing to finish.
+ * @returns the branch to finish, or `undefined` when there is nothing to finish.
  */
-async function resolveRecord(deps: FlowDeps, facts: TreeFacts, integration: string): Promise<SessionRecord | undefined> {
+async function resolveRecord(deps: FlowDeps, facts: TreeFacts): Promise<BranchToFinish | undefined> {
   const { git, config, sessionId } = deps;
-  const recorded = (await readLedger(git))[sessionId];
-  if (recorded !== undefined) return recorded;
+  const claimed = (await readLedger(git))[sessionId];
+  if (claimed !== undefined && claimed.branch !== null) {
+    return { branch: claimed.branch, worktreePath: claimed.worktreePath };
+  }
 
   const branch = await currentBranch(git);
   if (branch === undefined || !hasBranchPrefix(branch, config.branchPrefix)) return undefined;
 
-  return {
-    sessionId,
-    repoKey: await commonDir(git),
-    repoRoot: facts.mainTree,
-    branch,
-    worktreePath: facts.inWorktree ? facts.own : null,
-    integration,
-    baseCommit: await mergeBase(git, integration, branch),
-    pid: deps.pid,
-    startedAt: new Date(0).toISOString(),
-  };
+  return { branch, worktreePath: facts.inWorktree ? facts.own : null };
 }
 
 /**
@@ -589,7 +601,7 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
   }
 
   const integration = await integrationOf(git, config);
-  const record = await resolveRecord(deps, facts, integration);
+  const record = await resolveRecord(deps, facts);
   if (record === undefined) {
     return {
       kind: "need-branch",
@@ -768,7 +780,7 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
     else deletedBranch = true;
   }
 
-  await forgetSession(git, sessionId);
+  await dropClaim(git, sessionId);
   return {
     kind: "merged",
     branch,

@@ -125,23 +125,50 @@ function registry(headers) {
   return { get: (id) => (id in headers ? { header: headers[id] } : undefined) };
 }
 
+/**
+ * The registry a case needs for a peer to count as live.
+ *
+ * Liveness is not a pid question: this process's pid is alive whether or not one
+ * of its sessions still exists, so a same-process peer is live because it is
+ * **resident**, and a case that seeds one has to say so.
+ *
+ * @param ids - session ids present in this process.
+ * @returns the registry slice.
+ */
+function resident(...ids) {
+  return registry(Object.fromEntries(ids.map((id) => [id, {}])));
+}
+
+/** A claim record for seeding the ledger. */
+function claim(sessionId, overrides = {}) {
+  return {
+    sessionId,
+    repoKey: "",
+    repoRoot: "",
+    tree: "main",
+    worktreePath: null,
+    branch: null,
+    integration: null,
+    baseCommit: null,
+    pid: process.pid,
+    claimedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 /** The continuation: what a call reaching the rest of the pipeline decides. */
 const allow = async () => ({ kind: "allow" });
 
 /** Register another live session in this repository, so the guard sees company. */
 async function addLiveSession(git, root, branch = "feature/other") {
   await writeLedger(git, {
-    "session-other": {
-      sessionId: "session-other",
+    "session-other": claim("session-other", {
       repoKey: await commonDir(git),
       repoRoot: root,
       branch,
-      worktreePath: null,
       integration: "master",
       baseCommit: await git.text(["rev-parse", "HEAD"]),
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-    },
+    }),
   });
 }
 
@@ -154,17 +181,13 @@ await verify("lets a subagent write in its parent's checkout", async () => {
     // every write a subagent made was refused.
     await git.text(["switch", "-c", "feature/parent"]);
     await writeLedger(git, {
-      "session-parent": {
-        sessionId: "session-parent",
+      "session-parent": claim("session-parent", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/parent",
-        worktreePath: null,
         integration: "master",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
     const sessions = registry({ "session-child": { cwd: root, parentSession: "session-parent", origin: "subagent", delegationDepth: 1 }, "session-parent": { cwd: root } });
@@ -187,21 +210,17 @@ await verify("still refuses a sibling in the same checkout", async () => {
     // writing here would land on the other session's branch.
     await git.text(["switch", "-c", "feature/parent"]);
     await writeLedger(git, {
-      "session-parent": {
-        sessionId: "session-parent",
+      "session-parent": claim("session-parent", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/parent",
-        worktreePath: null,
         integration: "master",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
     const sibling = callFor({ cwd: root, sessionId: "session-sibling" });
-    const decision = await decideToolCall(runtimeFor(), sibling, allow);
+    const decision = await decideToolCall(runtimeFor(CONFIG, undefined, resident("session-parent")), sibling, allow);
     assert.equal(decision.kind, "deny");
     assert.ok(decision.reason.includes("same checkout"), `got: ${decision.reason}`);
   } finally {
@@ -272,7 +291,11 @@ await verify("isolates a session that arrives while another is live, and redirec
   const { root, git } = await scratchRepo();
   try {
     await addLiveSession(git, root);
-    const decision = await decideToolCall(runtimeFor(), callFor({ cwd: root }), allow);
+    const decision = await decideToolCall(
+      runtimeFor(CONFIG, undefined, resident("session-other")),
+      callFor({ cwd: root }),
+      allow,
+    );
 
     // The arriving session gets its own checkout — that is the isolation the
     // requirement asks for — and the write that triggered the start is sent to the
@@ -308,20 +331,20 @@ await verify("refuses when another live session is in this very checkout", async
     // guard has to catch, and it is not the same question as "are others live".
     await git.text(["switch", "-c", "feature/shared"]);
     await writeLedger(git, {
-      "session-other": {
-        sessionId: "session-other",
+      "session-other": claim("session-other", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/shared",
-        worktreePath: null,
         integration: "master",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
-    const decision = await decideToolCall(runtimeFor(), callFor({ cwd: root }), allow);
+    const decision = await decideToolCall(
+      runtimeFor(CONFIG, undefined, resident("session-other")),
+      callFor({ cwd: root }),
+      allow,
+    );
     assert.equal(decision.kind, "deny");
     assert.ok(
       decision.reason.includes("same checkout"),
@@ -340,7 +363,11 @@ await verify("a stale record does not block a free tree", async () => {
     // out here — the human switched back, or it finished without /git-complete.
     // A record is a claim about the past; the tree's actual branch decides.
     await addLiveSession(git, root, "feature/other");
-    const decision = await decideToolCall(runtimeFor(), callFor({ cwd: root }), allow);
+    const decision = await decideToolCall(
+      runtimeFor(CONFIG, undefined, resident("session-other")),
+      callFor({ cwd: root }),
+      allow,
+    );
     assert.equal(decision.kind, "deny", "isolation still applies while another session is live");
     assert.ok(
       decision.reason.includes(".dsh.local/worktrees/"),
@@ -399,17 +426,15 @@ await verify("keeps an isolated session inside its worktree", async () => {
     const worktree = join(root, ".dsh.local/worktrees/login");
     await git.text(["worktree", "add", "-q", "-b", "feature/login", worktree]);
     await writeLedger(git, {
-      "session-a": {
-        sessionId: "session-a",
+      "session-a": claim("session-a", {
         repoKey: await commonDir(git),
         repoRoot: root,
+        tree: "own",
         branch: "feature/login",
         worktreePath: worktree,
         integration: "master",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
     const stray = await decideToolCall(

@@ -1,21 +1,28 @@
 /**
- * Repository facts and the durable per-clone session ledger.
+ * Repository facts and the durable per-clone ledger of **claims**.
  *
- * Everything here is either a read of git's own state or the bookkeeping this
- * plugin keeps about which session owns which feature branch. The bookkeeping
- * lives in the repository's **common** git directory
- * (`<git-common-dir>/dsh-git-flow/`), deliberately not in the working tree:
+ * A claim is one family's declaration that it is working in one repository, and
+ * which working tree it is doing that in. It is the authority for "who may write
+ * where": a tree is free when no claim owns it, and the pre-write guard denies a
+ * write into a tree another live claim owns. Physical presence confers nothing —
+ * a session's working directory never changes, so a session isolated into a
+ * worktree still has the main tree as its `cwd` for the rest of its life, and a
+ * rule that consulted `cwd` would mark that tree occupied forever.
  *
- * - it is per-clone, which is the right scope for machine-local worktree paths;
- * - it is never staged, so it can never be swept into a commit by this plugin's
- *   own per-step commits or by another session's `git add --all`;
- * - it needs no `.gitignore` entry of its own, so the ignore guard has exactly
- *   one thing to protect — the worktree root — and stays explainable.
+ * The ledger lives at `<main worktree>/.dsh.local/git-flow.json`, anchored to the
+ * main tree because a path resolved from the session's own directory would give
+ * every linked worktree its own copy — and the copy a worktree session reads is
+ * exactly the one that cannot tell it that another session is already working
+ * here. This plugin does not add an ignore rule for it (see the design note); it
+ * excludes the directory from its own git commands instead.
  *
- * Sessions are identified by the harness session id, not by process id: several
- * sessions can share one harness process, so a pid cannot tell two of them
- * apart. The pid is recorded only to let a later run prune records whose process
- * has died.
+ * **Liveness is not ownership.** Which claim is still in force is a separate
+ * question from which claim exists, and the answer differs by process: a claim
+ * whose session is resident in *this* process is live; a claim that names a
+ * session of this process which is no longer resident is dead (that is the case
+ * a pid cannot see, because two sessions can share one process); anything else
+ * falls back to the pid. The registry is consulted through {@link ClaimRegistry},
+ * so this module stays free of the harness packages.
  *
  * @module @dsh-external/dotdsh-git-flow/repo
  */
@@ -51,34 +58,98 @@ export interface OutstandingBranch {
   readonly worktreePath: string | null;
 }
 
-/** What this plugin remembers about one session's feature branch. */
-export interface SessionRecord {
-  /** Harness session id that owns this branch. */
+/** Which working tree a family is assigned. */
+export type ClaimTree = "main" | "own";
+
+/** What this plugin remembers about one family's working tree. */
+export interface SessionClaim {
+  /** Harness session id at the root of the family's delegation chain. */
   readonly sessionId: string;
   /** Identity of the repository: its common git directory, shared by all its worktrees. */
   readonly repoKey: string;
   /** Absolute path of the repository's main working tree. */
   readonly repoRoot: string;
-  /** The feature branch the session works on. */
-  readonly branch: string;
-  /** Absolute path of the session's worktree, or `null` when it works in the main tree. */
+  /** The tree this family is assigned: the main tree, or one of its own. */
+  readonly tree: ClaimTree;
+  /** Absolute path of the family's own worktree, or `null` before one exists. */
   readonly worktreePath: string | null;
-  /** The branch this feature will be merged back into. */
-  readonly integration: string;
-  /** Commit the feature branch started from. */
-  readonly baseCommit: string;
-  /** Owning process id, used only to detect records whose process is gone. */
+  /**
+   * The family's feature branch, or `null` when none has been attached yet.
+   *
+   * Nullable on purpose: a claim is written before any branch exists, which is
+   * the honest state for a family that has been assigned a tree and is still
+   * standing on the integration branch.
+   */
+  readonly branch: string | null;
+  /** The branch this feature will be merged back into, once one is known. */
+  readonly integration: string | null;
+  /** Commit the feature branch started from, once one exists. */
+  readonly baseCommit: string | null;
+  /** Owning process id, used only when the registry cannot answer liveness. */
   readonly pid: number;
-  /** ISO timestamp of when the branch was started. */
-  readonly startedAt: string;
+  /** ISO timestamp of when the family claimed its tree. */
+  readonly claimedAt: string;
 }
 
+/**
+ * The registry slice liveness needs: whether a session is resident here.
+ *
+ * Structural rather than imported, so this module — and everything that only
+ * needs "is this claim still in force" — stays independent of the harness
+ * packages and testable without them. `SessionStore` satisfies it.
+ */
+export interface ClaimRegistry {
+  /**
+   * Look up a resident session.
+   *
+   * @param id - the session id to find.
+   * @returns the session, or `undefined` when it is not resident.
+   */
+  get(id: string): unknown;
+}
+
+/** The claim fields a caller may set; everything else is carried over. */
+export interface ClaimPatch {
+  /** Identity of the repository: its common git directory. */
+  readonly repoKey?: string;
+  /** The tree the family is assigned. */
+  readonly tree?: ClaimTree;
+  /** Absolute path of the family's own worktree. */
+  readonly worktreePath?: string | null;
+  /** The family's feature branch. */
+  readonly branch?: string | null;
+  /** The branch the feature merges back into. */
+  readonly integration?: string | null;
+  /** Commit the feature started from. */
+  readonly baseCommit?: string | null;
+  /** Absolute path of the repository's main working tree. */
+  readonly repoRoot?: string;
+  /** Owning process id. */
+  readonly pid?: number;
+  /** ISO timestamp to record, defaulting to now for a new claim. */
+  readonly claimedAt?: string;
+}
+
+/** The ledger file's shape. */
 interface LedgerFile {
-  readonly version: 1;
-  readonly sessions: Record<string, SessionRecord>;
+  readonly version: 2;
+  readonly note: string;
+  readonly claims: Record<string, SessionClaim>;
 }
 
-const LEDGER_VERSION = 1;
+const LEDGER_VERSION = 2;
+
+/**
+ * What the ledger says about itself, for whoever opens it by hand.
+ *
+ * This is a field rather than a comment because JSON has none. It is advisory:
+ * nothing in the plugin reads it, which is why it does not carry any rule the
+ * plugin is relying on someone else to follow.
+ */
+const LEDGER_NOTE =
+  "Machine-local state for the dsh git-flow plugin. It records which session works in which " +
+  "working tree, and its paths are absolute paths on this machine. It is not repository content: " +
+  "do not commit it, and do not stage it with `git add --all`.";
 
 /**
  * The directory this plugin keeps machine-local state in, and the file it keeps
@@ -311,62 +382,102 @@ async function ledgerPath(git: Git): Promise<string> {
 }
 
 /**
- * Read the session ledger.
+ * Read the claim ledger.
  *
- * A missing or unreadable ledger reads as empty: this file is bookkeeping, and
- * losing it may orphan a worktree but must never block a git workflow.
+ * A missing, unreadable, or unrecognized ledger reads as empty: this file is
+ * bookkeeping, and losing it may orphan a worktree but must never block a git
+ * workflow. There is deliberately no migration from the version-1 shape — that
+ * schema recorded a branch instead of a tree assignment, and this plugin has
+ * never been published, so a stale file is simply regenerated.
  *
  * @param git - any client for the repository.
- * @returns the recorded sessions, keyed by session id.
+ * @returns the recorded claims, keyed by session id.
  */
-export async function readLedger(git: Git): Promise<Record<string, SessionRecord>> {
+export async function readLedger(git: Git): Promise<Record<string, SessionClaim>> {
   try {
-    const parsed = JSON.parse(await readFile(await ledgerPath(git), "utf8")) as LedgerFile;
-    if (parsed.version !== LEDGER_VERSION || typeof parsed.sessions !== "object" || parsed.sessions === null) {
-      return {};
-    }
-    return parsed.sessions;
+    const parsed = JSON.parse(await readFile(await ledgerPath(git), "utf8")) as {
+      version?: unknown;
+      claims?: unknown;
+    };
+    if (parsed === null || parsed.version !== LEDGER_VERSION) return {};
+    if (typeof parsed.claims !== "object" || parsed.claims === null) return {};
+    return parsed.claims as Record<string, SessionClaim>;
   } catch {
     return {};
   }
 }
 
 /**
- * Replace the session ledger atomically.
+ * Replace the claim ledger atomically.
  *
  * @param git - any client for the repository.
- * @param sessions - the complete set of records to persist.
+ * @param claims - the complete set of claims to persist.
  */
-export async function writeLedger(git: Git, sessions: Record<string, SessionRecord>): Promise<void> {
+export async function writeLedger(git: Git, claims: Record<string, SessionClaim>): Promise<void> {
   const path = await ledgerPath(git);
   await mkdir(join(path, ".."), { recursive: true });
-  const body: LedgerFile = { version: LEDGER_VERSION, sessions };
+  const body: LedgerFile = { version: LEDGER_VERSION, note: LEDGER_NOTE, claims };
   const temporary = `${path}.tmp`;
   await writeFile(temporary, `${JSON.stringify(body, null, 2)}\n`, "utf8");
   await rename(temporary, path);
 }
 
 /**
- * Record this session's feature branch, replacing any earlier record for it.
+ * Read the ledger, apply one patch, write it back.
+ *
+ * This is the **only** way a claim is written, and the merge is the reason. Two
+ * different parts of this plugin decide different fields — the claim path decides
+ * the tree, the branch flow decides the branch and the worktree — and either
+ * writing the whole record would silently erase the other's decision. A patch
+ * carries only what the caller actually determined; everything else is carried
+ * over from the ledger.
+ *
+ * The read-modify-write is not atomic by itself. Callers that can run
+ * concurrently with another process hold the ledger's lock around it (see
+ * `lock.ts`); callers that run inside a single session's turn cannot.
  *
  * @param git - any client for the repository.
- * @param record - the record to store.
+ * @param sessionId - the family's identity.
+ * @param patch - the fields this caller determined.
+ * @returns the claim as it now stands.
  */
-export async function rememberSession(git: Git, record: SessionRecord): Promise<void> {
-  const sessions = await readLedger(git);
-  sessions[record.sessionId] = record;
-  await writeLedger(git, sessions);
+export async function updateClaim(
+  git: Git,
+  sessionId: string,
+  patch: ClaimPatch,
+): Promise<SessionClaim> {
+  const claims = await readLedger(git);
+  const existing = claims[sessionId];
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+  const merged: SessionClaim = {
+    // A claim that has never been written starts from what the patch implies:
+    // a family with a worktree of its own is not in the main tree.
+    sessionId,
+    repoKey: existing?.repoKey ?? "",
+    repoRoot: existing?.repoRoot ?? "",
+    tree: existing?.tree ?? (patch.worktreePath ? "own" : "main"),
+    worktreePath: existing?.worktreePath ?? null,
+    branch: existing?.branch ?? null,
+    integration: existing?.integration ?? null,
+    baseCommit: existing?.baseCommit ?? null,
+    pid: existing?.pid ?? 0,
+    claimedAt: existing?.claimedAt ?? new Date().toISOString(),
+    ...defined,
+  };
+  claims[sessionId] = merged;
+  await writeLedger(git, claims);
+  return merged;
 }
 
 /**
- * Drop this session's record.
+ * Drop this session's claim.
  *
  * @param git - any client for the repository.
- * @param sessionId - the session to forget.
+ * @param sessionId - the family to forget.
  */
-export async function forgetSession(git: Git, sessionId: string): Promise<void> {
-  const sessions = await readLedger(git);
-  if (delete sessions[sessionId]) await writeLedger(git, sessions);
+export async function dropClaim(git: Git, sessionId: string): Promise<void> {
+  const claims = await readLedger(git);
+  if (delete claims[sessionId]) await writeLedger(git, claims);
 }
 
 /**
@@ -390,50 +501,78 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * Find other live sessions working in the same repository.
+ * Tell whether a claim is still in force.
  *
- * Records whose process is gone are pruned here rather than left to make a later
- * run believe the repository is busy.
+ * Ownership and liveness are different questions, and the pid alone answers
+ * neither well. Three cases, in order:
  *
- * The ledger is only rewritten when `persist` is set. Pruning is therefore owned
- * by the two commands that were asked to change something, not by the pre-write
- * guard — which calls this on every file-mutating tool call, and which must not
- * write state at all: a gate that rewrites the ledger would have to make sure the
- * ledger is ignored first, on the hot path, to stay safe.
+ * - the session is **resident here** — it is live, whatever the pid says;
+ * - the claim names a session **of this process** that is not resident — it is
+ *   dead. This is the case a pid can never see: several sessions share one
+ *   harness process, so a closed session's claim keeps a pid that is very much
+ *   alive, and a later session is handed a worktree it did not need;
+ * - anything else — the claim belongs to **another process**, and the pid is the
+ *   only signal there is. It is wrong across a restart in both directions, which
+ *   is why the registry is asked first (see `doc/src/todo.md`).
+ *
+ * @param claim - the claim to test.
+ * @param registry - the session registry, for the resident-session case.
+ * @param ownPid - the calling process's id.
+ * @returns whether the claim still counts as a competitor.
+ */
+export function isClaimLive(claim: SessionClaim, registry: ClaimRegistry, ownPid: number): boolean {
+  if (claim.sessionId !== "" && registry.get(claim.sessionId) !== undefined) return true;
+  if (claim.pid === ownPid) return false;
+  return isProcessAlive(claim.pid);
+}
+
+/**
+ * Find the other live claims on the same repository.
+ *
+ * Dead claims are reported here rather than left to make a later run believe the
+ * repository is busy. The ledger is rewritten **only** when `persist` is set:
+ * pruning is owned by the commands that were asked to change something and by
+ * `/git-cleanup`. The pre-write guard calls this on every file-mutating tool call
+ * and writes only its own claim there, because a gate that swept other sessions'
+ * records would be rewriting state it did not decide, on the hot path.
  *
  * @param git - any client for the repository.
- * @param ownSessionId - the calling session, excluded from the result.
+ * @param ownSessionId - the calling family, excluded from the result.
+ * @param registry - the session registry, for liveness.
+ * @param ownPid - the calling process's id.
  * @param options - `persist` writes the pruned ledger; the default only reports.
- * @returns the other live records, whatever dead records still hold, and the repo key.
+ * @returns the other live claims, whatever dead claims still hold, and the repo key.
  */
-export async function otherLiveSessions(
+export async function otherLiveClaims(
   git: Git,
   ownSessionId: string,
+  registry: ClaimRegistry,
+  ownPid: number,
   options: { readonly persist?: boolean } = {},
 ): Promise<{
-  readonly others: readonly SessionRecord[];
+  readonly others: readonly SessionClaim[];
   readonly repoKey: string;
   readonly outstanding: readonly OutstandingBranch[];
 }> {
   const repoKey = await commonDir(git);
-  const sessions = await readLedger(git);
-  const others: SessionRecord[] = [];
+  const claims = await readLedger(git);
+  const others: SessionClaim[] = [];
   const outstanding: OutstandingBranch[] = [];
   let pruned = false;
-  const kept: Record<string, SessionRecord> = {};
+  const kept: Record<string, SessionClaim> = {};
 
-  for (const [id, record] of Object.entries(sessions)) {
-    if (isProcessAlive(record.pid)) {
-      kept[id] = record;
-      if (id !== ownSessionId && record.repoKey === repoKey) others.push(record);
+  for (const [id, claim] of Object.entries(claims)) {
+    if (isClaimLive(claim, registry, ownPid)) {
+      kept[id] = claim;
+      if (id !== ownSessionId && claim.repoKey === repoKey) others.push(claim);
       continue;
     }
 
-    // The process is gone. The record cannot be resumed, so it is dropped — but
-    // only once its branch is gone too. A branch that still exists is unmerged
-    // work, and this is the last moment the ledger knows it was ever opened.
-    if (record.repoKey === repoKey && (await branchExists(git, record.branch))) {
-      outstanding.push({ branch: record.branch, worktreePath: record.worktreePath });
+    // The claim cannot be resumed, so it is dropped — but only once its branch is
+    // gone too. A branch that still exists is unmerged work, and this is the last
+    // moment the ledger knows it was ever opened.
+    if (claim.repoKey === repoKey && claim.branch !== null && (await branchExists(git, claim.branch))) {
+      outstanding.push({ branch: claim.branch, worktreePath: claim.worktreePath });
     }
     pruned = true;
   }

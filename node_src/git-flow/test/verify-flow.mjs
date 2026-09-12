@@ -75,14 +75,59 @@ async function scratchRepo() {
 }
 
 /**
+ * A claim record for seeding the ledger.
+ *
+ * @param sessionId - the family the claim belongs to.
+ * @param overrides - the fields this case cares about.
+ * @returns a complete claim.
+ */
+function claim(sessionId, overrides = {}) {
+  return {
+    sessionId,
+    repoKey: "",
+    repoRoot: "",
+    tree: "main",
+    worktreePath: null,
+    branch: null,
+    integration: null,
+    baseCommit: null,
+    pid: process.pid,
+    claimedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * A session registry stub in which the listed ids are resident.
+ *
+ * Liveness is not a pid question any more, so a case that wants a peer to count
+ * has to say *why* it is live: resident here, or a live pid in another process.
+ *
+ * @param resident - session ids present in this process.
+ * @returns the registry slice the plugin reads.
+ */
+function registryOf(...resident) {
+  return { get: (id) => (resident.includes(id) ? { id } : undefined) };
+}
+
+/**
  * A flow dependency bundle for one session.
  *
  * @param git - a git client.
  * @param sessionId - the session id to act as.
+ * @param extra - dependency overrides for the case.
  * @returns the dependency bundle.
  */
 function depsFor(git, sessionId = "session-a", extra = {}) {
-  return { git, files: nodeFileAccess, sessionId, pid: process.pid, config: CONFIG, ...extra };
+  return {
+    git,
+    files: nodeFileAccess,
+    sessionId,
+    pid: process.pid,
+    registry: registryOf(),
+    config: CONFIG,
+    ...extra,
+  };
 }
 
 /** Commit one change to a tracked file. */
@@ -211,17 +256,14 @@ await verify("reports a branch a dead session left behind, instead of forgetting
     // and dropping it silently is how work goes missing.
     await git.text(["branch", "feature/abandoned"]);
     await writeLedger(git, {
-      "session-dead": {
-        sessionId: "session-dead",
+      "session-dead": claim("session-dead", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/abandoned",
-        worktreePath: null,
         integration: "main",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
         pid: 1073741824, // above any real pid: certainly not running
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
     const result = await startFlow(depsFor(git), "add login");
@@ -239,17 +281,14 @@ await verify("forgets a dead session entirely once its branch is gone", async ()
   try {
     const head = await git.text(["rev-parse", "HEAD"]);
     await writeLedger(git, {
-      "session-dead": {
-        sessionId: "session-dead",
+      "session-dead": claim("session-dead", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/deleted-already",
-        worktreePath: null,
         integration: "main",
         baseCommit: head,
         pid: 1073741824,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
     const result = await startFlow(depsFor(git), "add login");
@@ -265,23 +304,21 @@ await verify("does not call a live session's branch outstanding", async () => {
   const { root, git } = await scratchRepo();
   try {
     // A session waiting for its human is idle, not finished: it is reported as
-    // company (so this session is isolated), never as abandoned work.
+    // company (so this session is isolated), never as abandoned work. It counts
+    // because it is *resident*, which is the answer a pid could not give: this
+    // process's pid is alive whether or not that session still exists.
     await git.text(["branch", "feature/in-progress"]);
     await writeLedger(git, {
-      "session-live": {
-        sessionId: "session-live",
+      "session-live": claim("session-live", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/in-progress",
-        worktreePath: null,
         integration: "main",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
-    const result = await startFlow(depsFor(git), "add login");
+    const result = await startFlow(depsFor(git, "session-a", { registry: registryOf("session-live") }), "add login");
     assert.equal(result.kind, "started");
     assert.equal(result.parallelSessions, 1, "a live session counts as company");
     assert.deepEqual(result.outstandingBranches, [], "and never as abandoned work");
@@ -303,17 +340,14 @@ await verify("keeps one ledger for the whole clone, worktrees included", async (
     await git.text(["worktree", "add", "-q", "-b", "feature/nested", worktree]);
     const fromWorktree = git.withCwd(worktree);
 
-    const record = (sessionId) => ({
-      sessionId,
-      repoKey: `${root}/.git`,
-      repoRoot: root,
-      branch: `feature/${sessionId}`,
-      worktreePath: null,
-      integration: "main",
-      baseCommit: "0".repeat(40),
-      pid: process.pid,
-      startedAt: new Date().toISOString(),
-    });
+    const record = (sessionId) =>
+      claim(sessionId, {
+        repoKey: `${root}/.git`,
+        repoRoot: root,
+        branch: `feature/${sessionId}`,
+        integration: "main",
+        baseCommit: "0".repeat(40),
+      });
 
     await writeLedger(fromWorktree, { "session-in-worktree": record("session-in-worktree") });
     const readFromMain = await readLedger(git);
@@ -363,20 +397,19 @@ await verify("isolates a session instead of adopting a branch a stranger owns", 
     // /git-start, which is what adopted it in the first place.
     await git.text(["switch", "-c", "feature/theirs"]);
     await writeLedger(git, {
-      "session-other": {
-        sessionId: "session-other",
+      "session-other": claim("session-other", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/theirs",
-        worktreePath: null,
         integration: "main",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
-    const result = await startFlow(depsFor(git, "session-B"), "add the login redirect");
+    const result = await startFlow(
+      depsFor(git, "session-B", { registry: registryOf("session-other") }),
+      "add the login redirect",
+    );
     assert.equal(result.kind, "started", "it must not adopt a stranger's branch");
     assert.equal(result.branch, "feature/login-redirect", "it gets a branch of its own");
     assert.ok(result.worktreePath !== null, "isolated in a worktree, which is the point");
@@ -523,23 +556,22 @@ await verify("replays with rebase --onto when the integration branch moved", asy
 await verify("isolates a parallel session in a worktree, and cleans it up", async () => {
   const { root, git } = await scratchRepo();
   try {
-    // Another live session in the same repository: same process (so the pid check
-    // cannot separate them), different session id.
+    // Another live session in the same repository: same process, different session
+    // id — so the pid cannot separate them and residency is what makes it count.
     await writeLedger(git, {
-      "session-other": {
-        sessionId: "session-other",
+      "session-other": claim("session-other", {
         repoKey: await commonDir(git),
         repoRoot: root,
         branch: "feature/other",
-        worktreePath: null,
         integration: "main",
         baseCommit: await git.text(["rev-parse", "HEAD"]),
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-      },
+      }),
     });
 
-    const started = await startFlow(depsFor(git), "isolate this work");
+    const started = await startFlow(
+      depsFor(git, "session-a", { registry: registryOf("session-other") }),
+      "isolate this work",
+    );
     assert.equal(started.kind, "started");
     assert.equal(started.parallelSessions, 1);
     assert.ok(started.worktreePath !== null, "a session that arrives second must be isolated");
