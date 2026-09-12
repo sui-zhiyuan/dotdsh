@@ -88,6 +88,17 @@ export function renderState(snapshot: SessionSnapshot | undefined): string {
     );
   }
 
+  if (snapshot.tree === "own") {
+    // The claim is decided before the tree exists, so this is the state a session is
+    // in from its first write attempt until `/git-start` names the branch: saying
+    // "you are on the integration branch, an edit will open a branch first" would be
+    // false, because an edit here is refused — the main tree belongs to someone else.
+    return (
+      `${position} Another session owns the main tree, so this session will work in a worktree of its own. ` +
+      "Run `/git-start` to name its branch (or `/git-start <name>`), then make every edit there."
+    );
+  }
+
   if (snapshot.onIntegration) {
     return (
       `${position} This is the integration branch, so a file edit will open a feature branch first. ` +

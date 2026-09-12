@@ -18,7 +18,7 @@
 // model, or that `exec.signal` cancels a gate mid-flight. What is proven is the
 // decision itself — allow, deny, and the branch a decision leaves behind.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaimLatch } from "../lib/claim.js";
@@ -131,6 +131,19 @@ function runtimeFor(config = CONFIG, namer, sessions = { get: () => undefined },
     sessions,
     ...(namer === undefined ? {} : { namerFor: () => namer }),
   };
+}
+
+/**
+ * Tell whether a path exists.
+ *
+ * @param path - the path to test.
+ * @returns whether it exists.
+ */
+async function exists(path) {
+  return access(path).then(
+    () => true,
+    () => false,
+  );
 }
 
 /** A registry that answers with the given headers, so a chain can be walked. */
@@ -397,11 +410,22 @@ await verify("a stale record does not block a free tree", async () => {
   }
 });
 
-await verify("ignores tools that do not write files", async () => {
+await verify("ignores tools that do not write files, but still observes where the session is", async () => {
   const { root, git } = await scratchRepo();
   try {
-    const read = await decideToolCall(runtimeFor(), callFor({ cwd: root, name: "read", args: { file_path: "file.txt" } }), allow);
+    // A read is not guarded and must never be refused — but it is the only moment the
+    // plugin gets to fill the snapshot the prompt's state line is rendered from, and a
+    // session's opening turn is made of reads. Nothing is written: no claim, no ledger.
+    const runtime = runtimeFor();
+    const read = await decideToolCall(
+      runtime,
+      callFor({ cwd: root, name: "read", args: { file_path: "file.txt" } }),
+      allow,
+    );
     assert.deepEqual(read, { kind: "allow" });
+    const observed = runtime.state.snapshot("session-a");
+    assert.equal(observed?.branch, "master", "the state line has something to say after a read");
+    assert.equal(await exists(join(root, ".dsh.local")), false, "and observing writes nothing at all");
     // `str_replace_editor view` is a read wearing a mutating tool's name: a guard
     // that blocked it would be worse than no guard.
     const view = await decideToolCall(

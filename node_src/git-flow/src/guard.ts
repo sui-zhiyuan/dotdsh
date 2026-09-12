@@ -133,18 +133,35 @@ export async function decideToolCall(
   // it enabled, every shell command a session runs would open a branch on the
   // integration branch, including the ones that touch nothing.
   const isBash = exec.name === "bash" && config.guardBash;
-  if (!isFileTool && !isBash) return next();
 
   const agent = exec.agent;
   if (agent === undefined) return next();
   const cwd = sessionCwd(agent);
   if (cwd === undefined) return next();
 
+  const git = gitClient(runtime.runner, cwd);
+  const identity = sessionRoot(agent, runtime.sessions);
+
+  // A read-only call is not guarded, but it is **observed**.
+  //
+  // The prompt's state line is rendered from a snapshot that only an asynchronous
+  // path can fill, and read-only tools are where a session spends its opening turn:
+  // exploring the repository, and settling a branch and worktree name with the human.
+  // Without this the model would be told nothing about where it is standing exactly
+  // while that matters most. It writes nothing — no claim, no ledger — which is the
+  // whole reason claiming lives on the write path instead of here.
+  //
+  // (`agent/pre-step` would observe before the very first request rather than at the
+  // first tool call, which is strictly better; it is not used because it would make
+  // `@deepseek-ai/dsh-agent` a package dependency for one line of freshness.)
+  if (!isFileTool && !isBash) {
+    await runtime.state.refresh(git, agent, config, identity);
+    return next();
+  }
+
   const declared = isFileTool ? declaredTarget(exec.name, exec.arguments) : undefined;
   if (isFileTool && declared === undefined) return next();
 
-  const git = gitClient(runtime.runner, cwd);
-  const identity = sessionRoot(agent, runtime.sessions);
   const snapshot = await runtime.state.refresh(git, agent, config, identity);
   if (snapshot.repoRoot === undefined) return next();
 

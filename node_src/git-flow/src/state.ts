@@ -25,7 +25,14 @@
  */
 
 import type { Git } from "./exec.js";
-import { currentBranch, defaultIntegrationBranch, readLedger, repoRoot, worktreeList } from "./repo.js";
+import {
+  currentBranch,
+  defaultIntegrationBranch,
+  readLedger,
+  repoRoot,
+  worktreeList,
+  type ClaimTree,
+} from "./repo.js";
 import type { FlowConfig } from "./flow.js";
 import { sessionCwd, type AgentLike } from "./session.js";
 
@@ -43,6 +50,15 @@ export interface SessionSnapshot {
   readonly integration: string | undefined;
   /** This session's worktree, when it has one. */
   readonly worktreePath: string | null;
+  /**
+   * The tree this family is assigned, from its claim.
+   *
+   * Not the same as {@link worktreePath}: a family can be assigned a tree of its own
+   * before that tree exists, which is the state the prompt has to describe honestly
+   * — "you will work elsewhere, name the branch" — instead of telling the model it is
+   * free to edit here.
+   */
+  readonly tree: ClaimTree | undefined;
   /** Whether the session's tree is on the integration branch. */
   readonly onIntegration: boolean;
 }
@@ -131,7 +147,8 @@ export class GitFlowState {
     const facts = await this.repoOf(git, config);
 
     const branch = facts.repoRoot === undefined ? undefined : await currentBranch(git);
-    const worktreePath = facts.repoRoot === undefined ? null : ((await readLedger(git))[id]?.worktreePath ?? null);
+    const claim = facts.repoRoot === undefined ? undefined : (await readLedger(git))[id];
+    const worktreePath = claim?.worktreePath ?? null;
 
     const snapshot: SessionSnapshot = {
       cwd,
@@ -140,6 +157,7 @@ export class GitFlowState {
       branch,
       integration: facts.integration,
       worktreePath,
+      tree: claim?.tree,
       onIntegration: branch !== undefined && facts.integration !== undefined && branch === facts.integration,
     };
     this.#sessions.set(id, snapshot);
