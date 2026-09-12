@@ -280,13 +280,39 @@ export function revParse(git: Git, rev: string): Promise<string> {
 }
 
 /**
+ * The pathspec that keeps this plugin's own local state out of its own git commands.
+ *
+ * This plugin does **not** add an ignore rule for `.dsh.local`; the ruling is that
+ * the directory is this machine's business and the model is trusted with the rest.
+ * What it does instead is refuse to stage or mis-read its own state: `git add --all`
+ * is this plugin's own command, and a ledger of machine-local absolute paths, or a
+ * linked worktree staged as a gitlink, must not enter a commit because of it.
+ *
+ * The paths are relative to the **main** working tree, which is also where the
+ * directory is created. Git resolves them against the command's own cwd, so passing
+ * them from a linked worktree simply matches nothing — a session in its own worktree
+ * has no local-state directory inside it.
+ *
+ * @param mainTree - absolute path of the repository's main working tree.
+ * @param worktreeRoot - the configured worktree root, relative to the main tree.
+ * @returns the exclusion pathspecs, each already prefixed with `:!`.
+ */
+export function localStatePathspec(mainTree: string, worktreeRoot: string): readonly string[] {
+  const pathspecs = [`:!${LOCAL_DIR}`];
+  const insideLocal = worktreeRoot === LOCAL_DIR || worktreeRoot.startsWith(`${LOCAL_DIR}/`);
+  if (!insideLocal && worktreeRoot !== "") pathspecs.push(`:!${worktreeRoot}`);
+  return pathspecs;
+}
+
+/**
  * Tell whether the working tree has no staged, unstaged, or untracked changes.
  *
  * @param git - a client bound to a working tree.
+ * @param exclude - exclusion pathspecs, such as {@link localStatePathspec}'s.
  * @returns whether the tree is clean.
  */
-export async function isClean(git: Git): Promise<boolean> {
-  return (await git.text(["status", "--porcelain"])) === "";
+export async function isClean(git: Git, exclude: readonly string[] = []): Promise<boolean> {
+  return (await git.text(["status", "--porcelain", "--", ".", ...exclude])) === "";
 }
 
 /**

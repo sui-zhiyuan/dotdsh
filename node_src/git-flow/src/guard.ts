@@ -38,7 +38,6 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { ensureClaim } from "./claim.js";
 import { gitClient } from "./exec.js";
-import { nodeFileAccess } from "./file-access.js";
 import { startFlow } from "./flow.js";
 import { otherLiveClaims, type SessionClaim } from "./repo.js";
 import type { Runtime } from "./runtime.js";
@@ -256,7 +255,6 @@ export async function decideToolCall(
   const result = await startFlow(
     {
       git,
-      files: nodeFileAccess,
       sessionId: identity,
       isDelegate: isDelegate(agent),
       pid: runtime.pid,

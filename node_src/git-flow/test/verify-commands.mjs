@@ -130,14 +130,12 @@ await verify("a start reports where to work and what it changed underneath", () 
   assert.ok(isolated.text.includes("/repo/.dsh.local/worktrees/login-redirect"), "the worktree must be named");
   assert.ok(/absolute paths/i.test(isolated.text), "and the human must be told to use them");
 
-  const ignored = reportStart(
-    started({ ignoreChanged: true, gitignorePath: "/repo/.gitignore", gitignorePattern: ".dsh.local/" }),
-  );
-  assert.ok(ignored.text.includes("/repo/.gitignore"), "a changed .gitignore must be reported");
-  assert.ok(ignored.text.includes(".dsh.local/"), "with the pattern that was added");
-
-  const exposed = reportStart(started({ trackedGitlink: true }));
-  assert.ok(/git rm --cached/.test(exposed.text), "an already-staged gitlink needs the command that undoes it");
+  // The report must not promise a `.gitignore` rule: this plugin adds none, and the
+  // local state is kept out of its own commits by excluding it from its own commands.
+  // Nor does it warn about a staged gitlink any more — with no rule and no check,
+  // there is nothing to observe, and the plugin's own commands never stage one.
+  assert.ok(!plain.text.includes(".gitignore"), "no ignore rule is claimed, because none is added");
+  assert.ok(!/git rm --cached/.test(plain.text), "and no staged-gitlink warning is invented");
 
   const leftover = reportStart(started({ outstandingBranches: ["feature/abandoned"] }));
   assert.ok(leftover.text.includes("feature/abandoned"), "unmerged work left by a dead session must be surfaced");

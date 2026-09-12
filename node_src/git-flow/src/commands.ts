@@ -19,7 +19,6 @@ import type { CommandInvocation } from "@deepseek-ai/dsh-commands";
 import { ensureClaim, type ClaimDeps } from "./claim.js";
 import { gitClient, type Git } from "./exec.js";
 import { hasBranchPrefix } from "./branch.js";
-import { nodeFileAccess } from "./file-access.js";
 import { completeFlow, startFlow, type CompleteResult, type FlowDeps, type StartResult } from "./flow.js";
 import type { Runtime } from "./runtime.js";
 import { isDelegate, sessionCwd, sessionIntent, sessionRoot, type AgentLike } from "./session.js";
@@ -47,7 +46,6 @@ function depsFor(runtime: Runtime, agent: AgentLike, git: Git, signal: AbortSign
   const identity = sessionRoot(agent, runtime.sessions);
   return {
     git,
-    files: nodeFileAccess,
     // The root of the delegation chain, so a subagent works as its parent rather
     // than as a second workflow in the same checkout.
     sessionId: identity,
@@ -137,21 +135,6 @@ export function reportStart(result: StartResult): { readonly kind: "success" | "
           `  ${result.worktreePath}`,
           "",
           "Make every file edit there, using absolute paths.",
-        );
-      }
-      if (result.ignoreChanged) {
-        lines.push(
-          "",
-          `Added \`${result.gitignorePattern ?? ""}\` to ${result.gitignorePath ?? ".gitignore"} with a comment explaining it. ` +
-            "A git worktree is a linked repository, so without that rule a `git add --all` in the main tree would " +
-            "stage it as an embedded repository pointing at a commit that disappears when the worktree does.",
-        );
-      }
-      if (result.trackedGitlink) {
-        lines.push(
-          "",
-          "Warning: this worktree root is **already recorded in the index** as an embedded repository. " +
-            "An ignore rule cannot undo that — remove the entry with `git rm --cached <path>` before committing.",
         );
       }
       if (result.outstandingBranches.length > 0) {

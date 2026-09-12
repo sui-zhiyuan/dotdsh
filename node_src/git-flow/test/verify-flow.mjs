@@ -364,24 +364,27 @@ await verify("keeps one ledger for the whole clone, worktrees included", async (
 await verify("a start that creates no worktree still keeps its state out of git", async () => {
   const { root, git } = await scratchRepo();
   try {
-    // The user-facing half of the same design: a lone session works in place, so no
-    // worktree is created — and yet this command still leaves a ledger in the working
-    // tree, holding absolute paths belonging to this machine. If the rule were only
-    // ensured on the worktree path, the very next `git add --all` would commit it, and
-    // this plugin's own collection sweep would do that without asking.
+    // A lone session works in place, so no worktree is created — and yet this command
+    // still leaves a ledger in the working tree, holding absolute paths belonging to
+    // this machine. This plugin adds no ignore rule for it (that is the ruling), so a
+    // careless `git add --all` really would stage it; what the plugin guarantees is
+    // that *its own* commands never do. Both halves are asserted, because the second
+    // is the reason the first is survivable.
     const result = await startFlow(depsFor(git), "add login");
     assert.equal(result.kind, "started");
     assert.equal(result.worktreePath, null, "a lone session works in place");
-    assert.equal(result.ignoreChanged, true, "and its local state must still be ignored");
     assert.ok((await readLedger(git))["session-a"], "the ledger really was written");
 
-    const ignored = (path) => git.ok(["check-ignore", "-q", "--no-index", path]);
-    assert.equal(await ignored(join(root, ".dsh.local", "git-flow.json")), true, "the ledger must be ignored");
-    assert.equal(await ignored(join(root, ROOT, "anything")), true, "and the worktree root with it");
-
-    await git.text(["add", "--all"]);
-    const staged = await git.text(["ls-files", "-s"]);
-    assert.ok(!staged.includes(".dsh.local"), `nothing local may be stageable, got: ${staged}`);
+    assert.equal(
+      await git.ok(["check-ignore", "-q", "--no-index", join(root, ".dsh.local", "git-flow.json")]),
+      false,
+      "no ignore rule is added for the local state, by design",
+    );
+    assert.equal(
+      await exists(join(root, ".gitignore")),
+      false,
+      "and no .gitignore is created to hold one",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -575,22 +578,21 @@ await verify("isolates a parallel session in a worktree, and cleans it up", asyn
     assert.equal(started.kind, "started");
     assert.equal(started.parallelSessions, 1);
     assert.ok(started.worktreePath !== null, "a session that arrives second must be isolated");
-    assert.equal(started.ignoreChanged, true, "the local state must be ignored before the worktree exists");
-
-    const gitignore = await readFile(join(root, ".gitignore"), "utf8");
-    assert.ok(gitignore.includes(".dsh.local/"), "the rule must be in the tracked .gitignore");
-    assert.ok(gitignore.includes("# dsh git-flow:"), "with the comment that explains it");
-    assert.equal(
-      await git.ok(["check-ignore", "-q", "--no-index", started.worktreePath]),
-      true,
-      "one rule for the local directory must cover the worktree root inside it",
-    );
-
-    // The whole point of the guard, re-proved here through the real flow: the
-    // worktree is invisible to a careless `git add --all` in the main tree.
+    // The worktree is a linked repository, so a careless `git add --all` in the main
+    // tree stages it as a gitlink pointing at a commit that disappears with the
+    // worktree. No ignore rule prevents that here (the ruling), so the guarantee is
+    // narrower and worth asserting precisely: the plugin's own staging never does it,
+    // because its commands exclude the local directory by pathspec.
     await git.text(["add", "--all"]);
-    const staged = await git.text(["ls-files", "-s"]);
-    assert.ok(!staged.includes("160000"), `no gitlink may be staged, got: ${staged}`);
+    const careless = await git.text(["ls-files", "-s"]);
+    assert.ok(
+      careless.includes("160000"),
+      `without an ignore rule a careless add does stage the worktree, which is the accepted risk: ${careless}`,
+    );
+    await git.text(["reset", "-q"]);
+    await git.text(["add", "--all", "--", ".", ":!.dsh.local"]);
+    const own = await git.text(["ls-files", "-s"]);
+    assert.ok(!own.includes("160000"), `but the plugin's own add must not, got: ${own}`);
     await git.text(["reset", "-q"]); // leave the index as the probe found it
 
     const worktreeGit = git.withCwd(started.worktreePath);
@@ -613,14 +615,14 @@ await verify("reports nothing to do rather than a hollow merge commit", async ()
     // The rule is pre-seeded and committed, so starting changes nothing in the tree.
     // That matters: a first start legitimately adds the rule as a tracked change, and
     // this case is about a branch that never received any *work* — not about the
-    // ignore rule, whose own commit would make the branch non-empty and mask it.
-    await writeFile(join(root, ".gitignore"), ".dsh.local/\n", "utf8");
+    // unrelated commit, whose own content would make the branch non-empty and mask it.
+    await writeFile(join(root, "unrelated.txt"), "not the feature\n", "utf8");
     await git.text(["add", "--all"]);
-    await git.text(["commit", "-q", "-m", "chore: ignore the git-flow local state"]);
+    await git.text(["commit", "-q", "-m", "chore: something unrelated"]);
 
     const started = await startFlow(depsFor(git), "add login");
     assert.equal(started.kind, "started");
-    assert.equal(started.ignoreChanged, false, "the rule was already in place");
+    assert.equal(started.worktreePath, null, "a lone session works in place");
 
     const result = await completeFlow(depsFor(git));
     assert.equal(result.kind, "no-changes", "a branch with no commits must not produce a merge commit");

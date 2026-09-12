@@ -55,8 +55,6 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { branchNameFromIntent, hasBranchPrefix, worktreeDirectoryName } from "./branch.js";
 import type { Git } from "./exec.js";
-import type { FileAccess } from "./file-access.js";
-import { ensureIgnored, ignoreComment } from "./ignore.js";
 import { slugFromCandidate, stripPrefixWord, type IntentNamer } from "./namer.js";
 import {
   branchExists,
@@ -66,6 +64,7 @@ import {
   dropClaim,
   isAncestor,
   isClean,
+  localStatePathspec,
   mergeBase,
   otherLiveClaims,
   readLedger,
@@ -74,7 +73,6 @@ import {
   updateClaim,
   worktreeList,
   worktreeWithBranch,
-  LOCAL_DIR,
   type ClaimRegistry,
   type SessionClaim,
   type WorktreeEntry,
@@ -100,8 +98,6 @@ export interface FlowConfig {
 export interface FlowDeps {
   /** A git client bound to the calling session's working directory. */
   readonly git: Git;
-  /** The file seam used by the ignore guard. */
-  readonly files: FileAccess;
   /**
    * The workflow's identity: the **root** of the session's delegation chain, not the
    * immediate session. A subagent runs in its parent's working directory, so a branch
@@ -138,16 +134,8 @@ export type StartResult =
       readonly worktreePath: string | null;
       /** Commit the feature branch starts from. */
       readonly baseCommit: string;
-      /** Whether the ignore guard had to add a rule. */
-      readonly ignoreChanged: boolean;
-      /** The `.gitignore` the rule was written to. */
-      readonly gitignorePath: string | undefined;
-      /** The pattern that keeps the worktree root ignored. */
-      readonly gitignorePattern: string | undefined;
       /** Other live sessions found in this repository. */
       readonly parallelSessions: number;
-      /** Set when an earlier run already left a gitlink in the index. */
-      readonly trackedGitlink: boolean;
       /**
        * Branches left by sessions whose process is gone. Their records were
        * dropped, so this is the only report of unmerged work nobody is tracking.
@@ -288,68 +276,6 @@ function isInside(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-/** What the local-state ignore check found. */
-interface LocalIgnoreOutcome {
-  readonly changed: boolean;
-  readonly gitignorePath: string | undefined;
-  readonly pattern: string | undefined;
-  readonly trackedGitlink: boolean;
-}
-
-/**
- * Make sure nothing this plugin leaves in the working tree can be committed.
- *
- * `.dsh.local` holds both the worktrees and the ledger, so one rule covers both —
- * but the ledger is written by *every* start, including the single-session one that
- * creates no worktree at all, and it holds absolute paths belonging to this machine.
- * Leaving it unignored for even one command means the next `git add --all` commits
- * it, and this plugin's own `commitUncommittedBeforeMerge` sweep would do that
- * automatically. So the rule is ensured before the first state write, not only on
- * the path that creates a worktree.
- *
- * A `worktreeRoot` relocated outside `.dsh.local` is protected as well: the rule
- * that covers the local directory says nothing about it.
- *
- * @param deps - the flow dependencies.
- * @param facts - this session's tree facts.
- * @param git - a client for the repository.
- * @returns what was added, for the caller to report.
- */
-async function ensureLocalIgnored(
-  deps: FlowDeps,
-  facts: TreeFacts,
-  git: Git,
-): Promise<LocalIgnoreOutcome> {
-  const signal = deps.signal;
-  const local = join(facts.mainTree, LOCAL_DIR);
-  const worktreeRoot = join(facts.mainTree, deps.config.worktreeRoot);
-
-  const targets = [local];
-  if (!isInside(local, worktreeRoot)) targets.push(worktreeRoot);
-
-  let changed = false;
-  let gitignorePath: string | undefined;
-  let pattern: string | undefined;
-  let trackedGitlink = false;
-
-  for (const directory of targets) {
-    const result = await ensureIgnored({
-      git,
-      files: deps.files,
-      directory,
-      comment: ignoreComment(),
-      ...(signal === undefined ? {} : { signal }),
-    });
-    if (result.trackedGitlink) trackedGitlink = true;
-    if (result.changed) {
-      changed = true;
-      pattern = result.pattern;
-      gitignorePath = result.gitignorePath;
-    }
-  }
-  return { changed, gitignorePath, pattern, trackedGitlink };
-}
-
 /**
  * Start a feature branch for this session.
  *
@@ -447,7 +373,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
 
   if (name === undefined) {
     // A start that could not name anything changes nothing at all — not a branch,
-    // not a worktree, not `.gitignore` — so this read deliberately does not persist.
+    // not a worktree, not a claim — so this read deliberately does not persist.
     const { others } = await otherLiveClaims(git, sessionId, deps.registry, deps.pid);
     return {
       kind: "need-name",
@@ -462,7 +388,6 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
 
   // Everything below leaves state in this machine's working tree, so the rule that
   // keeps git out of it comes first.
-  const ignore = await ensureLocalIgnored(deps, facts, git);
   const { others, outstanding } = await otherLiveClaims(git, sessionId, deps.registry, deps.pid, {
     persist: true,
   });
@@ -491,11 +416,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
       integration,
       worktreePath,
       baseCommit,
-      ignoreChanged: ignore.changed,
-      gitignorePath: ignore.gitignorePath,
-      gitignorePattern: ignore.pattern,
       parallelSessions: others.length,
-      trackedGitlink: ignore.trackedGitlink,
       outstandingBranches: outstanding.map((entry) => entry.branch),
     };
   }
@@ -525,11 +446,7 @@ export async function startFlow(deps: FlowDeps, intent: string | undefined, expl
     integration,
     worktreePath,
     baseCommit,
-    ignoreChanged: ignore.changed,
-    gitignorePath: ignore.gitignorePath,
-    gitignorePattern: ignore.pattern,
     parallelSessions: others.length,
-    trackedGitlink: ignore.trackedGitlink,
     outstandingBranches: outstanding.map((entry) => entry.branch),
   };
 }
@@ -601,6 +518,10 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
   }
 
   const integration = await integrationOf(git, config);
+  // This plugin's own commands must not see — or stage — the local state it keeps in
+  // the main tree. There is no ignore rule hiding it (see `localStatePathspec`), so
+  // every `git status` and `git add` this file runs says so itself.
+  const localState = localStatePathspec(facts.mainTree, config.worktreeRoot);
   const record = await resolveRecord(deps, facts);
   if (record === undefined) {
     return {
@@ -615,22 +536,15 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
   }
 
   // Before anything below writes: the collect step runs `git add --all` in the
-  // branch's tree, and an unignored ledger sitting in the main tree's working
-  // directory would be swept into that commit — absolute local paths and all.
-  const ignore = await ensureLocalIgnored(deps, facts, git);
-  if (ignore.changed) {
-    warnings.push(
-      `added \`${ignore.pattern ?? LOCAL_DIR}\` to ${ignore.gitignorePath ?? ".gitignore"} so this session's ` +
-        "local state cannot be committed by the collection below",
-    );
-  }
-
+  // branch's tree, and this plugin's own ledger sits in the main tree's working
+  // directory — absolute local paths and all. It adds no ignore rule, so the command
+  // excludes that directory itself (see `localStatePathspec`).
   // The tree holding the feature branch is where the rebase runs.
   const branchTree = (await worktreeWithBranch(git, branch))?.path ?? facts.own;
   const branchGit = git.withCwd(branchTree);
 
   let collectedCommit: string | undefined;
-  if (!(await isClean(branchGit))) {
+  if (!(await isClean(branchGit, localState))) {
     if (!config.commitUncommittedBeforeMerge) {
       const status = await branchGit.text(["status", "--short"]);
       return {
@@ -640,7 +554,7 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
           `or enable commitUncommittedBeforeMerge:\n${status}`,
       };
     }
-    await branchGit.text(["add", "--all"], { signal });
+    await branchGit.text(["add", "--all", "--", ".", ...localState], { signal });
     await branchGit.text(["commit", "-q", "-m", `chore(${branch}): collect work in progress`], { signal });
     collectedCommit = await revParse(branchGit, "HEAD");
     warnings.push(
@@ -697,7 +611,7 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
 
   if (integrationTree !== undefined) {
     mergeGit = git.withCwd(integrationTree.path);
-    if (!(await isClean(mergeGit))) {
+    if (!(await isClean(mergeGit, localState))) {
       warnings.push(`the tree at ${integrationTree.path} had uncommitted changes while '${integration}' was merged`);
     }
   } else {
@@ -706,9 +620,9 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
     // repository's worktree root, for two reasons: it exists for a few seconds and
     // the agent never edits in it, so it does not need to be inside the sandbox
     // the session's file tools are confined to; and keeping it out of the
-    // repository means this path never has to rewrite `.gitignore` at
-    // `/git-complete` time, and never leaves an unignored linked repository
-    // inside the working tree if the process dies mid-merge.
+    // repository means this path never has to write anything into the working tree
+    // at `/git-complete` time, and never leaves a linked repository behind where the
+    // repository's own tooling would see it if the process dies mid-merge.
     temporaryRoot = await mkdtemp(join(tmpdir(), "dsh-git-flow-merge-"));
     temporaryWorktree = join(temporaryRoot, "tree");
     await git.text(["worktree", "add", temporaryWorktree, integration], { signal });
@@ -755,7 +669,7 @@ export async function completeFlow(deps: FlowDeps): Promise<CompleteResult> {
         "it was left in place",
     );
   } else if (record.worktreePath !== null) {
-    if (!(await isClean(branchGit))) {
+    if (!(await isClean(branchGit, localState))) {
       return {
         kind: "blocked",
         reason: `worktree ${record.worktreePath} still has uncommitted changes; commit or discard them before finishing`,
