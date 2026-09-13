@@ -225,7 +225,10 @@ check(
 const PAGE_OWNED_FIELDS = ["composerEnterNewline", "statusWording", "statusPhrases"];
 const HOST_ENFORCED_FIELDS = ["openInVscode", "editorCommand"];
 const clientSrc = readFileSync(join(pkgDir, "client", "index.js"), "utf8");
-const clickedSrc = readFileSync(join(pkgDir, "client", "clicked-file.js"), "utf8");
+// The open-in-editor handler is no longer a sibling script: dsh exposes ONE route
+// for a package's browser code, so a second file could never be loaded and now lives
+// inside client/index.js. Both the namespace read and the route constants therefore
+// come from that one file.
 const clientNamespace = /const SETTINGS_NAMESPACE = "([^"]+)"/.exec(clientSrc)?.[1];
 check(
   "the browser half binds the same namespace",
@@ -259,8 +262,8 @@ check(
 );
 // The two route constants must be identical on both sides of the wire too: the
 // host registers the path and the page calls it, with no compiler between them.
-const clientStatusRoute = /const STATUS_ROUTE = "([^"]+)"/.exec(clickedSrc)?.[1];
-const clientLaunchRoute = /const LAUNCH_ROUTE = "([^"]+)"/.exec(clickedSrc)?.[1];
+const clientStatusRoute = /const STATUS_ROUTE = "([^"]+)"/.exec(clientSrc)?.[1];
+const clientLaunchRoute = /const LAUNCH_ROUTE = "([^"]+)"/.exec(clientSrc)?.[1];
 check(
   "the browser half calls the host's status route",
   clientStatusRoute === routesApi.OPEN_IN_EDITOR_STATUS_ROUTE,
@@ -567,12 +570,21 @@ function routeFixture({ config, settings, sessions, rejection } = {}) {
       return rejection;
     },
   };
+  // `inject` is REQUIRED by the fixture, not optional sugar: within a real
+  // cordis plugin fiber an UNDECLARED service access throws
+  // (`cannot get property "sessions" without inject`), which is how the launch
+  // route once failed every request with an empty 400 while the availability
+  // probe stayed green. Modelling `inject` here is what lets this check see that
+  // class of mistake at all.
+  const store = sessions ?? { get: () => undefined };
   const ctx = {
     webServer,
     connection,
-    sessions: sessions ?? { get: () => undefined },
     get: (name) => (name === "settings" ? settings : undefined),
     effect: (callback) => callback(),
+    inject: (deps, callback) => {
+      if (deps.includes("sessions")) callback({ sessions: store });
+    },
   };
   const dispose = routesApi.openInEditorRoutes(ctx, config);
   const handlerOf = (path) => registered.find((route) => route.path === path)?.handler;
@@ -802,12 +814,14 @@ check(
 
 // 18. workspaceRootOf reads the live session's cwd and nothing for an unknown
 //     one; an empty cwd is as good as unknown.
-const sessionCtx = { sessions: { get: (id) => (id === "live" ? { header: { cwd: wsRoot } } : undefined) } };
-check("workspaceRootOf returns the live session cwd", routesApi.workspaceRootOf(sessionCtx, "live") === wsRoot, String(routesApi.workspaceRootOf(sessionCtx, "live")));
-check("workspaceRootOf returns undefined for an unknown session", routesApi.workspaceRootOf(sessionCtx, "gone") === undefined);
+// `workspaceRootOf` takes the STORE (see its contract): the route obtains it via
+// `ctx.inject(["sessions"], …)`, because a fiber refuses `ctx.sessions` outright.
+const liveStore = { get: (id) => (id === "live" ? { header: { cwd: wsRoot } } : undefined) };
+check("workspaceRootOf returns the live session cwd", routesApi.workspaceRootOf(liveStore, "live") === wsRoot, String(routesApi.workspaceRootOf(liveStore, "live")));
+check("workspaceRootOf returns undefined for an unknown session", routesApi.workspaceRootOf(liveStore, "gone") === undefined);
 check(
   "workspaceRootOf returns undefined when the cwd is empty",
-  routesApi.workspaceRootOf({ sessions: { get: () => ({ header: { cwd: "" } }) } }, "any") === undefined,
+  routesApi.workspaceRootOf({ get: () => ({ header: { cwd: "" } }) }, "any") === undefined,
 );
 //#endregion
 

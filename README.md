@@ -19,7 +19,7 @@
 | Package | Row id | What it does |
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
-| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase. Both are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases` |
+| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a pre-write guard that refuses an edit landing outside the tree the session's family claimed, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
 
 ## The git-flow workflow
@@ -147,7 +147,13 @@ ui-tweaks:
   composerEnterNewline: true      # bare Enter breaks the line; Ctrl/Cmd+Enter sends
   statusWording: true             # random DeepSeek meme in the running-turn status line
   statusPhrases: ["自定义一句"]    # extra phrasing appended to the shipped bank
+  openInVscode: true              # Ctrl/Cmd+click a file opens it in the editor below
+  editorCommand: code             # ONE bare PATH name or ONE absolute executable; no arguments
 ```
+
+`openInVscode`/`editorCommand` are the two switches the PAGE does not read: opening an editor needs a
+process, so the package's node half serves two routes under `/ui-tweaks/open-in-vscode/` and the page
+asks them. The host reads both fields per request, so an edit applies to the next click.
 
 Unset fields fall back to this package's schema defaults (all three values above except the empty
 extension list), and a row `config` in the bundle patch would sit below them as the composition
