@@ -8,7 +8,7 @@
  * ## One instance, one lock
  *
  * **The lock is not implemented yet.** A store holds the claim file open for its
- * whole lifetime, and every query and every write goes through it, but
+ * whole lifetime, and every write goes through that descriptor, but
  * {@link ClaimStore.open} takes no lock and {@link ClaimStore.dispose} releases
  * none. That leaves exactly the hole the lock is for: two processes can interleave
  * a read and a write, so one of them writes a document it read before the other's
@@ -203,9 +203,10 @@ export class ClaimStore {
       await handle.close();
       throw error;
     }
-    // A file this store created is empty, and a session that only ever asks about
-    // its claim never writes one — so the version is stamped here, where the file
-    // comes into being, rather than waiting for a first claim that may never come.
+    // A file with no content — one this store just created, or an empty one some
+    // earlier run left behind — and a session that only ever asks about its claim
+    // never writes one. So the version is stamped here, where the file comes into
+    // being, rather than waiting for a first claim that may never come.
     if ((await handle.stat()).size === 0) {
       await store.writeDocument({ version: CLAIM_VERSION, claims: {} });
     }
@@ -309,9 +310,11 @@ export class ClaimStore {
    * second read through it would come back empty. Writes stay on the handle, which
    * is where the lock will live.
    *
-   * A row that is not the declared shape throws instead of being dropped: a
-   * dropped claim reads as "no claim", and the next family would take a tree that
-   * is still spoken for.
+   * A row missing any of the three fields, or carrying one that is not a string,
+   * throws instead of being dropped: a dropped claim reads as "no claim", and the
+   * next family would take a tree that is still spoken for. Anything else a row
+   * carries is ignored rather than preserved — {@link Claim} is closed, and this
+   * module reads and writes only the fields it declares.
    */
   private async readDocument(): Promise<ClaimDocument> {
     const path = claimPath(this.repoRoot);
