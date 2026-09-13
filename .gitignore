@@ -12,6 +12,14 @@ node_src/**/lib/
 *.log
 .DS_Store
 
+# Where the git-flow plugin keeps its state in a repository: the claim file that
+# records which working tree a session writes in, and the linked worktrees of the
+# families that had to move out of the main checkout. Absolute paths on this
+# machine, never repository content. The plugin deliberately adds no rule of its
+# own (see README, "`.dsh.local`"), so this is the one-time addition per
+# repository that note leaves to whoever runs it.
+.dsh.local/
+
 # dsh_home/ carries the settings.yaml reference template and nothing else:
 # credentials, runtime state, and the generated boot file must never land here
 # (AGENTS.md red lines), so ignore them even if something writes them.

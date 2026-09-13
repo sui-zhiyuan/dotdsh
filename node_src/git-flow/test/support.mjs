@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
 import { GitClient, nodeRunner } from "../lib/platform/exec.js";
 
 let passed = 0;
@@ -68,6 +69,51 @@ export async function scratchRepo() {
   await git.run(["commit", "-qm", "base"]);
   await git.run(["branch", "-M", "master"]);
   return { root, git, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+
+/**
+ * Put another session in the repository's main tree, on the record.
+ *
+ * This is the one thing that makes a start leave the main tree alone: a family is
+ * isolated in a worktree because a family that can still come back is *in* the
+ * main tree, and the claim file is where that is written down. Callers pass the
+ * returned id back — in the agent's session records, or in `resumableSessionIds` —
+ * so the holder reads as a session that can still come back.
+ *
+ * @param root - the scratch repository's root.
+ * @param holder - the session id to record as holding the main tree.
+ * @returns the holder's id, for the caller to list as resumable.
+ */
+export async function occupyMainTree(root, holder) {
+  const store = await ClaimStore.open(root);
+  try {
+    await store.append({
+      sessionId: holder,
+      branch: `feat/${holder}`,
+      worktreeName: MAIN_WORKTREE,
+      createdAt: new Date().toISOString(),
+    });
+  } finally {
+    await store.dispose();
+  }
+  return holder;
+}
+
+/**
+ * Commit one named file, leaving everything else — the claim file included — out.
+ *
+ * A family that works in place commits in the repository's own tree, where the
+ * machine-local `.dsh.local/` sits untracked: `add -A` there would sweep the claim
+ * file into a commit the check is not about.
+ *
+ * @param git - a client bound anywhere in the repository.
+ * @param cwd - the working tree the commit happens in.
+ * @param name - the file to commit, relative to `cwd`.
+ * @param message - the commit subject.
+ */
+export async function commitFile(git, cwd, name, message) {
+  await git.run(["-C", cwd, "add", name]);
+  await git.run(["-C", cwd, "commit", "-qm", message]);
 }
 
 /**

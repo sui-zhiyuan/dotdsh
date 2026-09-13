@@ -40,6 +40,7 @@
  * @module @dsh-external/dotdsh-git-flow/shared
  */
 
+import { BRANCH_PREFIX } from "../core/core.js";
 import { GitClient } from "../platform/exec.js";
 import type { Runner } from "../platform/exec.js";
 
@@ -115,9 +116,6 @@ export interface EntryFacts {
   /** Root of the calling session's delegation chain: the family's key. */
   readonly sessionId: string;
 }
-
-/** Prefix every branch this plugin opens carries. Hardcoded for now. */
-const BRANCH_PREFIX = "feat/";
 
 /**
  * The topmost session of a delegation chain — the identity every decision in
@@ -413,38 +411,49 @@ export function withBranchPrefix(name: string): string {
 }
 
 /**
- * The directory name a family's worktree takes.
+ * The longest a feature branch's subject may be — the part after `feat/`.
  *
- * The branch without its prefix, with `-` written as `_`: `feat/foo-bar` becomes
- * `foo_bar` — one directory directly under the worktree root. The prefix earns
- * nothing there, since it is the same for every family, and keeping it would nest
- * every worktree a level deeper under a name that says only "this plugin made
- * it", which the claim file already says.
- *
- * Derived from the branch, so the two can never disagree about which feature this
- * is. The rule lives here rather than in either door because both of them open
- * worktrees and the two names have to be the same one.
- *
- * @param branch - the branch name, already prefixed.
- * @returns the worktree's directory name, under the repository's worktree root.
+ * Twenty is a working number rather than a natural limit: it keeps the branch
+ * readable in `git log --oneline --graph` and in the worktree's own directory
+ * name, and short enough that a model asked to name a feature names the feature
+ * rather than the whole task.
  */
-export function worktreeNameFor(branch: string): string {
-  const unprefixed = branch.startsWith(BRANCH_PREFIX) ? branch.slice(BRANCH_PREFIX.length) : branch;
-  return unprefixed.replaceAll("-", "_");
-}
+const BRANCH_SUBJECT_MAX_LENGTH = 20;
 
 /**
- * Whether git itself accepts this as a branch name.
+ * What a feature branch's subject may be made of: a letter first, then letters,
+ * digits and dashes.
  *
- * `check-ref-format --branch` is git's own validator, so anything git would
- * refuse is refused here rather than at the moment a branch is created, and the
- * caller can say so while it still has the human's or the model's attention.
+ * Deliberately narrow. A subject is an identifier, not a path: `test/foo` is a
+ * namespace of the caller's own, and prefixing it would open `feat/test/foo` —
+ * a name nobody asked for, in a worktree one directory deeper than the layout
+ * expects. That is why this is checked here instead of trusting `feat/` to be
+ * the only thing a caller might bring.
+ */
+const BRANCH_SUBJECT_PATTERN = /^[A-Za-z][A-Za-z0-9-]*$/;
+
+/**
+ * Whether this is a branch name this plugin may open.
+ *
+ * Two rules, and the first is the one that decides. The **subject** — what
+ * follows `feat/` — is checked here: letters, digits and dashes, starting with a
+ * letter, twenty characters at most. That is a policy rather than a syntax rule,
+ * and it is what refuses a name carrying a namespace of its own instead of
+ * prefixing it into `feat/test/…`.
+ *
+ * Only then does git get a say. `check-ref-format --branch` is git's own
+ * validator, so anything git would refuse is refused here rather than at the
+ * moment a branch is created, and the caller can say so while it still has the
+ * human's or the model's attention.
  *
  * @param runner - the process seam.
  * @param repoRoot - absolute path of the repository's main working tree.
  * @param name - the branch name to check, already prefixed.
- * @returns whether the name is legal.
+ * @returns whether this plugin opens a branch by this name.
  */
 export async function isValidBranchName(runner: Runner, repoRoot: string, name: string): Promise<boolean> {
+  const subject = name.startsWith(BRANCH_PREFIX) ? name.slice(BRANCH_PREFIX.length) : name;
+  if (subject.length > BRANCH_SUBJECT_MAX_LENGTH) return false;
+  if (!BRANCH_SUBJECT_PATTERN.test(subject)) return false;
   return new GitClient(runner, repoRoot).ok(["check-ref-format", "--branch", name]);
 }

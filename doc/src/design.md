@@ -50,8 +50,8 @@ What is left is one command with three steps and no state: build, link, remind.
 | Paths are named `repo_*`/`dsh_*` with a `_dir`/`_file` suffix | A name should say which side a path belongs to, and whether it is a directory or a file |
 | A failed run is fixed and re-run, never rolled back | Every step is idempotent — `pnpm -r build` and `dsh plugin add` both converge — so rollback and transactions would buy nothing |
 | Browser-side tweaks share one dual-face package (`node_src/ui-tweaks`) | Small behaviour changes are cheap to write and expensive to fragment: a package per tweak multiplies rows, manifests and lockfile importers for twenty lines of code. One package owns a `tweaks` registry, each entry a reversible `install()`. The shape is dsh's own: a `dsh.client` declaration plus a browser half at `exports["./client"]`, exactly like the `dsh-client-ui-*` packages |
-| The git workflow is one node-only package (`node_src/git-flow`) using existing seams, not a new service | It needs no browser half and no service of its own: commands, a prompt section, a skill provider and the `tools/pre-execute` waterfall are all extension points dsh already ships, and each is registered on the seam the harness's own packages use. What it does own is the git logic behind two injectable seams (`Runner`, `FileAccess`), which is what lets the committed tests drive the whole branch/rebase/merge/worktree lifecycle against a scratch repository with no harness present |
-| The pre-write guard opens a branch; it never redirects the write | `PreToolDecision` has exactly `allow`/`deny`/`ask` and `exec.arguments` is deep-frozen before any listener runs, so a gate cannot rewrite a path. The denial text therefore carries the correction, and the only automatic action available is a side effect the guard performs itself |
+| The git workflow is one node-only package (`node_src/git-flow`) using existing seams, not a new service | It needs no browser half and no service of its own: the command registry, the tool registry, a skill provider and the `tools/pre-execute` waterfall are all extension points dsh already ships, and each is registered on the seam the harness's own packages use. What it does own is the git logic behind one injectable process seam (`Runner`) and the session registry it reads for the family key and the sweep scope, both kept structural so the committed checks can drive the whole claim/branch/worktree/merge/cleanup lifecycle against a scratch repository with no harness present |
+| The pre-write guard refuses a write; it never redirects one, and it never opens the branch itself | `PreToolDecision` has exactly `allow`/`deny`/`ask` and `exec.arguments` is deep-frozen before any listener runs, so a gate cannot rewrite a path. The denial text therefore carries the correction — the name of the `git-flow` skill and the `git_start` call — and opening a branch stays a decision the model makes where a human can be asked |
 
 ## The browser half
 
@@ -120,148 +120,169 @@ so a per-machine phrase joins the memes and an edit applies from the next run on
 
 ## The git-flow plugin
 
-Four decisions in `node_src/git-flow` are worth recording, because each one had a plausible
-alternative that turned out to be wrong on this harness rather than merely different.
+Several decisions in `node_src/git-flow` are worth recording, because each one had a plausible
+alternative that turned out to be wrong on this harness rather than merely different. The plugin
+was rewritten after its first implementation shipped, so a few passages below describe what that
+earlier version did and why the second one does not.
 
 **The interception seam is narrower than it looks.** `tools/pre-execute` can allow, deny or ask —
 and that is all. Argument rewriting does not exist as a decision variant, `exec.arguments` is
 deep-frozen before the first listener runs (so that what was logged and what ran cannot diverge),
 and the README states the exclusion as deliberate. A guard therefore cannot redirect a write to a
-different path; it either lets the call through or refuses it. That is what made the guard's job
-"open the branch, then allow" rather than "rewrite the target", and it is why every denial message
-carries the correction: the message is the only channel back to the model. It also settled the
-seam choice — `ctx.tools.guard` is the synchronous alternative, and deciding this requires asking
-git a question.
+different path; it either lets the call through or refuses it. That is why every denial message
+carries the correction: the message is the only channel back to the model. It is also why the guard
+does not open the branch itself. An earlier version did — a write arriving on the integration branch
+started a flow, whose naming tiers derived a subject from the session's opening prompt and fell back
+to a model and then to the human. The rewrite removed all of that: the guard refuses the write and
+names the `git-flow` skill and the `git_start` call instead, so the name is chosen where a human can
+be asked and a branch is never opened on a guess. The seam choice is the same fact seen from the
+other side: `ctx.tools.guard` is the synchronous alternative, and deciding this requires asking git a
+question.
 
 **Git runs from `ctx.subprocess` with an exact argv, not from `ctx.shell` with a command string.**
 `ctx.shell` is the higher-level seam and can apply a sandbox confine, which makes it the obvious
 first choice. But it takes a command *string*, so using it would mean quoting a branch name, a path
 and a commit message by hand — reintroducing exactly the class of bug that passing every argument as
 its own argv element makes impossible. The trade is stated where it is made: this plugin chooses
-argv-exactness and does not confine its git children. Every dsh consumer package goes through a
-seam; only the provider layer imports `node:child_process`, and the committed tests use that direct
-runner so a clean checkout can run them with no harness and no profile.
+argv-exactness and does not confine its git children. The runner is injected rather than imported,
+so the package has exactly one process-spawning site in production and none in its tests; the one
+`node:child_process` import is `nodeRunner`, the standalone runner the committed checks run on, so a
+clean checkout can exercise the whole workflow with no harness and no profile.
 
 **The plugin adds no ignore rule, and does not check one.** An earlier version wrote `.dsh.local/`
 into the tracked `.gitignore` and verified it with `git check-ignore`, refusing to proceed when a
 later `!` rule defeated it. That is gone, and the reason is a ruling rather than a discovery: the
 rule is one-time work per repository, and the model can be trusted not to commit a directory whose
-own first line says it is machine-local. What replaced it is narrower and verifies nothing — this
-plugin's **own** git commands exclude the directory by pathspec (`git add --all -- . :!.dsh.local`,
-and the same on `git status`), because the command that would otherwise commit a ledger of absolute
-paths, or a linked worktree as a gitlink, is this plugin's own. The residual risk — a human's
-careless `git add --all` — is asserted in `test/verify-flow.mjs` rather than described, so the
-premise cannot rot: the test proves the gitlink *is* staged that way and that the plugin's own
-staging is not. `FileAccess` and the whole ignore module went with it; the plugin now writes no
-repository file of its own except the ledger, which it writes through `node:fs`.
+own first line says it is machine-local. What replaced it is narrower still: the plugin runs no
+staging command at all. It never runs `git add`, and `/git-complete` merges, and a merge cannot carry
+the claim file into history. The residual risk is a human's careless `git add --all`, which is why
+the claim file opens with a comment saying what it is. `FileAccess` and the whole ignore module went
+with the check; the plugin's only repository file of its own is the claim file, which it writes
+through `node:fs`.
 
 **The plugin tells the model the workflow, not the session's position.** An earlier version
 contributed two things to the prompt: a static section carrying the contract, and a context naming
-the current branch and worktree, kept fresh by a per-session cache. The context is gone, because it
-answered a question the model does not need answered. Whether a write is allowed is decided by the
-guard, by running git — a model told the wrong branch writes exactly as it would have otherwise. The
-one useful fact, *which worktree to write in*, already reaches the model through the guard's refusal,
-which names the worktree and the exact file to write instead: just in time, and never stale. And an
-injected branch can contradict reality the moment a human switches branches by hand, so the line
-could be not merely useless but wrong; a model that wants to know runs `git branch --show-current`
-and is right. What remains is one static section, pinned by
-`node_src/git-flow/test/verify-prompt.mjs` — that check exists so "the model should know where it is"
-cannot be re-added without an argument.
+the current branch and worktree, kept fresh by a per-session cache. The context went first, and the
+rewrite removed the static section too, because the reasoning is the same both times. Whether a write
+is allowed is decided by the guard, by running git — a model told the wrong branch writes exactly as
+it would have otherwise. The one useful fact, *which worktree to write in*, already reaches the model
+through the guard's refusal, which names the worktree and the exact file to write instead: just in
+time, and never stale. And an injected branch can contradict reality the moment a human switches
+branches by hand, so the line could be not merely useless but wrong; a model that wants to know runs
+`git branch --show-current` and is right. What the model gets instead is a bundled **skill** —
+`git-flow` for where a session may write and how a branch is opened and finished, `git-master` for
+the commit convention — whose body is read from the package's asset only when the model loads it.
+`node_src/git-flow/test/verify-skill.mjs` pins that the provider lists exactly those two skills and
+reads each body from `assets/`.
 
 **A command's `input` declaration is what decides whether the menu completes it or runs
 it.** The web client reads exactly one field to tell a command that takes an argument from one that
-does not: a host command declaring `input` produces a *claim* — the composer inserts `/git-start `
+does not: a host command declaring `input` produces a *claim* — the composer inserts the command
 with the hint as a placeholder and waits — while a bare host command is executed the moment it is
 picked. There is no Tab completion to opt into, and the popup's keymap is only
 ArrowUp/ArrowDown/Enter/Escape (Tab belongs to the trigger menu's directory drill). So `/git-start`
-declares `input: { hint: "[<branch-name>]" }` because it takes an optional name, and
-`/git-complete` deliberately declares nothing, because a command with `input` can never be run by a
-single pick — it always becomes a claim that needs a second Enter, which is the wrong trade for a
-command whose whole input is "now". The host splits identically (`/compact` bare; `/feedback` and
-`/goal` with hints), and `test/verify-commands.mjs` pins both halves, since neither a rename nor a
-dropped field fails anything else.
+declares `input: { hint: "[<feature-name>]" }` because it takes an optional name, and
+`/git-complete` declares `input: { hint: "[<merge-message>]" }` on purpose even though that costs a
+second Enter: the merge message is the model's to compose, and a command declared bare can never be
+asked for one. `/git-cleanup` is bare, because its whole input is "now". The host splits the same
+way (`/compact` bare; `/feedback` and `/goal` with hints), and `test/verify-doors.mjs` pins the
+declarations, since neither a rename nor a dropped field fails anything else.
 
 **Two worktree locations, chosen for two different lifetimes.** A *session's* worktree lives at
 `<repo>/.dsh.local/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
 sandbox is rooted at the session's workspace, so work that stays under the repository needs no
-re-approval, and `$DSH_HOME` would put it outside that root. The *transient* worktree used to merge
-into an integration branch nobody has checked out goes to the OS temporary directory instead — it
-exists for seconds, no agent ever edits in it, and keeping it out of the repository means
-`/git-complete` never has to rewrite `.gitignore` and never leaves an unignored linked repository
-behind if the process dies mid-merge.
+re-approval, and `$DSH_HOME` would put it outside that root. The name is the branch subject with `-`
+written as `_` — `feat/foo-bar` becomes `foo_bar` — derived from the branch, so the two can never
+disagree about which feature the tree holds. The *transient* worktree used to merge into an
+integration branch nobody has checked out goes to the OS temporary directory instead: it is created
+only when no working tree has `master` checked out, it exists for seconds, no agent ever edits in
+it, and keeping it out of the repository means a merge that dies midway leaves no linked worktree
+inside the repository's own tree.
 
 **Who counts as another session is a family question, not a session question.** Every decision —
-which branch a session may write on, whether it gets a checkout of its own, what `/git-complete`
+which branch a family may write on, whether it gets a checkout of its own, what `/git-complete`
 finishes — is keyed by the *root* of the session's delegation chain, because a subagent runs in its
 parent's working directory and therefore shares its parent's branch. Keyed by the immediate session,
 whichever of the two wrote first owned the record and the other saw a stranger: it would open a
 second branch in the same checkout and move it out from under the first. The root walk stopped at a
 one-hop version first, and running the flow twice against one scratch repository showed why that is
 not enough — a grandchild would disagree with its grandparent about which record is theirs, which is
-the same bug one generation later. `SessionStore.get` is what makes the full walk possible, and when
-an intermediate is no longer resident the walk stops there: a coarser identity, never a split one.
-The distinction also has to hold in the other direction, which is where it was over-broad at first: a
-sibling — a session with no parent — is a competitor even though it looks identical from the ledger,
-and it is refused rather than allowed to write onto a branch it does not own.
+the same bug one generation later. The resident session store's `get` is what makes the full walk
+possible, and when an intermediate is no longer resident the walk stops there: a coarser identity,
+never a split one. The distinction also has to hold in the other direction, which is where it was
+over-broad at first: a sibling — a session with no parent — is a competitor even though it looks
+identical in the claim file, so it is given a worktree of its own rather than the main tree, and a
+write into another family's tree is refused.
 
-**A guess is worse than a question, and the first version of the naming proved it.** Branch names
-come from the session's opening prompt, and the slug rules — lowercase, hyphenate, drop a leading
-verb, keep a few words — are an English heuristic. Applied to a prompt in another script they do not
-degrade gracefully: run against the opening prompt for this very plugin (Chinese, and mentioning
-`github` once), they produced `feature/github`. Nothing failed, which is the problem — the branch was
-created, the write was allowed, and a meaningless name had joined the repository. The naming now
-first asks which script the sentence is written in and refuses to name a non-Latin one, leaving the
-human to answer in one word. The check covering it lives in
-`node_src/git-flow/test/verify-guard.mjs` and uses that exact prompt, because the case is only
-interesting while it is the real one. The same probe is why the guard has a committed check at all:
-the guard is this plugin's only *enforcement* point — everything else is prompt text the model may or
-may not follow — and until then it was verified by a human remembering to try it.
+**A guess is worse than a question, and the first version of the naming proved it.** The first
+version derived a branch name from the session's opening prompt, and its slug rules — lowercase,
+hyphenate, drop a leading verb, keep a few words — are an English heuristic. Applied to a prompt in
+another script they do not degrade gracefully: run against the opening prompt for this very plugin
+(Chinese, and mentioning `github` once), they produced `feature/github`. Nothing failed, which is the
+problem — the branch was created, the write was allowed, and a meaningless name had joined the
+repository. Naming passed through a mechanical slug, a script probe that refused non-Latin prompts,
+and finally a model call, and the rewrite removed derivation altogether: the plugin never names a
+feature from a prompt. `git_start` declares `branchName` as a required argument, so a model that
+cannot name the feature has to ask; a bare `/git-start` injects one notice telling the model to load
+the `git-flow` skill and call `git_start`; and both doors normalize the name with `withBranchPrefix`
+and then validate the **subject** — letters, digits and dashes, starting with a letter, at most 20
+characters — before any branch is claimed or created. A name carrying a namespace of its own, like
+`test/git-flow-guard`, is refused rather than doubled into `feat/test/…`. `test/verify-doors.mjs`
+covers both halves: a bare `/git-start` opens nothing, and an invalid name creates no branch and no
+tree. The same probe is why the guard has a committed check at all: the guard is this plugin's only
+*enforcement* point — everything else is skill text the model may or may not follow — and until then
+it was verified by a human remembering to try it.
 
-**Liveness is not ownership, and the pid answers neither well.** The plugin keeps a per-clone ledger
-of **claims** — which family may write in which working tree — and asks two separate questions of
-it: does this claim exist, and is its owner still there. The second is answered by the harness's own
-session registry first, and by the pid only when the claim belongs to another process:
-
-- A claim whose session is **resident in this process** is live, whatever the pid says.
-- A claim naming a session **of this process** that is no longer resident is dead. This is the case
-  a pid can never see, because two sessions share one harness process: a closed session's claim kept
-  a pid that was very much alive, so every later session was handed a worktree it did not need. That
-  phantom neighbour is fixed, and `SessionStore.get` is what fixes it.
-- Anything else belongs to **another process**, where the pid is the only signal there is. It is
-  wrong across a restart in both directions, which is why an abandoned branch is *reported* at the
-  moment its claim is dropped rather than stored as durable state: a persisted "abandoned" flag
-  would be wrong after every restart.
+**Liveness is not ownership, and the pid answers neither well.** The plugin keeps a per-repository
+claim file — which family may write in which working tree — and asks two separate questions of it:
+does this claim exist, and can its session still come back. The second is answered by the harness's
+own session registry, through `resumableSessionIds`: the ids of the sessions a human opened — the
+roots of delegation chains, which is to say the ones with no `parentSession` — that are resident in
+this process. There is no pid anywhere, and the earlier implementation's pid rule is gone, because a
+pid cannot see the case that matters: two sessions share one harness process, so a closed session's
+claim kept a pid that was very much alive and every later session was handed a worktree it did not
+need. Reading liveness from the registry is what fixes that phantom neighbour.
 
 An **idle** session counts as present, deliberately: idle is not finished, its branch is unmerged,
 and it can resume mid-turn and write. Treating it as gone would reintroduce the collision a worktree
-exists to prevent — which is also why `agent/status` is read for reports and never for decisions.
+exists to prevent. The session records this plugin reads carry no status field, and `agent/status`
+appears nowhere in the plugin.
 
-The one thing the ledger must not do is silently forget. A dead family's claim is dropped — it
-cannot be resumed — but if its branch still exists, that branch is unmerged work, and both
-`/git-start` and `/git-cleanup` say so, at the moment the claim is dropped. Deleting the record and
-the fact together is how work goes missing in a repository. `/git-cleanup` is the interactive form
-of that rule: it removes a clean worktree nobody owns, including when the branch there is unmerged
-(`git worktree remove` takes the checkout, not the branch), and it never deletes a branch, because
-the branch is where the work is.
+The one thing the claim file must not do is silently forget. `/git-cleanup` visits a claim only when
+its session can no longer come back **and** the claim is older than a day: unrecoverable alone is too
+eager — a session archived a minute ago may be reopened by the human still sitting in front of it —
+and old alone would take a tree from a live session. It then releases the tree, deletes the branch
+with `-D` whether or not `master` has seen it, and drops the claim last, so a step that fails leaves
+the record for the next sweep. Taking a dead family's uncommitted work is the deliberate cost of that
+rule — its worktree is usually dirty, and a sweep that refused a dirty tree would leave every claim
+it exists for — and the two gates are what make it acceptable.
 
 Two smaller choices follow from the same "use the seam the harness uses" rule. The commit-message
 convention ships as a **bundled skill provider** — the shape `dsh-skill-badge` establishes, with the
 body read from a packaged asset through a `new URL(..., import.meta.url)` locator — rather than as a
 `pre-commit` hook, which is unversioned, needs installing per clone, and can only reject a message
-after it has been composed. And the per-session ledger lives beside them, in `<repo>/.dsh.local/git-flow.json` — one
-directory for everything this plugin leaves on this machine, holding **claims** that name the tree
-each family works in beside the branch it opened, with the branch nullable because a claim is
-written at the first write and the branch only exists once `/git-start` or the guard opens one. It
-moved there from `<git-common-dir>/dsh-git-flow/state.json`, and the move is worth recording because
-it trades a property git gave away for free: the common directory is the same from every worktree, while a
-directory in the working tree is not. A ledger resolved from the session's own directory would give
-each linked worktree its own copy, and the copy a worktree session reads is exactly the one that
-cannot tell it a second session is already working here — concurrency detection would fail silently
-in the one case that needs it. So the path is anchored to the repository's main working tree (git
-lists it first, which is what makes that reliable from anywhere), and the whole `.dsh.local`
-directory is anchored there by the ledger's own path, and the plugin keeps its own git commands away
-from it by pathspec rather than by an ignore rule (see above). The name matters too: `.dsh.local` rather than `.dsh`, because `<project>/.dsh/skills` holds project
-skills that are meant to be committed.
+after it has been composed. And the claim file lives in `<repo>/.dsh.local/git-flow.toml`, one
+directory for everything this plugin leaves on this machine: a comment header, a `version = "0.1.0"`
+stamp that is written and never read, and one `[claims.<root-session-id>]` table per family naming
+`branch`, `worktreeName` and `createdAt`. A row missing any of the three, or carrying one that is
+not a string, is a hard read error rather than a dropped claim, because a dropped claim reads as "no
+claim" and the next family would take a tree that is still spoken for. The sentinel
+`worktreeName = "[MAIN]"` says the family works in the repository's own checkout; the brackets are
+what make the name unoccupiable, since a real worktree's directory name comes from a branch subject,
+which is letters, digits and dashes. A claim is written only by `git_start` — from `/git-start`, or
+by the model through the tool — so it always names a branch that already exists or is about to, and
+no field of it is nullable.
+
+It moved there from `<git-common-dir>/dsh-git-flow/state.json`, and the move is worth recording
+because it trades a property git gave away for free: the common directory is the same from every
+worktree, while a directory in the working tree is not. A claim file resolved from the session's own
+directory would give each linked worktree its own copy, and the copy a worktree session reads is
+exactly the one that cannot tell it a second session is already working here — concurrency detection
+would fail silently in the one case that needs it. So the path is anchored to the repository's main
+working tree (git lists it first, which is what makes that reliable from anywhere), and the whole
+`.dsh.local` directory is anchored there by the claim file's own path. The name matters too:
+`.dsh.local` rather than `.dsh`, because `<project>/.dsh/skills` holds project skills that are meant
+to be committed.
 
 ## Constraints worth remembering
 

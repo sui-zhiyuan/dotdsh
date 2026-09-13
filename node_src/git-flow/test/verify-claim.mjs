@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { ClaimStore } from "../lib/platform/claim.js";
+import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
 import { check, report, scratchRepo } from "./support.mjs";
 
 /** The claim file's path in one repository, spelled out rather than imported: the checks assert where it lands on disk, not the module's idea of it. */
@@ -103,6 +103,37 @@ await check("append then query round-trips every field, and the file names the s
       assert.ok(text.includes(`createdAt = "${ALPHA_CLAIM.createdAt}"`), text);
     } finally {
       await store.dispose();
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("the main-tree sentinel round-trips: a bracketed name is the plain string it looks like", async () => {
+  const repo = await scratchRepo();
+  try {
+    const store = await ClaimStore.open(repo.root);
+    try {
+      // The one name no worktree can have, because a worktree's directory name is
+      // built from a branch subject. It has to survive the file byte for byte: a
+      // reader that re-encoded it would send that family to a tree nobody made.
+      assert.equal(MAIN_WORKTREE, "[MAIN]");
+      const inMainTree = { ...ALPHA_CLAIM, worktreeName: MAIN_WORKTREE };
+      await store.append(inMainTree);
+
+      assert.deepEqual(await store.query(ALPHA), inMainTree);
+      const text = await readFile(claimPath(repo.root), "utf8");
+      assert.ok(text.includes(`worktreeName = "${MAIN_WORKTREE}"`), text);
+    } finally {
+      await store.dispose();
+    }
+
+    // A second store reads it back out of the file rather than out of memory.
+    const reopened = await ClaimStore.open(repo.root);
+    try {
+      assert.deepEqual(await reopened.query(ALPHA), { ...ALPHA_CLAIM, worktreeName: MAIN_WORKTREE });
+    } finally {
+      await reopened.dispose();
     }
   } finally {
     await repo.cleanup();

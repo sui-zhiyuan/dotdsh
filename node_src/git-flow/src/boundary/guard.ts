@@ -202,7 +202,7 @@ async function beforeToolCall(
   return {
     kind: "deny",
     reason:
-      `This session writes inside its own worktree, at \`${workspace.workTree}\`. ` +
+      `This session writes inside its own working tree, at \`${workspace.workTree}\`. ` +
       `Load the \`${GIT_FLOW_SKILL_NAMES.workflow}\` skill, and write to \`${redirected}\` instead of \`${target}\`.`,
   };
 }

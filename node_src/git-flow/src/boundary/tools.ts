@@ -54,7 +54,6 @@ import {
   resumableSessionIds,
   sessionAgentOf,
   withBranchPrefix,
-  worktreeNameFor,
 } from "./shared.js";
 
 /**
@@ -96,7 +95,9 @@ const GIT_START_TOOL: ToolSchema = {
     branchName: {
       type: "string",
       required: true,
-      description: "Name of the feature. A `feat/` prefix is added when it has none.",
+      description:
+        "The feature's own name — letters, digits and dashes, starting with a letter, at most 20 characters, and no `/` of your own " +
+        "(for example `git-flow-guard`, which opens the branch `feat/git-flow-guard`; `test/git-flow-guard` is not a name this plugin opens).",
     },
   },
 };
@@ -131,14 +132,22 @@ const GIT_CLEANUP_TOOL: ToolSchema = {
 /**
  * `git_start` — open a feature branch for this session.
  *
- * Required argument: `branchName`. It is normalized here (`shared.withBranchPrefix`
- * adds the `feat/` prefix when the name has none) and the worktree's directory
- * name is derived from the result by `shared.worktreeNameFor`, so the two can
- * never disagree about which feature this is.
+ * Required argument: `branchName`, the feature's **subject** rather than a branch
+ * path. It is normalized here (`shared.withBranchPrefix` adds the `feat/` prefix
+ * when the name has none) and `shared.isValidBranchName` refuses anything that is
+ * not a subject — a name carrying a namespace of its own would otherwise be
+ * prefixed into `feat/test/…` rather than rejected here, where the model can still
+ * read why and try again.
+ *
+ * Where the session works is not this file's decision and not the model's:
+ * `core.gitStart` claims the main tree when no other family that can still come
+ * back is in it, and a worktree of its own when one is. All this handler owes it is
+ * the set of sessions that can come back, which is only reachable through the
+ * session store on the agent.
  *
  * The answer is where the session works from now on: the branch, and the absolute
- * path of the worktree every following edit must be inside. A family that already
- * holds a claim is refused by `core.gitStart` rather than moved to a second tree.
+ * path of the tree every following edit must be inside. A family that already holds
+ * a claim is refused by `core.gitStart` rather than moved to a second tree.
  *
  * @param args - the model's arguments, with `branchName` validated as present.
  * @param execution - the call, whose agent carries the session and the runner.
@@ -148,20 +157,29 @@ async function gitStartTool(
   args: { readonly branchName: string },
   execution: ToolRunContext,
 ): Promise<string> {
-  const facts = await factsFor(sessionAgentOf(execution.agent), execution.signal);
+  const agent = sessionAgentOf(execution.agent);
+  const facts = await factsFor(agent, execution.signal);
   const branch = withBranchPrefix(args.branchName);
-  const worktreeName = worktreeNameFor(branch);
 
   if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
     return (
-      `\`${branch}\` is not a name git accepts for a branch, so no branch was opened and no worktree was created. ` +
-      "Pick a different name and call `git_start` again."
+      `\`${branch}\` is not a name this plugin opens, so no branch was created and no worktree was made. ` +
+      "Name the feature itself and call `git_start` again: letters, digits and dashes, starting with a letter, " +
+      "at most 20 characters, and no `/` of your own — `git-flow-guard` opens `feat/git-flow-guard`, while " +
+      "`test/git-flow-guard` is refused, because `feat/` is the only namespace a family branch has."
     );
   }
 
-  const workspace = await gitStart(facts.runner, facts.repoRoot, facts.sessionId, branch, worktreeName, execution.signal);
+  const workspace = await gitStart(
+    facts.runner,
+    facts.repoRoot,
+    facts.sessionId,
+    branch,
+    resumableSessionIds(agent.getSessions()),
+    execution.signal,
+  );
   return (
-    `\`${workspace.branch}\` is open for this session, in the worktree \`${workspace.workTree}\`. ` +
+    `\`${workspace.branch}\` is open for this session, in the tree \`${workspace.workTree}\`. ` +
     "Every following edit belongs inside that tree; a write anywhere else is refused."
   );
 }
