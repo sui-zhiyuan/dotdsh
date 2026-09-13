@@ -28,14 +28,27 @@
  * the pool can no longer say what state that connection is in; the next call
  * establishes a new one and reports it `fresh`.
  *
+ * ## Three rules the design walk pinned down
+ *
+ * 1. **The entry is created synchronously, before the first `await`.** Two calls
+ *    that arrive together for a server nobody has dialled yet must not both
+ *    report `fresh` and race to own the connection: the first one to run creates
+ *    the entry, and the second finds it.
+ * 2. **A rejected call drops the entry only when it is the last one using it.**
+ *    Two concurrent calls, one of which cannot start a process at all, say
+ *    nothing about the connection the other one may be building.
+ * 3. **`dispose` does not wait for calls in flight.** It releases every
+ *    connection, which ends those calls where they stand. Shutdown is not the
+ *    moment to keep a session alive, and a graceful exit that waits on a slow
+ *    remote command is a hang.
+ *
  * ## Deferred
  *
  * **A liveness probe before each call.** Today `connection` is bookkeeping — what
  * this pool believed when the call started — not a measurement. A real answer
  * would cost one `ssh -O check` per call, which is a whole extra process on the
  * path this plugin exists to shorten. Named here rather than silently dropped:
- * the field's field name is `connection`, and a reader should not mistake it for
- * proof.
+ * the field's name is `connection`, and a reader should not mistake it for proof.
  *
  * ## Layer
  *
