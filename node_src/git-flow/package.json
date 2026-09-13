@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm build && node test/verify-exec.mjs && node test/verify-claim.mjs && node test/verify-core.mjs && node test/verify-guard.mjs && node test/verify-doors.mjs && node test/verify-skill.mjs",
+    "test": "pnpm build && node test/verify-exec.mjs && node test/verify-settings.mjs && node test/verify-claim.mjs && node test/verify-core.mjs && node test/verify-guard.mjs && node test/verify-doors.mjs && node test/verify-skill.mjs",
     "prepublishOnly": "pnpm build"
   },
   "license": "MIT",
@@ -30,6 +30,7 @@
     "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2",
     "smol-toml": "^1.8.0"
   },
   "devDependencies": {

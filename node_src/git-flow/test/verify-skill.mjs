@@ -1,22 +1,24 @@
 /**
  * Committed checks for the bundled skills (`lib/boundary/skill.js`).
  *
- * Boundary: this proves what the provider advertises and that each body really is
+ * Boundary: this proves what the provider advertises, that each body really is
  * read from the package's `assets/` directory — the module doc warns that nothing
  * type-checks the asset URL depth, so a wrong one has to fail here rather than at
- * a model's first request. It does not prove that dsh's skill registry resolved
- * the provider, nor how it ranked a project-level skill against it.
+ * a model's first request — and that the placeholders a body carries are rendered
+ * from the settings rather than left standing. It does not prove that dsh's skill
+ * registry resolved the provider, nor how it ranked a project-level skill against
+ * it.
  *
  * @module @dsh-external/dotdsh-git-flow/test/verify-skill
  */
 
 import assert from "node:assert/strict";
 
-import {
-  GIT_FLOW_SKILL_NAMES,
-  GIT_FLOW_SKILL_PROVIDER,
-} from "../lib/boundary/skill.js";
-import { check, report } from "./support.mjs";
+import { createSkillProvider, GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
+import { check, report, settings } from "./support.mjs";
+
+/** The provider under test, built the way a deployment with no row configuration gets it. */
+const GIT_FLOW_SKILL_PROVIDER = createSkillProvider(settings());
 
 /** The candidate the provider lists under one name, asserted to be there. */
 async function candidate(name) {
@@ -86,6 +88,30 @@ await check("get() of a candidate the provider does not own is undefined", async
     await GIT_FLOW_SKILL_PROVIDER.get({ name: `${GIT_FLOW_SKILL_NAMES.workflow}-copy` }),
     undefined,
   );
+});
+
+await check("a body is rendered with the settings the deployment configured", async () => {
+  // The workflow body names the prefix, the integration branch, the worktree root
+  // and the bound on a subject, so a configured row has to be what a model reads: a
+  // literal `feat/` baked into the asset would state a rule this deployment does not
+  // apply.
+  const configured = createSkillProvider(
+    settings({
+      branchPrefix: "feature/",
+      integrationBranch: "trunk",
+      worktreeRoot: "state/trees",
+      branchSubjectMaxLength: 12,
+    }),
+  );
+  const entry = (await configured.list({})).find((candidate) => candidate.name === GIT_FLOW_SKILL_NAMES.workflow);
+  assert.notEqual(entry, undefined);
+  const loaded = await configured.get(entry);
+  assert.ok(loaded.content.includes("feature/"), loaded.content.slice(0, 400));
+  assert.ok(loaded.content.includes("trunk"), "the integration branch is the configured one");
+  assert.ok(loaded.content.includes("state/trees"), "the worktree root is the configured one");
+  assert.ok(loaded.content.includes("12"), "the subject bound is the configured one");
+  assert.doesNotMatch(loaded.content, /\{\{/, "no placeholder is left standing");
+  assert.ok(!loaded.content.includes("feat/"), "no unrendered default survives");
 });
 
 report();

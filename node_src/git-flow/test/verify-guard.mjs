@@ -24,7 +24,10 @@ import { join, resolve } from "node:path";
 import { GIT_FLOW_INTERCEPTOR } from "../lib/boundary/guard.js";
 import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
-import { check, makeAgent, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
+import { check, makeAgent, occupyMainTree, report, scratchRepo, settings, signal } from "./support.mjs";
+
+/** The settings every check here runs with: the shipped defaults. */
+const SETTINGS = settings();
 
 /**
  * Every check takes a session id nobody else used.
@@ -52,7 +55,7 @@ async function decide(execution) {
     passed = true;
     return Promise.resolve({ kind: "allow" });
   };
-  const decision = await GIT_FLOW_INTERCEPTOR.handle(execution, next);
+  const decision = await GIT_FLOW_INTERCEPTOR.handle(execution, next, SETTINGS);
   return { decision, passed };
 }
 
@@ -227,7 +230,7 @@ await check("in place, the claim is the repository: every path inside it is allo
   try {
     const session = sessionId("in-place");
     const { agent } = makeAgent(session, repo.root);
-    await startTool().execute({ branchName: "guard-in-place" }, { agent, signal });
+    await startTool().execute({ branchName: "guard-in-place" }, { agent, signal }, SETTINGS);
     assert.equal(
       await repo.git.text(["rev-parse", "--abbrev-ref", "HEAD"]),
       "feat/guard-in-place",
@@ -253,7 +256,7 @@ await check("inside a claimed worktree a write is allowed, and a main-tree write
     const holder = sessionId("holder");
     await occupyMainTree(repo.root, holder);
     const { agent } = makeAgent(session, repo.root, withHolder(repo.root, holder, session));
-    await startTool().execute({ branchName: "guard-claim" }, { agent, signal });
+    await startTool().execute({ branchName: "guard-claim" }, { agent, signal }, SETTINGS);
     const workTree = worktreePath(repo.root, "guard_claim");
     assert.equal(existsSync(workTree), true, "the claim was not materialized into a worktree");
 
@@ -298,7 +301,7 @@ await check("the guard never answers ask", async () => {
   const repo = await scratchRepo();
   try {
     const { agent } = makeAgent(sessionId("ask-claimed"), repo.root);
-    await startTool().execute({ branchName: "ask-spread" }, { agent, signal });
+    await startTool().execute({ branchName: "ask-spread" }, { agent, signal }, SETTINGS);
     const stranger = makeAgent(sessionId("ask-stranger"), repo.root).agent;
 
     const calls = [
@@ -321,6 +324,32 @@ await check("the guard never answers ask", async () => {
         `${call.name} answered ${String(decision.kind)}`,
       );
     }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("guard: off turns every rule into a pass-through", async () => {
+  const repo = await scratchRepo();
+  try {
+    const { agent } = makeAgent(sessionId("off"), repo.root);
+    // The very call the guard refuses with its default settings: a write into the
+    // repository by a session that holds no claim. With the guard off it has to pass
+    // through — and nothing may be asked of the repository on the way, which is why
+    // this drives the listener directly instead of through `decide`.
+    let passed = false;
+    const decision = await GIT_FLOW_INTERCEPTOR.handle(
+      { name: "write", arguments: { file_path: join(repo.root, "README.md") }, agent, signal },
+      () => {
+        passed = true;
+        return Promise.resolve({ kind: "allow" });
+      },
+      settings({ guard: "off" }),
+    );
+    assert.equal(passed, true, "a guard that is off must not hold the call");
+    assert.equal(decision.kind, "allow");
+    // Nothing was created for it either: a session with no claim still has none.
+    assert.equal(existsSync(join(repo.root, ".dsh.local")), false);
   } finally {
     await repo.cleanup();
   }

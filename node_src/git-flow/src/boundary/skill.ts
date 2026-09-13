@@ -23,6 +23,17 @@
  * text and a broken asset is a failed skill load rather than a failed boot. No
  * instruction text lives in this module, in any form.
  *
+ * ## Bodies are rendered from the settings
+ *
+ * The rules name values a deployment configures — the branch prefix, the
+ * integration branch, the worktree root, how long a branch subject may be — so an
+ * asset carries `{{branchPrefix}}` and its siblings rather than a literal `feat/`
+ * that a configured row would contradict. The substitution happens on each load,
+ * beside the read, so a model is told the rules it is actually held to while the
+ * asset stays the single source of the text. A placeholder nothing defines is left
+ * standing: that is a typo in the asset, and letting it reach the model is how it
+ * gets noticed.
+ *
  * The asset URLs are one directory deeper than they look: this module builds to
  * `lib/boundary/skill.js` while the assets ship at the package root, so each URL
  * climbs two directories. Nothing type-checks that depth — a wrong one fails at
@@ -40,6 +51,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { BUNDLED_SKILL_RANK, type SkillCandidate, type SkillDefinition, type SkillProvider } from "@deepseek-ai/dsh-skill";
+import type { FlowSettings } from "../platform/settings.js";
 
 /** Name this provider registers under in the skill registry. */
 const PROVIDER_NAME = "git-flow";
@@ -118,43 +130,60 @@ function candidateOf(skill: BundledSkill): SkillCandidate {
 }
 
 /**
- * The provider object.
+ * Render an asset body with the values this deployment configured.
  *
- * Bodies are read per load, so the assets stay authoritative and a skill whose
- * file has gone missing fails that load rather than the boot. Registered at the
- * bundled rank, which means a project-level skill of the same name in
- * `<project>/.dsh/skills/` outranks it — the intended escape hatch for a
- * repository with its own convention.
+ * The map is written out rather than derived from the settings object, so the
+ * placeholders an asset may use are a list somebody chose: `{{branchPrefix}}` and
+ * not `{{anythingOnTheSettings}}`. A placeholder that is not in the map is left
+ * exactly as it was written.
+ *
+ * @param body - the asset's text, as read from disk.
+ * @param settings - the plugin's resolved configuration.
+ * @returns the text the model reads.
  */
-const provider: SkillProvider = {
-  name: PROVIDER_NAME,
-  list: () => Promise.resolve(SKILLS.map(candidateOf)),
-  async get(candidate: SkillCandidate): Promise<SkillDefinition | undefined> {
-    const skill = SKILLS.find((entry) => entry.name === candidate.name);
-    if (skill === undefined) return undefined;
-    const content = await readFile(skill.body, "utf8");
-    return {
-      name: skill.name,
-      description: skill.description,
-      whenToUse: skill.whenToUse,
-      invocation: INVOCATION,
-      source: "bundled",
-      provider: PROVIDER_NAME,
-      resourceBase: RESOURCE_BASE,
-      content,
-    };
-  },
-};
+function render(body: string, settings: FlowSettings): string {
+  const values: Record<string, string> = {
+    branchPrefix: settings.branchPrefix,
+    integrationBranch: settings.integrationBranch,
+    worktreeRoot: settings.worktreeRoot,
+    branchSubjectMaxLength: String(settings.branchSubjectMaxLength),
+  };
+  return body.replace(/\{\{([A-Za-z][A-Za-z0-9]*)\}\}/g, (whole, name: string) => values[name] ?? whole);
+}
 
 /**
- * The skills this plugin contributes.
+ * Build the skills this plugin contributes, rendered for one deployment.
  *
  * One provider rather than one per skill: the registry keys providers, not
  * skills, and a second provider would only repeat the same registration. The
- * wiring module registers it as it stands:
+ * wiring module is the one that holds the settings, so it builds the provider:
  *
  * ```ts
- * ctx.effect(() => ctx.skills.registerProvider(() => GIT_FLOW_SKILL_PROVIDER));
+ * ctx.effect(() => ctx.skills.registerProvider(() => createSkillProvider(settings)));
  * ```
+ *
+ * @param settings - the plugin's resolved configuration, for the placeholders the
+ *   bodies carry.
+ * @returns the provider the skill registry pulls from.
  */
-export const GIT_FLOW_SKILL_PROVIDER: SkillProvider = provider;
+export function createSkillProvider(settings: FlowSettings): SkillProvider {
+  return {
+    name: PROVIDER_NAME,
+    list: () => Promise.resolve(SKILLS.map(candidateOf)),
+    async get(candidate: SkillCandidate): Promise<SkillDefinition | undefined> {
+      const skill = SKILLS.find((entry) => entry.name === candidate.name);
+      if (skill === undefined) return undefined;
+      const content = render(await readFile(skill.body, "utf8"), settings);
+      return {
+        name: skill.name,
+        description: skill.description,
+        whenToUse: skill.whenToUse,
+        invocation: INVOCATION,
+        source: "bundled",
+        provider: PROVIDER_NAME,
+        resourceBase: RESOURCE_BASE,
+        content,
+      };
+    },
+  };
+}

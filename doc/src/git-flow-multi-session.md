@@ -219,8 +219,11 @@ it. A store holds it for its whole lifetime, which makes the read on the way in,
 because the decisions above this module read and then write. A peer's lock is **refused rather than
 waited for** — `open` throws, and whoever is above it runs the operation again — and the lock file's
 **mtime** is the whole expiry rule: younger than ten seconds is held, older is a leftover, and the next
-process takes a leftover over by writing its own owner line over it. Ten seconds is hardcoded for now,
-like the plugin's other bounds; it moves into configuration with them.
+process takes a leftover over by writing its own owner line over it. All eight of these values — the
+prefix, the integration branch, the worktree root, the claim file, the lock's staleness, the sweep's
+age, the longest subject and the guard switch — are the plugin row's configuration, resolved once when
+it mounts; the values quoted here are the defaults. The two skill bodies are rendered from them, so a
+model reads the rules this deployment applies.
 
 That bound is sound only because a critical section is a few filesystem operations on a small file:
 microseconds, not seconds. The invariant that keeps it sound is that **no store is held across a git
@@ -411,28 +414,32 @@ section as well as the context.
 
 ## Test plan
 
-The checks the design now rests on are committed: six files under `node_src/git-flow/test/`, run by
+The checks the design now rests on are committed: seven files under `node_src/git-flow/test/`, run by
 `pnpm test` against a scratch repository with Node built-ins only — no harness, no profile, no
 network. What this note planned is not quite what shipped, so here is what each file actually covers:
 
 - `verify-exec.mjs` (8 checks) — the process seam: argv is never shell-interpreted, `GitClient`
   forces argv[0], cwd and the git environment, `text`/`run`/`ok`/`GitError` behave as their callers
   assume, and a caller's signal reaches the runner.
-- `verify-claim.mjs` (17 checks) — the claim file's format (header, version), the table key as the
+- `verify-settings.mjs` (7 checks) — the configuration: the shipped defaults, the normalization a row's
+  spelling may need (a prefix gains its slash, paths lose trailing ones), and one refusal per setting,
+  each naming the key it refused.
+- `verify-claim.mjs` (18 checks) — the claim file's format (header, version), the table key as the
   identity, replacement and removal, both read paths, that a malformed document throws rather than
   reading as no claim, and the lock: that a store holds a lock file while it is open, that a second
   store is refused by name, that a young lock is respected, that an old one is taken over, that an open
   which fails on the document gives the lock back, and — with a real second process — that a lock held
   elsewhere refuses this one and dies with the process that held it.
-- `verify-core.mjs` (30 checks) — the decisions: both workspace shapes, the memo's four states and
+- `verify-core.mjs` (32 checks) — the decisions: both workspace shapes, the memo's four states and
   its retry path, `gitComplete`'s steps including `not-descendant`, the temporary merge worktree, and
   the sweep's two gates. A check that pins a behaviour the module calls out of contract says
   `characterized` in its name.
-- `verify-guard.mjs` (10 checks) — the five rules, and that no input produces `ask`.
+- `verify-guard.mjs` (11 checks) — the five rules, that no input produces `ask`, and that `guard: off`
+  turns the whole listener into a pass-through.
 - `verify-doors.mjs` (13 checks) — the descriptors both doors declare, the one injected notice, and
   that a tool injects nothing.
-- `verify-skill.mjs` (5 checks) — the two bundled skills, their discovery metadata, and that each
-  body is read from `assets/`.
+- `verify-skill.mjs` (6 checks) — the two bundled skills, their discovery metadata, that each
+  body is read from `assets/`, and that a body is rendered with the settings it was given.
 
 The reproduction this note wanted first — two sessions in one repository, neither with a claim — is
 still in the set in its rewritten form: the guard's "a write into the repository with no claim is

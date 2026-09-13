@@ -48,6 +48,7 @@
 import type { ToolSchema } from "@deepseek-ai/dsh-llm";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
 import { gitClean, gitComplete, gitStart } from "../core/core.js";
+import type { FlowSettings } from "../platform/settings.js";
 import {
   factsFor,
   isValidBranchName,
@@ -80,9 +81,10 @@ interface GitFlowTool<Args> {
    *
    * @param args - the model's own arguments.
    * @param execution - the call's identity, cancellation, and calling agent.
+   * @param settings - the plugin's resolved configuration.
    * @returns what the model should read next.
    */
-  readonly execute: (args: Args, execution: ToolRunContext) => Promise<string>;
+  readonly execute: (args: Args, execution: ToolRunContext, settings: FlowSettings) => Promise<string>;
 }
 
 /** The `git_start` tool, as the model is shown it. */
@@ -96,8 +98,9 @@ const GIT_START_TOOL: ToolSchema = {
       type: "string",
       required: true,
       description:
-        "The feature's own name — letters, digits and dashes, starting with a letter, at most 20 characters, and no `/` of your own " +
-        "(for example `git-flow-guard`, which opens the branch `feat/git-flow-guard`; `test/git-flow-guard` is not a name this plugin opens).",
+        "The feature's own name — the subject a feature branch carries, not a branch path: letters, digits and dashes, starting with a letter, " +
+        "no `/` of your own, and short. The plugin adds the prefix this deployment configured and refuses anything that is not a subject; " +
+        "the `git-flow` skill states this deployment's exact rule.",
     },
   },
 };
@@ -106,10 +109,10 @@ const GIT_START_TOOL: ToolSchema = {
 const GIT_COMPLETE_TOOL: ToolSchema = {
   name: "git_complete",
   description:
-    "Merge this session's feature branch into master with --no-ff, remove its worktree and delete the branch. " +
+    "Merge this session's feature branch into the integration branch with --no-ff, remove its worktree and delete the branch. " +
     "The merge message is required, because the merge commit is the only record of what the feature did. " +
     "Safe to call again: a family that is already finished reports that there is nothing to do. " +
-    "A call that reports the branch is not a descendant of master means it must be replayed onto master first; " +
+    "A call that reports the branch is not a descendant of the integration branch means it must be replayed onto it first; " +
     "a call that reports a failed step returns that step, its git command and git's own output.",
   parameters: {
     mergeMessage: {
@@ -151,28 +154,30 @@ const GIT_CLEANUP_TOOL: ToolSchema = {
  *
  * @param args - the model's arguments, with `branchName` validated as present.
  * @param execution - the call, whose agent carries the session and the runner.
+ * @param settings - the plugin's resolved configuration.
  * @returns where the session now works.
  */
 async function gitStartTool(
   args: { readonly branchName: string },
   execution: ToolRunContext,
+  settings: FlowSettings,
 ): Promise<string> {
   const agent = sessionAgentOf(execution.agent);
-  const facts = await factsFor(agent, execution.signal);
-  const branch = withBranchPrefix(args.branchName);
+  const facts = await factsFor(agent, settings, execution.signal);
+  const branch = withBranchPrefix(args.branchName, settings);
 
-  if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
+  if (!(await isValidBranchName(facts.flow, branch))) {
     return (
       `\`${branch}\` is not a name this plugin opens, so no branch was created and no worktree was made. ` +
       "Name the feature itself and call `git_start` again: letters, digits and dashes, starting with a letter, " +
-      "at most 20 characters, and no `/` of your own — `git-flow-guard` opens `feat/git-flow-guard`, while " +
-      "`test/git-flow-guard` is refused, because `feat/` is the only namespace a family branch has."
+      `at most ${settings.branchSubjectMaxLength} characters, and no \`/\` of your own — \`git-flow-guard\` opens ` +
+      `\`${settings.branchPrefix}git-flow-guard\`, while \`test/git-flow-guard\` is refused, because ` +
+      `\`${settings.branchPrefix}\` is the only namespace a family branch has.`
     );
   }
 
   const workspace = await gitStart(
-    facts.runner,
-    facts.repoRoot,
+    facts.flow,
     facts.sessionId,
     branch,
     resumableSessionIds(agent.getSessions()),
@@ -201,26 +206,29 @@ async function gitStartTool(
  *
  * @param args - the model's arguments, with `mergeMessage` validated as present.
  * @param execution - the call, whose agent carries the session and the runner.
+ * @param settings - the plugin's resolved configuration.
  * @returns what happened, phrased for the model.
  */
 async function gitCompleteTool(
   args: { readonly mergeMessage: string },
   execution: ToolRunContext,
+  settings: FlowSettings,
 ): Promise<string> {
-  const facts = await factsFor(sessionAgentOf(execution.agent), execution.signal);
-  const result = await gitComplete(facts.runner, facts.repoRoot, facts.sessionId, args.mergeMessage, execution.signal);
+  const integration = settings.integrationBranch;
+  const facts = await factsFor(sessionAgentOf(execution.agent), settings, execution.signal);
+  const result = await gitComplete(facts.flow, facts.sessionId, args.mergeMessage, execution.signal);
 
   switch (result.kind) {
     case "done":
       return result.merged
-        ? "Merged the feature branch into master with --no-ff, then removed its worktree and deleted the branch: the family is finished."
-        : "There was nothing to merge — master already had the branch's commits — so its worktree was removed and the branch deleted: the family is finished.";
+        ? `Merged the feature branch into ${integration} with --no-ff, then removed its worktree and deleted the branch: the family is finished.`
+        : `There was nothing to merge — ${integration} already had the branch's commits — so its worktree was removed and the branch deleted: the family is finished.`;
     case "nothing-to-do":
       return "No claim is recorded for this session, so there was nothing to do: a previous call already finished this family.";
     case "not-descendant":
       return (
-        `\`${result.branch}\` is not a descendant of master, so nothing was merged and nothing was written. ` +
-        `Replay it onto master first — \`git rebase --onto master $(git merge-base master ${result.branch}) ${result.branch}\` — ` +
+        `\`${result.branch}\` is not a descendant of ${integration}, so nothing was merged and nothing was written. ` +
+        `Replay it onto ${integration} first — \`git rebase --onto ${integration} $(git merge-base ${integration} ${result.branch}) ${result.branch}\` — ` +
         "then call `git_complete` again."
       );
     case "failed":
@@ -245,14 +253,19 @@ async function gitCompleteTool(
  * @param _args - the validated argument object; empty by declaration.
  * @param execution - the call, whose agent carries the session, the runner and
  *   the sweep scope.
+ * @param settings - the plugin's resolved configuration.
  * @returns what the sweep did.
  */
-async function gitCleanupTool(_args: Record<string, never>, execution: ToolRunContext): Promise<string> {
+async function gitCleanupTool(
+  _args: Record<string, never>,
+  execution: ToolRunContext,
+  settings: FlowSettings,
+): Promise<string> {
   // One view, built once: the facts carry the runner and the repository, while
   // the sweep scope is only reachable through the session store on the agent.
   const agent = sessionAgentOf(execution.agent);
-  const facts = await factsFor(agent, execution.signal);
-  await gitClean(facts.runner, facts.repoRoot, resumableSessionIds(agent.getSessions()), execution.signal);
+  const facts = await factsFor(agent, settings, execution.signal);
+  await gitClean(facts.flow, resumableSessionIds(agent.getSessions()), execution.signal);
 
   return "Reclaimed what sessions that can no longer come back left behind: their worktrees are gone and their branches are deleted. Claims whose session can still be resumed were left as they were.";
 }

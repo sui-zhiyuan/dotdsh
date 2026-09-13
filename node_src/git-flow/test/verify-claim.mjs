@@ -30,7 +30,7 @@ import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
-import { check, report, scratchRepo } from "./support.mjs";
+import { check, flow, report, scratchRepo } from "./support.mjs";
 
 /** The claim file's path in one repository, spelled out rather than imported: the checks assert where it lands on disk, not the module's idea of it. */
 const claimPath = (repoRoot) => join(repoRoot, ".dsh.local", "git-flow.toml");
@@ -68,7 +68,7 @@ const GAMMA_CLAIM = {
 await check("open creates the file and its directory, header and version included", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       assert.equal((await stat(join(repo.root, ".dsh.local"))).isDirectory(), true, "the directory was created");
       const text = await readFile(claimPath(repo.root), "utf8");
@@ -94,7 +94,7 @@ await check("open creates the file and its directory, header and version include
 await check("append then query round-trips every field, and the file names the session once", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       assert.deepEqual(await store.query(ALPHA), ALPHA_CLAIM);
@@ -121,7 +121,7 @@ await check("append then query round-trips every field, and the file names the s
 await check("the main-tree sentinel round-trips: a bracketed name is the plain string it looks like", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       // The one name no worktree can have, because a worktree's directory name is
       // built from a branch subject. It has to survive the file byte for byte: a
@@ -138,7 +138,7 @@ await check("the main-tree sentinel round-trips: a bracketed name is the plain s
     }
 
     // A second store reads it back out of the file rather than out of memory.
-    const reopened = await ClaimStore.open(repo.root);
+    const reopened = await ClaimStore.open(flow(repo.root));
     try {
       assert.deepEqual(await reopened.query(ALPHA), { ...ALPHA_CLAIM, worktreeName: MAIN_WORKTREE });
     } finally {
@@ -152,7 +152,7 @@ await check("the main-tree sentinel round-trips: a bracketed name is the plain s
 await check("a second append for one session replaces the row instead of adding one", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       const replaced = {
         ...ALPHA_CLAIM,
@@ -179,7 +179,7 @@ await check("a second append for one session replaces the row instead of adding 
 await check("remove drops a row, and removing an absent session rewrites nothing", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       await store.append(BETA_CLAIM);
@@ -206,7 +206,7 @@ await check("remove drops a row, and removing an absent session rewrites nothing
 await check("find with no criteria returns every claim, in the file's order", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       await store.append(BETA_CLAIM);
@@ -226,7 +226,7 @@ await check("find with no criteria returns every claim, in the file's order", as
 await check("find narrows on branch and on worktreeName, both as exact matches", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       await store.append(BETA_CLAIM);
@@ -256,7 +256,7 @@ await check("find narrows on branch and on worktreeName, both as exact matches",
 await check("a criterion that matches nothing returns no claims", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       assert.deepEqual(await store.find({ branch: "feature/no-such-branch" }), []);
@@ -272,13 +272,13 @@ await check("a criterion that matches nothing returns no claims", async () => {
 await check("a claim survives dispose and a reopen", async () => {
   const repo = await scratchRepo();
   try {
-    const first = await ClaimStore.open(repo.root);
+    const first = await ClaimStore.open(flow(repo.root));
     await first.append(ALPHA_CLAIM);
     await first.dispose();
 
     // A store is per operation above it, not per session: what a reopened one reads
     // is also what a second process would read.
-    const second = await ClaimStore.open(repo.root);
+    const second = await ClaimStore.open(flow(repo.root));
     try {
       assert.deepEqual(await second.query(ALPHA), ALPHA_CLAIM);
       assert.deepEqual(await second.find(), [ALPHA_CLAIM]);
@@ -293,7 +293,7 @@ await check("a claim survives dispose and a reopen", async () => {
 await check("two different sessions coexist in one file", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       await store.append(BETA_CLAIM);
@@ -331,7 +331,7 @@ await check("a malformed document throws instead of reading as no claim", async 
     ].join("\n");
     await writeFile(path, broken, "utf8");
 
-    await assert.rejects(ClaimStore.open(repo.root), (error) => {
+    await assert.rejects(ClaimStore.open(flow(repo.root)), (error) => {
       assert.ok(error instanceof Error, "the rejection must be an Error");
       assert.match(error.message, /missing branch/);
       assert.ok(error.message.includes("session-broken"), error.message);
@@ -348,7 +348,7 @@ await check("a malformed document throws instead of reading as no claim", async 
 await check("a store holds a lock file while it is open, and dispose takes it away", async () => {
   const repo = await scratchRepo();
   try {
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       // The lock file's existence *is* the lock, so a store that is open without one
       // is a store no other process can see. What the file says is for whoever finds
@@ -367,9 +367,9 @@ await check("a store holds a lock file while it is open, and dispose takes it aw
 await check("a second store over a locked claim file is refused, and names the lock", async () => {
   const repo = await scratchRepo();
   try {
-    const held = await ClaimStore.open(repo.root);
+    const held = await ClaimStore.open(flow(repo.root));
     try {
-      await assert.rejects(ClaimStore.open(repo.root), (error) => {
+      await assert.rejects(ClaimStore.open(flow(repo.root)), (error) => {
         assert.ok(error instanceof Error, "the refusal must be an Error");
         // Refused rather than queued: the message has to name the file in the way, so
         // that whoever reads it can decide to try again — and a human can look.
@@ -383,7 +383,7 @@ await check("a second store over a locked claim file is refused, and names the l
 
     // The refusal left the holder's lock alone, and letting go is all it takes for
     // the next attempt to go through.
-    const next = await ClaimStore.open(repo.root);
+    const next = await ClaimStore.open(flow(repo.root));
     await next.dispose();
   } finally {
     await repo.cleanup();
@@ -400,7 +400,7 @@ await check("a lock left behind by a holder that died is taken over once it is o
     const longAgo = new Date(Date.now() - 60_000);
     await utimes(lockPath(repo.root), longAgo, longAgo);
 
-    const store = await ClaimStore.open(repo.root);
+    const store = await ClaimStore.open(flow(repo.root));
     try {
       await store.append(ALPHA_CLAIM);
       assert.deepEqual(await store.query(ALPHA), ALPHA_CLAIM);
@@ -422,7 +422,7 @@ await check("a lock younger than the bound is respected, owner line or none", as
     // The empty file is the harder of the two: a holder that died between creating
     // the lock and writing its owner. Young is young either way.
     await writeFile(lockPath(repo.root), "", "utf8");
-    await assert.rejects(ClaimStore.open(repo.root), /held by another process/);
+    await assert.rejects(ClaimStore.open(flow(repo.root)), /held by another process/);
   } finally {
     await repo.cleanup();
   }
@@ -445,12 +445,12 @@ await check("an open that fails on the document gives the lock back", async () =
       "utf8",
     );
 
-    await assert.rejects(ClaimStore.open(repo.root), /missing branch/);
+    await assert.rejects(ClaimStore.open(flow(repo.root)), /missing branch/);
     // The document is still unusable, so the second refusal has to be about the
     // document again. A lock left behind by the failed open would answer "held by
     // another process" instead, and every attempt from then on would be blocked by a
     // store that never existed.
-    await assert.rejects(ClaimStore.open(repo.root), (error) => {
+    await assert.rejects(ClaimStore.open(flow(repo.root)), (error) => {
       assert.match(error.message, /missing branch/);
       assert.doesNotMatch(error.message, /held by another process/);
       return true;
@@ -460,9 +460,33 @@ await check("an open that fails on the document gives the lock back", async () =
   }
 });
 
+await check("a configured claimFile moves the claim file and its lock, directory and all", async () => {
+  const repo = await scratchRepo();
+  try {
+    // Neither path is hardcoded in the module any more: the file and the lock that
+    // guards it both follow the `claimFile` setting, and the directory the setting
+    // names is created exactly the way the default one is.
+    const custom = join(repo.root, "state", "claims.toml");
+    const store = await ClaimStore.open(flow(repo.root, { claimFile: "state/claims.toml" }));
+    try {
+      await store.append(ALPHA_CLAIM);
+      assert.deepEqual(await store.query(ALPHA), ALPHA_CLAIM);
+      assert.equal((await stat(custom)).isFile(), true, "the claim file is where the setting puts it");
+      assert.equal((await stat(`${custom}.lock`)).isFile(), true, "and so is its lock");
+    } finally {
+      await store.dispose();
+    }
+    await assert.rejects(stat(claimPath(repo.root)), { code: "ENOENT" }, "the default location was never touched");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
 await check("a lock held by another process is refused here, and goes away with that process", async () => {
   const repo = await scratchRepo();
   const moduleUrl = new URL("../lib/platform/claim.js", import.meta.url).href;
+  const settingsUrl = new URL("../lib/platform/settings.js", import.meta.url).href;
+  const execUrl = new URL("../lib/platform/exec.js", import.meta.url).href;
   // A real second process, because that is the case the lock exists for: every other
   // check here runs in one process, where a lock is only ever taken, never
   // contended. It holds until its input ends, which is the signal to dispose.
@@ -473,7 +497,10 @@ await check("a lock held by another process is refused here, and goes away with 
       "-e",
       [
         `const { ClaimStore } = await import(${JSON.stringify(moduleUrl)});`,
-        `const store = await ClaimStore.open(${JSON.stringify(repo.root)});`,
+        `const { resolveSettings } = await import(${JSON.stringify(settingsUrl)});`,
+        `const { nodeRunner } = await import(${JSON.stringify(execUrl)});`,
+        `const context = { settings: resolveSettings({}), runner: nodeRunner, repoRoot: ${JSON.stringify(repo.root)} };`,
+        "const store = await ClaimStore.open(context);",
         'process.stdout.write("held\\n");',
         "process.stdin.resume();",
         'await new Promise((resolve) => process.stdin.on("end", resolve));',
@@ -489,14 +516,14 @@ await check("a lock held by another process is refused here, and goes away with 
 
   try {
     await waitForLine(holder, "held");
-    await assert.rejects(ClaimStore.open(repo.root), /held by another process/);
+    await assert.rejects(ClaimStore.open(flow(repo.root)), /held by another process/);
 
     holder.stdin.end();
     await holderDone;
 
     // The holder disposed on its way out, so the lock is gone with it and the file
     // is free again without anyone waiting for an expiry.
-    const after = await ClaimStore.open(repo.root);
+    const after = await ClaimStore.open(flow(repo.root));
     await after.dispose();
   } finally {
     holder.kill();

@@ -11,11 +11,14 @@
  * }
  * ```
  *
- * ## Why a handler takes the invocation and nothing else
+ * ## Why a handler takes the invocation and the settings
  *
- * A handler is `(invocation) => CommandResult`, which is precisely the shape the
- * command registry calls, so an entry registers with no adapter. Everything a
- * handler needs is *in* the invocation:
+ * A handler is `(invocation, settings) => CommandResult`: the invocation is what
+ * the registry calls the handler with, and the settings are the one thing it does
+ * not carry — they were resolved once, when the plugin mounted, and the wiring
+ * module closes over them.
+ *
+ * Everything else a handler needs is *in* the invocation:
  *
  * - the human's text is `invocation.rawInput` (the whole point of a command);
  * - the session is `invocation.agent`, and from it come the working directory,
@@ -56,6 +59,7 @@
 import type { CommandDescriptor, CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
 import { boundContextSummary } from "@deepseek-ai/dsh-llm";
 import { gitClean, gitComplete, gitStart } from "../core/core.js";
+import type { FlowSettings } from "../platform/settings.js";
 import {
   factsFor,
   isValidBranchName,
@@ -69,8 +73,8 @@ import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 interface GitFlowCommand {
   /** Name, summary and argument hint. */
   readonly descriptor: CommandDescriptor;
-  /** The registry's own handler shape, so an entry registers as it stands. */
-  readonly handler: (invocation: CommandInvocation) => Promise<CommandResult>;
+  /** The registry's own handler shape, plus the settings the wiring module closes over. */
+  readonly handler: (invocation: CommandInvocation, settings: FlowSettings) => Promise<CommandResult>;
 }
 
 /**
@@ -140,7 +144,7 @@ const GIT_START_DESCRIPTOR: CommandDescriptor = {
 const GIT_COMPLETE_DESCRIPTOR: CommandDescriptor = {
   name: "git-complete",
   description:
-    "Merge this session's feature branch into master with --no-ff, remove its worktree and delete the branch",
+    "Merge this session's feature branch into the integration branch with --no-ff, remove its worktree and delete the branch",
   // Declared, unlike the previous implementation: the merge message is the
   // model's to compose, so the composer should stop and ask for one. A second
   // Enter is the price, and it is worth paying for a commit subject that says
@@ -182,9 +186,13 @@ const GIT_CLEANUP_DESCRIPTOR: CommandDescriptor = {
  * conversation is exactly the judgement this file refuses to make.
  *
  * @param invocation - the dispatched command, whose `rawInput` is the name or empty.
+ * @param settings - the plugin's resolved configuration.
  * @returns the result the UI renders.
  */
-async function gitStartHandler(invocation: CommandInvocation): Promise<CommandResult> {
+async function gitStartHandler(
+  invocation: CommandInvocation,
+  settings: FlowSettings,
+): Promise<CommandResult> {
   // `rawInput` keeps the separator whitespace the parser split on, so the name is
   // what is left after trimming it.
   const requested = invocation.rawInput.trim();
@@ -203,21 +211,21 @@ async function gitStartHandler(invocation: CommandInvocation): Promise<CommandRe
   }
 
   const agent = sessionAgentOf(invocation.agent);
-  const facts = await factsFor(agent, invocation.signal);
-  const branch = withBranchPrefix(requested);
-  if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
+  const facts = await factsFor(agent, settings, invocation.signal);
+  const branch = withBranchPrefix(requested, settings);
+  if (!(await isValidBranchName(facts.flow, branch))) {
     return {
       kind: "error",
       text:
         `"${branch}" is not a name this plugin opens. Name the feature itself: letters, digits and dashes, ` +
-        'starting with a letter, at most 20 characters, and no "/" of your own — git-flow-guard opens feat/git-flow-guard. ' +
+        `starting with a letter, at most ${settings.branchSubjectMaxLength} characters, and no "/" of your own — ` +
+        `git-flow-guard opens ${settings.branchPrefix}git-flow-guard. ` +
         "Run /git-start again with a different name.",
     };
   }
 
   const workspace = await gitStart(
-    facts.runner,
-    facts.repoRoot,
+    facts.flow,
     facts.sessionId,
     branch,
     resumableSessionIds(agent.getSessions()),
@@ -259,9 +267,13 @@ async function gitStartHandler(invocation: CommandInvocation): Promise<CommandRe
  * retries on the model's behalf.
  *
  * @param invocation - the dispatched command, whose `rawInput` is the message or empty.
+ * @param settings - the plugin's resolved configuration.
  * @returns the result the UI renders.
  */
-async function gitCompleteHandler(invocation: CommandInvocation): Promise<CommandResult> {
+async function gitCompleteHandler(
+  invocation: CommandInvocation,
+  settings: FlowSettings,
+): Promise<CommandResult> {
   // Same separator whitespace as `/git-start`; a message is what is left of the
   // raw input once it is gone.
   const message = invocation.rawInput.trim();
@@ -276,16 +288,17 @@ async function gitCompleteHandler(invocation: CommandInvocation): Promise<Comman
     };
   }
 
-  const facts = await factsFor(sessionAgentOf(invocation.agent), invocation.signal);
-  const result = await gitComplete(facts.runner, facts.repoRoot, facts.sessionId, message, invocation.signal);
+  const integration = settings.integrationBranch;
+  const facts = await factsFor(sessionAgentOf(invocation.agent), settings, invocation.signal);
+  const result = await gitComplete(facts.flow, facts.sessionId, message, invocation.signal);
 
   switch (result.kind) {
     case "done":
       return {
         kind: "success",
         text: result.merged
-          ? "Merged the feature branch into master and released its worktree, branch and claim."
-          : "The feature branch had nothing master did not already have; released its worktree, branch and claim.",
+          ? `Merged the feature branch into ${integration} and released its worktree, branch and claim.`
+          : `The feature branch had nothing ${integration} did not already have; released its worktree, branch and claim.`,
       };
     case "nothing-to-do":
       return {
@@ -295,7 +308,7 @@ async function gitCompleteHandler(invocation: CommandInvocation): Promise<Comman
     case "not-descendant": {
       // Nothing was written, so the same instruction is both what the human sees
       // and what the model has to act on: core never rebases on anyone's behalf.
-      const text = `Branch ${result.branch} is not a descendant of master, so nothing was merged. Replay it onto master first (\`git rebase --onto master <merge-base> ${result.branch}\`), then call \`git_complete\` again.`;
+      const text = `Branch ${result.branch} is not a descendant of ${integration}, so nothing was merged. Replay it onto ${integration} first (\`git rebase --onto ${integration} <merge-base> ${result.branch}\`), then call \`git_complete\` again.`;
       injectContext(invocation, text);
       return { kind: "error", text };
     }
@@ -323,15 +336,19 @@ async function gitCompleteHandler(invocation: CommandInvocation): Promise<Comman
  * not work the model does.
  *
  * @param invocation - the dispatched command.
+ * @param settings - the plugin's resolved configuration.
  * @returns the result the UI renders.
  */
-async function gitCleanupHandler(invocation: CommandInvocation): Promise<CommandResult> {
+async function gitCleanupHandler(
+  invocation: CommandInvocation,
+  settings: FlowSettings,
+): Promise<CommandResult> {
   // One view, read twice: the sweep scope and the facts both come from the agent
   // dsh handed over. Nothing is injected — cleanup is not work the model does.
   const view = sessionAgentOf(invocation.agent);
   const resumable = resumableSessionIds(view.getSessions());
-  const facts = await factsFor(view, invocation.signal);
-  await gitClean(facts.runner, facts.repoRoot, resumable, invocation.signal);
+  const facts = await factsFor(view, settings, invocation.signal);
+  await gitClean(facts.flow, resumable, invocation.signal);
   return {
     kind: "success",
     text: "Swept the branches and worktrees left behind by sessions that can no longer come back.",

@@ -26,11 +26,11 @@
  *
  * A holder that crashes leaves the lock file behind, and the repository would be
  * locked out of its own claim file forever. So the lock file's **mtime** is the
- * whole expiry rule: an existing lock younger than {@link LOCK_STALE_MS} is held,
- * and the caller is refused rather than made to wait — the model or the human
- * retries; one older than that is a leftover, and a process takes it over by
- * writing its own owner line over it — the touch and the record of who holds the
- * lock are the same write.
+ * whole expiry rule: an existing lock younger than
+ * {@link FlowSettings.lockStaleSeconds} is held, and the caller is refused rather
+ * than made to wait — the model or the human retries; one older than that is a
+ * leftover, and a process takes it over by writing its own owner line over it —
+ * the touch and the record of who holds the lock are the same write.
  *
  * That bound is only sound because a critical section is a few filesystem
  * operations on a small file: microseconds, not seconds. The invariant that keeps
@@ -105,14 +105,7 @@ import { mkdir, open, readFile, stat, unlink, writeFile } from "node:fs/promises
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "smol-toml";
-
-/**
- * The claim file, relative to the repository's main working tree.
- *
- * Hardcoded for now. Its directory must appear in `.gitignore` — this module
- * never stages it, but nothing else knows to exclude it either.
- */
-const CLAIM_FILE = ".dsh.local/git-flow.toml";
+import type { FlowContext } from "./context.js";
 
 /**
  * The format version stamped into every document this module writes.
@@ -151,20 +144,6 @@ export const MAIN_WORKTREE = "[MAIN]";
 
 /** Suffix that turns the claim file's path into its lock file's path. */
 const LOCK_SUFFIX = ".lock";
-
-/**
- * How old a lock file has to be before another process may take it over.
- *
- * Hardcoded for now, like every other path and bound in this plugin; it moves into
- * the plugin's configuration with the rest of them.
- *
- * It may be this generous only because a critical section is a handful of
- * filesystem operations on a small file — microseconds — so no live holder can
- * legitimately reach it. It is also the one number that decides how long a crashed
- * holder keeps the repository out of its own claim file: after this long the next
- * store touches the lock and the work goes through.
- */
-const LOCK_STALE_MS = 10_000;
 
 /**
  * How many times {@link acquireLock} retries the create after it found the lock
@@ -225,8 +204,10 @@ interface ClaimDocument {
  * exactly like the descriptor.
  */
 export class ClaimStore {
-  /** Absolute path of the repository's main working tree; every path this store uses derives from it. */
+  /** Absolute path of the repository's main working tree; the claim file and its lock are found from here. */
   readonly repoRoot: string;
+  /** Absolute path of the claim file itself, resolved from the repository and the `claimFile` setting. */
+  private readonly claimFilePath: string;
   /** The open file every read and write goes through. */
   private readonly handle: FileHandle;
   /** The lock file this store owns: created on the way in, removed by {@link ClaimStore.dispose}. */
@@ -239,8 +220,9 @@ export class ClaimStore {
    * instance, because both the descriptor and the lock have to be in hand before
    * any method is called.
    */
-  private constructor(repoRoot: string, handle: FileHandle, lockPath: string) {
+  private constructor(repoRoot: string, claimFilePath: string, handle: FileHandle, lockPath: string) {
     this.repoRoot = repoRoot;
+    this.claimFilePath = claimFilePath;
     this.handle = handle;
     this.lockPath = lockPath;
   }
@@ -254,23 +236,27 @@ export class ClaimStore {
    * document that cannot be read or parsed fails here rather than at the first
    * command a session runs — with the lock already given back.
    *
+   * Where the file and its lock live, and how old a lock may be before it is taken
+   * over, all come from the context's settings — this module hardcodes none of them.
+   *
    * A lock another process holds is **not** waited for. This throws, and whoever is
    * above it — the model through a tool, the human through a command — runs the
    * operation again in a moment. The exception is a lock old enough to be a
-   * leftover (see {@link LOCK_STALE_MS}), which is taken over here.
+   * leftover (see {@link FlowSettings.lockStaleSeconds}), which is taken over here.
    *
-   * @param repoRoot - absolute path of the repository's main working tree.
+   * @param context - the settings this plugin resolved, the process seam, and the
+   *   repository's main working tree.
    * @returns an open store, which the caller must {@link ClaimStore.dispose}.
    * @throws Error when another process holds the lock.
    */
-  static async open(repoRoot: string): Promise<ClaimStore> {
-    const path = claimPath(repoRoot);
-    const lockPath = lockPathOf(repoRoot);
-    await mkdir(dirname(path), { recursive: true });
-    await acquireLock(lockPath);
+  static async open(context: FlowContext): Promise<ClaimStore> {
+    const claimFilePath = claimPathOf(context);
+    const lockPath = `${claimFilePath}${LOCK_SUFFIX}`;
+    await mkdir(dirname(claimFilePath), { recursive: true });
+    await acquireLock(lockPath, context.settings.lockStaleSeconds * 1_000);
     try {
-      const handle = await openClaimFile(path);
-      const store = new ClaimStore(repoRoot, handle, lockPath);
+      const handle = await openClaimFile(claimFilePath);
+      const store = new ClaimStore(context.repoRoot, claimFilePath, handle, lockPath);
       try {
         await store.readDocument();
       } catch (error) {
@@ -405,7 +391,7 @@ export class ClaimStore {
    * module reads and writes only the fields it declares.
    */
   private async readDocument(): Promise<ClaimDocument> {
-    const path = claimPath(this.repoRoot);
+    const path = this.claimFilePath;
     const parsed = parse(await readFile(path, "utf8")) as { claims?: unknown };
     const table = parsed.claims;
     if (table === undefined) return { version: CLAIM_VERSION, claims: {} };
@@ -446,13 +432,17 @@ export class ClaimStore {
 }
 
 /**
- * Absolute path of the claim file inside one repository.
+ * Absolute path of the claim file one context names.
  *
- * @param repoRoot - absolute path of the repository's main working tree.
+ * The repository comes from the context and the rest of the path from its
+ * settings, so this module hardcodes no location: a deployment that moves the
+ * claim file moves it for every operation at once.
+ *
+ * @param context - the settings and the repository's main working tree.
  * @returns the file's path, whose directory the caller creates.
  */
-function claimPath(repoRoot: string): string {
-  return join(repoRoot, CLAIM_FILE);
+function claimPathOf(context: FlowContext): string {
+  return join(context.repoRoot, context.settings.claimFile);
 }
 
 /**
@@ -476,16 +466,6 @@ async function openClaimFile(path: string): Promise<FileHandle> {
 }
 
 /**
- * The lock file's path for one repository.
- *
- * @param repoRoot - absolute path of the repository's main working tree.
- * @returns the lock file's path, whose directory the claim file's own path shares.
- */
-function lockPathOf(repoRoot: string): string {
-  return `${claimPath(repoRoot)}${LOCK_SUFFIX}`;
-}
-
-/**
  * Take the claim file's lock, creating the lock file.
  *
  * **Creating the file is taking the lock**, and `wx` is what makes that mean
@@ -494,17 +474,19 @@ function lockPathOf(repoRoot: string): string {
  * waited on — a lock that is held is reported, not queued behind.
  *
  * The one exception is an expired lock. A lock file whose mtime is older than
- * {@link LOCK_STALE_MS} cannot belong to a live critical section, so it is a
- * leftover from a holder that died, and writing this process's own owner line over
- * it is how the leftover is taken over: that write refreshes the mtime, so the
- * touch and the record of who holds the lock are the same one. The window this
- * leaves — two processes touching the same expired lock in the same instant — is in
- * the module doc, recorded rather than papered over.
+ * `staleMs` cannot belong to a live critical section, so it is a leftover from a
+ * holder that died, and writing this process's own owner line over it is how the
+ * leftover is taken over: that write refreshes the mtime, so the touch and the
+ * record of who holds the lock are the same one. The window this leaves — two
+ * processes touching the same expired lock in the same instant — is in the module
+ * doc, recorded rather than papered over.
  *
  * @param lockPath - the lock file's path, whose directory already exists.
+ * @param staleMs - how old the lock may be before it is treated as a leftover,
+ *   from {@link FlowSettings.lockStaleSeconds}.
  * @throws Error when a live holder has it.
  */
-async function acquireLock(lockPath: string): Promise<void> {
+async function acquireLock(lockPath: string, staleMs: number): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
       const handle = await open(lockPath, "wx");
@@ -529,7 +511,7 @@ async function acquireLock(lockPath: string): Promise<void> {
     }
 
     const ageMs = Date.now() - facts.mtimeMs;
-    if (ageMs <= LOCK_STALE_MS) {
+    if (ageMs <= staleMs) {
       throw new Error(
         `the claim lock at ${lockPath} is held by another process (taken ${Math.round(ageMs / 1000)}s ago). ` +
           "Nothing was read and nothing was written; run this again in a moment.",
@@ -546,8 +528,8 @@ async function acquireLock(lockPath: string): Promise<void> {
  *
  * A failure is swallowed. Callers reach this from a `finally`, where an error
  * would replace whatever went wrong first, and a lock file left behind is not a
- * dead end: it goes stale {@link LOCK_STALE_MS} later and the next store takes it
- * over.
+ * dead end: it goes stale {@link FlowSettings.lockStaleSeconds} later and the next
+ * store takes it over.
  *
  * @param lockPath - the lock file's path.
  */

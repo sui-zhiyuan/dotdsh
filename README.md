@@ -20,7 +20,7 @@
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase. Both are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases` |
-| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a pre-write guard that opens a branch instead of letting an edit land on `master`, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
+| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a pre-write guard that refuses an edit landing outside the tree the session's family claimed, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
 
 ## The git-flow workflow
 
@@ -41,16 +41,18 @@ with no name, `/git-complete` with no message — and the tools never inject any
 a login redirect` takes `add` as the entire name and refuses it, and `git_start` declares `branchName`
 as a required argument, so a model that cannot name the feature asks instead of inventing one. What a
 name may be is deliberately narrow — a subject: letters, digits and dashes, starting with a letter, at
-most 20 characters. `feat/` is added by the plugin, not by the caller: `git-flow-guard` opens
-`feat/git-flow-guard`, and a name that brings its own namespace, like `test/git-flow-guard`, is refused
-rather than doubled into `feat/test/git-flow-guard`.
+most `branchSubjectMaxLength` characters (20 by default). The configured prefix (`feat/` by default) is
+added by the plugin, not by the caller: `git-flow-guard` opens `feat/git-flow-guard`, and a name that
+brings its own namespace, like `test/git-flow-guard`, is refused rather than doubled into
+`feat/test/git-flow-guard`.
 
 **Finishing.** `/git-complete` merges with `--no-ff` so the branch point stays visible in history. When
-`master` has moved past the branch point, merging would bury the replay inside the merge commit, so
-nothing is written: the call reports `not-descendant` and the model replays the branch by hand —
+the integration branch has moved past the branch point, merging would bury the replay inside the merge
+commit, so nothing is written: the call reports `not-descendant` and the model replays the branch by
+hand —
 
 ```
-git rebase --onto master $(git merge-base master <branch>) <branch>
+git rebase --onto <integration> $(git merge-base <integration> <branch>) <branch>
 ```
 
 — then calls again. Nothing is resolved automatically and nothing is force-pushed.
@@ -111,10 +113,25 @@ worktree session reads is exactly the one that cannot tell it another session is
 
 ### Configuration
 
-There is none. The rewrite hardcodes what the previous implementation configured — the `feat/` prefix,
-`master` as the integration branch, `.dsh.local/` for state — because a terminal workflow for one
-repository does not need a schema, and the row's `config` is read by nothing. Two things it deliberately
-does not do:
+Eight keys, all of them optional, read from the plugin's row (`config:` in the bundle patch, or a
+profile's own layer) and validated when the plugin mounts: a `branchPrefix` git would refuse, a
+`worktreeRoot` that escapes the repository, or a bound that cannot work fails the row rather than the
+first operation that trips over it. The defaults are what this repository runs:
+
+| Key | Default | What it decides |
+| --- | --- | --- |
+| `branchPrefix` | `feat/` | the namespace every family branch carries, and the part stripped to name a worktree |
+| `integrationBranch` | `master` | the branch a feature is cut from and merged back into |
+| `worktreeRoot` | `.dsh.local/worktrees` | where an isolated family's worktree is created |
+| `claimFile` | `.dsh.local/git-flow.toml` | the ledger, and the lock that guards it (`<claimFile>.lock`) |
+| `lockStaleSeconds` | `10` | how old the claim lock may be before another process takes it over |
+| `sweepAgeHours` | `24` | how old a claim must be before `/git-cleanup` collects it |
+| `branchSubjectMaxLength` | `20` | the longest a feature name may be, after the prefix |
+| `guard` | `on` | `off` turns the pre-write guard into a pass-through |
+
+The two skills are rendered from those same settings, so a model reads the rules this deployment
+actually applies rather than the defaults baked into an asset. Two things the plugin deliberately does
+not do:
 
 - **It does not guard the Bash tool.** `bash` arguments name a command, not a path, so a guard over them
   cannot tell `git status` from a redirect. Write files with the file tools.

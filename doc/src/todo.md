@@ -72,9 +72,13 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   and the pid liveness rule, replaced the JSON ledger with the TOML claim file, and gave the model
   the three tools. The claim file's lock shipped with it: `<claimFile>.lock` is created by
   `ClaimStore.open` and deleted by `dispose`, a peer's lock is refused rather than waited for, and a
-  lock whose mtime is older than ten seconds is taken over. The committed
-  checks grew with it: 83 checks in six files under `test/`, pinning the process seam, the claim
-  file and its lock, the core lifecycle, the guard, both doors and the skills. Design rationale in
+  lock whose mtime is older than ten seconds is taken over. Its eight configurable values — the prefix,
+  the integration branch, the worktree root, the claim file, the lock's staleness, the sweep's age, the
+  longest subject and the guard switch — come from the row's `config`, are validated at mount, and
+  travel below the boundary as one resolved object; the two skill bodies are rendered from them. The
+  committed checks grew with it: 95 checks in seven files under `test/`, pinning the process seam, the
+  settings, the claim file and its lock, the core lifecycle, the guard, both doors and the skills.
+  Design rationale in
   [Design decisions](./design.md)
 - [x] Decide what a delegate's own branch does to the family record. Settled by the rewrite by
   removing the case: every decision is keyed by the root of the delegation chain, `git_start` refuses
