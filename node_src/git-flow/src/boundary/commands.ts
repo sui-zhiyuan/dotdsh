@@ -54,7 +54,16 @@
  */
 
 import type { CommandDescriptor, CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
-import { factsFor, resumableSessionIds, withBranchPrefix } from "./shared.js";
+import { boundContextSummary } from "@deepseek-ai/dsh-llm";
+import { gitClean, gitComplete, gitStart } from "../core/core.js";
+import {
+  factsFor,
+  isValidBranchName,
+  resumableSessionIds,
+  sessionAgentOf,
+  withBranchPrefix,
+  worktreeNameFor,
+} from "./shared.js";
 
 /** One command this file defines: what the composer shows, and what runs it. */
 interface GitFlowCommand {
@@ -80,7 +89,43 @@ interface GitFlowCommand {
  * @param text - what the model must know to continue.
  */
 function injectContext(invocation: CommandInvocation, text: string): void {
-  throw new Error("injectContext is not implemented");
+  // dsh types an invocation's agent as `{ id }`, while the live AgentLoop object
+  // behind it is what can reach the session: a command runs outside any turn, so
+  // nothing else here is able to hand the model a message. Only the one member
+  // used is named, and no harness agent type is imported to say so.
+  const agent = invocation.agent as unknown as {
+    followup(message: {
+      readonly id: string;
+      readonly role: "user";
+      readonly content: readonly { readonly type: "text"; readonly text: string }[];
+      readonly source: {
+        readonly kind: "plugin";
+        readonly plugin: string;
+        readonly form: "notice";
+        readonly summary: string;
+      };
+    }): void;
+  };
+
+  // `followup` rather than `steer` or `inject`: the session a command is dispatched
+  // to is normally idle, and this has to open the turn that reads the context.
+  agent.followup({
+    // The command's own pairing id, so one run's context can be told from the
+    // next run's — and from a message the human actually typed.
+    id: invocation.commandId,
+    role: "user",
+    content: [{ type: "text", text }],
+    source: {
+      kind: "plugin",
+      // The name `index.ts` exports. Importing it would point this file at its
+      // own composition root, so the literal is repeated instead.
+      plugin: "git-flow",
+      form: "notice",
+      // A notice's summary is the line a collapsed transcript row shows, bounded
+      // the way dsh bounds its own.
+      summary: boundContextSummary(text),
+    },
+  });
 }
 
 /** The `/git-start` command, as the composer describes it. */
@@ -136,7 +181,39 @@ const GIT_CLEANUP_DESCRIPTOR: CommandDescriptor = {
  * @returns the result the UI renders.
  */
 async function gitStartHandler(invocation: CommandInvocation): Promise<CommandResult> {
-  throw new Error("gitStartHandler is not implemented");
+  // `rawInput` keeps the separator whitespace the parser split on, so the name is
+  // what is left after trimming it.
+  const requested = invocation.rawInput.trim();
+  if (requested === "") {
+    injectContext(
+      invocation,
+      "You ran `/git-start` without a branch name. Judge from this conversation whether the feature already has a name: if it does, use it, and if it does not, ask the human what they are working on. Then call the `git_start` tool with the branch name. This command names nothing by itself, so the tool call is what opens the branch.",
+    );
+    return {
+      kind: "success",
+      text: "Waiting for a branch name: the model will take it from this conversation, or ask you for one.",
+    };
+  }
+
+  const facts = await factsFor(sessionAgentOf(invocation.agent), invocation.signal);
+  const branch = withBranchPrefix(requested);
+  const worktreeName = worktreeNameFor(branch);
+  if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
+    return {
+      kind: "error",
+      text: `git will not accept "${branch}" as a branch name. Name the feature differently and run /git-start again.`,
+    };
+  }
+
+  const workspace = await gitStart(facts.runner, facts.repoRoot, facts.sessionId, branch, worktreeName, invocation.signal);
+  injectContext(
+    invocation,
+    `This session now works on branch ${workspace.branch}, in the worktree ${workspace.workTree}. Every file edit from here on belongs inside that worktree; a path into the repository's main working tree is refused by the write guard.`,
+  );
+  return {
+    kind: "success",
+    text: `Opened ${workspace.branch}: this session works in ${workspace.workTree}.`,
+  };
 }
 
 /**
@@ -166,7 +243,51 @@ async function gitStartHandler(invocation: CommandInvocation): Promise<CommandRe
  * @returns the result the UI renders.
  */
 async function gitCompleteHandler(invocation: CommandInvocation): Promise<CommandResult> {
-  throw new Error("gitCompleteHandler is not implemented");
+  // Same separator whitespace as `/git-start`; a message is what is left of the
+  // raw input once it is gone.
+  const message = invocation.rawInput.trim();
+  if (message === "") {
+    injectContext(
+      invocation,
+      "You ran `/git-complete` without a merge message. Compose the subject from what this session did, then call the `git_complete` tool with it. This command words no message by itself, so the tool call is what merges the branch.",
+    );
+    return {
+      kind: "success",
+      text: "Waiting for a merge message: the model will compose one and finish with `git_complete`.",
+    };
+  }
+
+  const facts = await factsFor(sessionAgentOf(invocation.agent), invocation.signal);
+  const result = await gitComplete(facts.runner, facts.repoRoot, facts.sessionId, message, invocation.signal);
+
+  switch (result.kind) {
+    case "done":
+      return {
+        kind: "success",
+        text: result.merged
+          ? "Merged the feature branch into master and released its worktree, branch and claim."
+          : "The feature branch had nothing master did not already have; released its worktree, branch and claim.",
+      };
+    case "nothing-to-do":
+      return {
+        kind: "success",
+        text: "There was nothing left to do: this session's family holds no claim.",
+      };
+    case "not-descendant": {
+      // Nothing was written, so the same instruction is both what the human sees
+      // and what the model has to act on: core never rebases on anyone's behalf.
+      const text = `Branch ${result.branch} is not a descendant of master, so nothing was merged. Replay it onto master first (\`git rebase --onto master <merge-base> ${result.branch}\`), then call \`git_complete\` again.`;
+      injectContext(invocation, text);
+      return { kind: "error", text };
+    }
+    case "failed": {
+      // The step, the command and git's own output travel verbatim: rewording
+      // either would hide the one fact the next attempt needs.
+      const text = `The ${result.step} step of /git-complete failed.\nCommand: ${result.command}\nGit: ${result.error}`;
+      injectContext(invocation, text);
+      return { kind: "error", text };
+    }
+  }
 }
 
 /**
@@ -186,7 +307,16 @@ async function gitCompleteHandler(invocation: CommandInvocation): Promise<Comman
  * @returns the result the UI renders.
  */
 async function gitCleanupHandler(invocation: CommandInvocation): Promise<CommandResult> {
-  throw new Error("gitCleanupHandler is not implemented");
+  // One view, read twice: the sweep scope and the facts both come from the agent
+  // dsh handed over. Nothing is injected — cleanup is not work the model does.
+  const view = sessionAgentOf(invocation.agent);
+  const resumable = resumableSessionIds(view.getSessions());
+  const facts = await factsFor(view, invocation.signal);
+  await gitClean(facts.runner, facts.repoRoot, resumable, invocation.signal);
+  return {
+    kind: "success",
+    text: "Swept the branches and worktrees left behind by sessions that can no longer come back.",
+  };
 }
 
 /**

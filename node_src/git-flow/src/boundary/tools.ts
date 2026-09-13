@@ -43,6 +43,15 @@
 
 import type { ToolSchema } from "@deepseek-ai/dsh-llm";
 import type { ToolRunContext } from "@deepseek-ai/dsh-tools";
+import { gitClean, gitComplete, gitStart } from "../core/core.js";
+import {
+  factsFor,
+  isValidBranchName,
+  resumableSessionIds,
+  sessionAgentOf,
+  withBranchPrefix,
+  worktreeNameFor,
+} from "./shared.js";
 
 /**
  * One tool this file defines: what the model is shown, and what runs the call.
@@ -135,7 +144,22 @@ async function gitStartTool(
   args: { readonly branchName: string },
   execution: ToolRunContext,
 ): Promise<string> {
-  throw new Error("gitStartTool is not implemented");
+  const facts = await factsFor(sessionAgentOf(execution.agent), execution.signal);
+  const branch = withBranchPrefix(args.branchName);
+  const worktreeName = worktreeNameFor(branch);
+
+  if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
+    return (
+      `\`${branch}\` is not a name git accepts for a branch, so no branch was opened and no worktree was created. ` +
+      "Pick a different name and call `git_start` again."
+    );
+  }
+
+  const workspace = await gitStart(facts.runner, facts.repoRoot, facts.sessionId, branch, worktreeName, execution.signal);
+  return (
+    `\`${workspace.branch}\` is open for this session, in the worktree \`${workspace.workTree}\`. ` +
+    "Every following edit belongs inside that tree; a write anywhere else is refused."
+  );
 }
 
 /**
@@ -161,7 +185,30 @@ async function gitCompleteTool(
   args: { readonly mergeMessage: string },
   execution: ToolRunContext,
 ): Promise<string> {
-  throw new Error("gitCompleteTool is not implemented");
+  const facts = await factsFor(sessionAgentOf(execution.agent), execution.signal);
+  const result = await gitComplete(facts.runner, facts.repoRoot, facts.sessionId, args.mergeMessage, execution.signal);
+
+  switch (result.kind) {
+    case "done":
+      return result.merged
+        ? "Merged the feature branch into master with --no-ff, then removed its worktree and deleted the branch: the family is finished."
+        : "There was nothing to merge — master already had the branch's commits — so its worktree was removed and the branch deleted: the family is finished.";
+    case "nothing-to-do":
+      return "No claim is recorded for this session, so there was nothing to do: a previous call already finished this family.";
+    case "not-descendant":
+      return (
+        `\`${result.branch}\` is not a descendant of master, so nothing was merged and nothing was written. ` +
+        `Replay it onto master first — \`git rebase --onto master $(git merge-base master ${result.branch}) ${result.branch}\` — ` +
+        "then call `git_complete` again."
+      );
+    case "failed":
+      return (
+        `The ${result.step} step failed, so \`git_complete\` stopped there and attempted nothing after it.\n` +
+        `command: ${result.command}\n` +
+        `git: ${result.error}\n` +
+        "Decide whether a retry is worth it; calling again resumes at that step."
+      );
+  }
 }
 
 /**
@@ -177,7 +224,13 @@ async function gitCompleteTool(
  * @returns what the sweep did.
  */
 async function gitCleanupTool(execution: ToolRunContext): Promise<string> {
-  throw new Error("gitCleanupTool is not implemented");
+  // One view, built once: the facts carry the runner and the repository, while
+  // the sweep scope is only reachable through the session store on the agent.
+  const agent = sessionAgentOf(execution.agent);
+  const facts = await factsFor(agent, execution.signal);
+  await gitClean(facts.runner, facts.repoRoot, resumableSessionIds(agent.getSessions()), execution.signal);
+
+  return "Reclaimed what sessions that can no longer come back left behind: their worktrees are gone and their branches are deleted. Claims whose session can still be resumed were left as they were.";
 }
 
 /**

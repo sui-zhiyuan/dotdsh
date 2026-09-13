@@ -40,6 +40,7 @@
  * @module @dsh-external/dotdsh-git-flow/shared
  */
 
+import { GitClient } from "../platform/exec.js";
 import type { Runner } from "../platform/exec.js";
 
 /** One resident session, as much of it as these helpers read. */
@@ -140,7 +141,16 @@ const BRANCH_PREFIX = "feat/";
  * @returns the id of the topmost ancestor, or `sessionId` when it is top-level.
  */
 function familyRoot(sessionId: string, sessions: SessionRegistry): string {
-  throw new Error("familyRoot is not implemented");
+  let root = sessionId;
+  const seen = new Set<string>([root]);
+  let parent = sessions.get(root)?.header.parentSession;
+
+  while (parent !== undefined && !seen.has(parent)) {
+    seen.add(parent);
+    root = parent;
+    parent = sessions.get(parent)?.header.parentSession;
+  }
+  return root;
 }
 
 /**
@@ -157,7 +167,146 @@ function familyRoot(sessionId: string, sessions: SessionRegistry): string {
  * @returns the ids whose claims are off limits.
  */
 export function resumableSessionIds(sessions: SessionRegistry): readonly string[] {
-  throw new Error("resumableSessionIds is not implemented");
+  return sessions
+    .list()
+    .filter((session) => session.header.parentSession === undefined)
+    .map((session) => session.id);
+}
+
+/**
+ * The agent dsh hands a command handler or a tool execution, as far as this file
+ * reads it.
+ *
+ * Structural rather than imported, exactly like {@link SessionRegistry}: the
+ * harness's own agent satisfies it, and nothing here needs the package that
+ * declares it. The session is the object the view below narrows; the context is
+ * only ever asked for a service by name.
+ */
+interface HarnessAgent {
+  readonly session: SessionRecord;
+  readonly ctx: HarnessContext;
+}
+
+/** The Cordis context on that agent, narrowed to the one method this file calls. */
+interface HarnessContext {
+  /**
+   * Resolve a mounted service.
+   *
+   * @param name - the service name, the same string the harness registers under.
+   * @returns the service, or `undefined` when it is not mounted in this scope.
+   */
+  get(name: string): unknown;
+}
+
+/** One collected output stream, read once the child has exited. */
+interface CollectedStream {
+  /**
+   * Read the stream from the start.
+   *
+   * @param fromByte - whole-stream offset; `0` is the whole captured output.
+   * @returns the collected text.
+   */
+  readFrom(fromByte: number): { readonly text: string };
+}
+
+/**
+ * The slice of the harness `subprocess` service this file calls.
+ *
+ * Narrowed to building one {@link Runner}: an explicit spawn spec, the collected
+ * streams, and the outcome's exit code. Structural for the same reason as
+ * everything else here — `SubprocessRuntime` satisfies it without this module
+ * depending on the package that declares it.
+ */
+interface SubprocessService {
+  /**
+   * Start one managed child from a fully-specified request.
+   *
+   * @param spec - argv, directory, stdio dispositions, grace, cancellation and environment.
+   * @returns the live handle, whose collected output stays readable after exit.
+   */
+  spawn(spec: {
+    readonly argv: readonly string[];
+    readonly cwd: string;
+    readonly stdio: {
+      readonly stdin: "ignore";
+      readonly stdout: { readonly maxBytes: number; readonly spill: { readonly maxBytes: number } };
+      readonly stderr: { readonly maxBytes: number; readonly spill: { readonly maxBytes: number } };
+    };
+    readonly graceMs: number;
+    readonly signal?: AbortSignal | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+  }): {
+    readonly collected: {
+      readonly stdout?: CollectedStream | undefined;
+      readonly stderr?: CollectedStream | undefined;
+    };
+    readonly done: Promise<{ readonly exitCode: number | null }>;
+  };
+}
+
+/** Per-call output cap for a git child, above which the harness spills to a file. */
+const STDOUT_MAX_BYTES = 1 << 20;
+
+/** Per-call spilled-output cap. */
+const SPILL_MAX_BYTES = 8 << 20;
+
+/** Grace between SIGTERM and SIGKILL when a git child is cancelled. */
+const GRACE_MS = 5_000;
+
+/**
+ * Build this plugin's runner over the harness `subprocess` service.
+ *
+ * The request is explicit because `spawn` applies no defaults: the cwd, all three
+ * stdio dispositions and the grace period are the caller's. The collector keeps
+ * the child's output readable after exit, which is when this reads it — git's
+ * output is only complete once the process is gone.
+ *
+ * @param subprocess - the mounted subprocess service.
+ * @returns a runner that never shell-interprets its arguments.
+ */
+function subprocessRunner(subprocess: SubprocessService): Runner {
+  return async (argv, options) => {
+    const collect = { maxBytes: STDOUT_MAX_BYTES, spill: { maxBytes: SPILL_MAX_BYTES } };
+    const handle = subprocess.spawn({
+      argv,
+      cwd: options.cwd,
+      stdio: {
+        // Git is non-interactive by construction — `exec` forces
+        // `GIT_TERMINAL_PROMPT=0` — so there is never anything to type at stdin.
+        stdin: "ignore",
+        stdout: collect,
+        stderr: collect,
+      },
+      graceMs: GRACE_MS,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.env === undefined ? {} : { env: { ...options.env } }),
+    });
+
+    const outcome = await handle.done;
+    const stdout = handle.collected.stdout?.readFrom(0).text ?? "";
+    const stderr = handle.collected.stderr?.readFrom(0).text ?? "";
+    // A child killed by a signal reports a null exit code; `-1` keeps the result
+    // shape total rather than making every caller handle null.
+    return { code: outcome.exitCode ?? -1, stdout, stderr };
+  };
+}
+
+/**
+ * Resolve one service the view needs, naming the one that is missing.
+ *
+ * The view is only built for a live agent, so a service that is not there is a
+ * composition error rather than a state to work around — and saying which service
+ * is what makes it fixable.
+ *
+ * @param ctx - the agent's context.
+ * @param name - the service to resolve.
+ * @returns the mounted service.
+ * @throws Error when the service is not mounted in the agent's scope.
+ */
+function serviceOf<T>(ctx: HarnessContext, name: string): T {
+  const service = ctx.get(name) as T | undefined;
+  if (service === undefined) throw new Error(`the ${name} service is not mounted on this agent`);
+  return service;
 }
 
 /**
@@ -176,14 +325,49 @@ export function resumableSessionIds(sessions: SessionRegistry): readonly string[
  * @returns the view the shared helpers take.
  */
 export function sessionAgentOf(agent: unknown): SessionAgent {
-  throw new Error("sessionAgentOf is not implemented");
+  const runtime = agent as Partial<HarnessAgent> | undefined;
+  const session = runtime?.session;
+  const ctx = runtime?.ctx;
+  if (session === undefined || ctx === undefined) {
+    throw new Error("the object this plugin was handed is not a live agent: it carries no session or no context");
+  }
+
+  return {
+    session,
+    // Both services are resolved per call rather than captured: the view may
+    // outlive a reload, and nothing in this plugin should hold a service.
+    getRunner: () => subprocessRunner(serviceOf<SubprocessService>(ctx, "subprocess")),
+    getSessions: () => serviceOf<SessionRegistry>(ctx, "sessions"),
+  };
+}
+
+/**
+ * Absolute path of the repository's **main** working tree.
+ *
+ * Git lists the main tree first in `worktree list`, which is what makes this
+ * answer the same from a session that is already isolated in a linked worktree.
+ * Resolving it from the session's own directory instead would give every
+ * worktree its own answer, and the claim file lives in the main tree.
+ *
+ * @param git - a client bound anywhere inside the repository or a worktree.
+ * @param signal - cancellation owned by the caller, passed to the git child
+ *   this resolution starts.
+ * @returns the absolute main working-tree path.
+ * @throws GitError when the directory is not inside a repository.
+ */
+async function mainWorktree(git: GitClient, signal?: AbortSignal): Promise<string> {
+  const porcelain = await git.text(["worktree", "list", "--porcelain"], { signal });
+  const first = porcelain.split("\n").find((line) => line.startsWith("worktree "));
+  return first === undefined
+    ? git.text(["rev-parse", "--show-toplevel"], { signal })
+    : first.slice("worktree ".length);
 }
 
 /**
  * Read the session facts one entry point runs with.
  *
  * Everything the boundary needs about this run, gathered once instead of being
- * spelled out in every handler. Four facts, from four different places:
+ * spelled out in every handler. Three facts, from three different places:
  *
  * - the **family key** is the topmost session of the chain, not the calling
  *   session;
@@ -191,16 +375,26 @@ export function sessionAgentOf(agent: unknown): SessionAgent {
  *   already isolated in a worktree has a cwd inside it, while the claim file lives
  *   in the main tree;
  * - the **runner** is the process seam, asked of the agent itself so that nothing
- *   has to pass one down;
- * - the **sweep scope** is every session that can still be resumed, which only
- *   the cleanup door reads but which is asked for here, because nothing above
- *   this file should have to walk the session store.
+ *   has to pass one down.
+ *
+ * The sweep scope is not one of them: it belongs to the cleanup doors alone, and
+ * they ask {@link resumableSessionIds} for it themselves.
  *
  * @param agent - the calling agent, asked for its session and the two services.
+ * @param signal - cancellation owned by the caller — a command invocation, a tool
+ *   execution, an interception — passed to the git child this resolution starts.
  * @returns everything the caller needs before calling `core`.
  */
-export function factsFor(agent: SessionAgent): Promise<EntryFacts> {
-  throw new Error("factsFor is not implemented");
+export function factsFor(agent: SessionAgent, signal?: AbortSignal): Promise<EntryFacts> {
+  const cwd = agent.session.header.cwd;
+  if (cwd === undefined || cwd === "") {
+    throw new Error("this session has no working directory, so there is no repository to use");
+  }
+
+  const sessionId = familyRoot(agent.session.id, agent.getSessions());
+  const runner = agent.getRunner();
+
+  return mainWorktree(new GitClient(runner, cwd), signal).then((repoRoot) => ({ runner, repoRoot, sessionId }));
 }
 
 /**
@@ -215,7 +409,7 @@ export function factsFor(agent: SessionAgent): Promise<EntryFacts> {
  * @returns the name to create.
  */
 export function withBranchPrefix(name: string): string {
-  throw new Error("withBranchPrefix is not implemented");
+  return name.startsWith(BRANCH_PREFIX) ? name : `${BRANCH_PREFIX}${name}`;
 }
 
 /**
@@ -230,7 +424,7 @@ export function withBranchPrefix(name: string): string {
  * @returns the worktree's directory name, under the repository's worktree root.
  */
 export function worktreeNameFor(branch: string): string {
-  throw new Error("worktreeNameFor is not implemented");
+  return branch.replaceAll("-", "_");
 }
 
 /**
@@ -246,5 +440,5 @@ export function worktreeNameFor(branch: string): string {
  * @returns whether the name is legal.
  */
 export async function isValidBranchName(runner: Runner, repoRoot: string, name: string): Promise<boolean> {
-  throw new Error("isValidBranchName is not implemented");
+  return new GitClient(runner, repoRoot).ok(["check-ref-format", "--branch", name]);
 }

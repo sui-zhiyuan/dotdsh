@@ -57,10 +57,50 @@
  * @module @dsh-external/dotdsh-git-flow/guard
  */
 
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { ensureWorkspace } from "../core/core.js";
 import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 import { factsFor, sessionAgentOf } from "./shared.js";
+
+/**
+ * The tools that can change a file, and the argument each declares its target
+ * in.
+ *
+ * Modelled on the harness's tool names rather than on the call, so the check is
+ * a lookup and not a per-tool branch. A tool that is missing here is not
+ * guarded, which is the deliberate hole the module header describes for `bash`.
+ */
+const FILE_WRITERS: ReadonlyMap<string, string> = new Map([
+  ["write", "file_path"],
+  ["edit", "file_path"],
+  ["str_replace_editor", "path"],
+]);
+
+/**
+ * The `str_replace_editor` sub-command that only reads.
+ *
+ * The tool carries both reads and writes, and its target argument says nothing
+ * about which this call is, so the sub-command is the only way to tell them
+ * apart. Refusing a view would be worse than the hole it closed.
+ */
+const READ_ONLY_SUBCOMMAND = "view";
+
+/**
+ * Whether `child` is `parent` or sits inside it.
+ *
+ * Both are absolute and already resolved; the comparison is `path.relative` so
+ * it is segment-wise rather than prefix-wise, which is what keeps `/repo-other`
+ * from reading as inside `/repo`.
+ *
+ * @param parent - the directory claimed to contain `child`.
+ * @param child - the candidate to test.
+ * @returns whether `child` is inside `parent`.
+ */
+function isInside(parent: string, child: string): boolean {
+  const offset = relative(parent, child);
+  return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
+}
 
 /**
  * Decide one tool call.
@@ -73,11 +113,13 @@ import { factsFor, sessionAgentOf } from "./shared.js";
  * survived them. The containment test is the other piece that stays here: a
  * single relative-path comparison, used once, with nothing to share it with.
  *
- * Every git call goes through the runner with `execution.signal`. The registry
- * checks cancellation before this listener runs and again after it settles, so a
- * turn that is cancelled while the guard is working is handled either way — but
- * without the signal the guard would keep running git, and keep holding the claim
- * file's lock, for a call nobody is waiting for any more.
+ * This listener reaches git in exactly two places, `factsFor` and
+ * `ensureWorkspace`, and each is handed `execution.signal`: that is what makes the
+ * cancellation below reach the runner, so a cancelled turn stops the guard at its
+ * next git step instead of holding the claim file's lock for a call nobody is
+ * waiting for any more. The registry checks cancellation before this listener runs
+ * and again after it settles, so a turn cancelled while the guard is working is
+ * handled either way.
  *
  * The two refusals are the whole of the guard's output, and both are addressed to
  * the model rather than to a human. Both also name the workflow skill
@@ -111,7 +153,58 @@ async function beforeToolCall(
   execution: ToolExecution,
   next: () => Promise<PreToolDecision>,
 ): Promise<PreToolDecision> {
-  throw new Error("beforeToolCall is not implemented");
+  const targetArgument = FILE_WRITERS.get(execution.name);
+  if (targetArgument === undefined) return next();
+
+  const args: unknown = execution.arguments;
+  const declared = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+
+  const declaredPath = declared?.[targetArgument];
+  if (typeof declaredPath !== "string" || declaredPath.length === 0) return next();
+
+  // `view` is a read wearing a mutating tool's name, and it is the one
+  // sub-command whose argument set this guard cannot mistake for a write.
+  if (execution.name === "str_replace_editor" && declared?.["command"] === READ_ONLY_SUBCOMMAND) return next();
+
+  // `execution.agent` is optional, and a call no session asked for is one this
+  // plugin has nothing to say about.
+  const rawAgent: unknown = execution.agent;
+  if (rawAgent === undefined) return next();
+
+  const agent = sessionAgentOf(rawAgent);
+  const cwd = agent.session.header.cwd;
+  // Without a working directory there is no way to say where the declared path
+  // points, and a guess is the one thing a guard must not do.
+  if (cwd === undefined) return next();
+
+  const target = resolve(cwd, declaredPath);
+
+  const facts = await factsFor(agent, execution.signal);
+  if (!isInside(facts.repoRoot, target)) return next();
+
+  const workspace = await ensureWorkspace(facts.runner, facts.repoRoot, facts.sessionId, execution.signal);
+  if (workspace === null) {
+    return {
+      kind: "deny",
+      reason:
+        `This session has no feature branch yet, so there is nowhere for this change to land. ` +
+        `Load the \`${GIT_FLOW_SKILL_NAMES.workflow}\` skill, then call \`git_start\` with a branch name ` +
+        `— ask the human what they are working on if you cannot name it — and repeat this change.`,
+    };
+  }
+
+  if (isInside(workspace.workTree, target)) return next();
+
+  // The redirected path is the target's own position under the repository,
+  // re-rooted at the worktree: the model cannot derive where its family was put,
+  // so the refusal has to spell the path out.
+  const redirected = join(workspace.workTree, relative(facts.repoRoot, target));
+  return {
+    kind: "deny",
+    reason:
+      `This session writes inside its own worktree, at \`${workspace.workTree}\`. ` +
+      `Load the \`${GIT_FLOW_SKILL_NAMES.workflow}\` skill, and write to \`${redirected}\` instead of \`${target}\`.`,
+  };
 }
 
 /**
