@@ -49,7 +49,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClaimStore } from "../platform/claim.js";
+import { ClaimStore, MAIN_WORKTREE } from "../platform/claim.js";
 import type { Claim } from "../platform/claim.js";
 import { GitClient } from "../platform/exec.js";
 import type { Runner } from "../platform/exec.js";
@@ -59,6 +59,38 @@ import type { Runner } from "../platform/exec.js";
  * tree. Hardcoded for now: every path this module reports is derived from it.
  */
 const WORKTREE_ROOT = ".dsh.local/worktrees";
+
+/**
+ * Prefix every branch this plugin opens carries. Hardcoded for now.
+ *
+ * It lives beside {@link worktreeNameFor} because the two are one decision seen
+ * twice: the prefix is what a family branch is, and stripping it is how the
+ * worktree's directory name is derived. The boundary imports it for the name a
+ * human or a model typed, so there is one literal here and not a second there.
+ */
+export const BRANCH_PREFIX = "feat/";
+
+/**
+ * The directory name a family's worktree takes.
+ *
+ * The branch without its prefix, with `-` written as `_`: `feat/foo-bar` becomes
+ * `foo_bar` — one directory directly under the worktree root. The prefix earns
+ * nothing there, since it is the same for every family, and keeping it would nest
+ * every worktree a level deeper under a name that says only "this plugin made it",
+ * which the claim file already says.
+ *
+ * Derived from the branch, so the two can never disagree about which feature this
+ * is. It lives here, next to {@link WORKTREE_ROOT} and {@link workspacePathOf},
+ * because where the trees go is this module's business and no caller should have
+ * to reproduce the layout.
+ *
+ * @param branch - the branch name, already prefixed.
+ * @returns the worktree's directory name, under the repository's worktree root.
+ */
+function worktreeNameFor(branch: string): string {
+  const unprefixed = branch.startsWith(BRANCH_PREFIX) ? branch.slice(BRANCH_PREFIX.length) : branch;
+  return unprefixed.replaceAll("-", "_");
+}
 
 /**
  * How old a claim must be before a sweep may take it.
@@ -75,7 +107,11 @@ const CLAIM_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
 export interface FamilyWorkspace {
   /** The family's feature branch. */
   readonly branch: string;
-  /** Absolute path of the family's worktree. Never the repository's main tree. */
+  /**
+   * Absolute path of the tree the family writes in: its own worktree under the
+   * worktree root, or the repository's **main** working tree when that was free
+   * when the family started.
+   */
   readonly workTree: string;
 }
 
@@ -136,9 +172,19 @@ const sessionWorkspaceMemo = new Map<string, MemoEntry | null>();
  */
 const INTEGRATION_BRANCH = "master";
 
-/** Where a family's worktree lives, given the name its claim records. */
-function worktreePathOf(repoRoot: string, worktreeName: string): string {
-  return join(repoRoot, WORKTREE_ROOT, worktreeName);
+/**
+ * Where a family works, given the name its claim records.
+ *
+ * The one place {@link MAIN_WORKTREE} becomes a path: a family holding the main
+ * tree has no directory of its own, and every other name is one directory under
+ * the worktree root.
+ *
+ * @param repoRoot - absolute path of the repository's main working tree.
+ * @param worktreeName - the name the family's claim records.
+ * @returns the absolute path of the tree the family writes in.
+ */
+function workspacePathOf(repoRoot: string, worktreeName: string): string {
+  return worktreeName === MAIN_WORKTREE ? repoRoot : join(repoRoot, WORKTREE_ROOT, worktreeName);
 }
 
 /**
@@ -260,19 +306,76 @@ function forgetWorkspace(sessionId: string): void {
 }
 
 /**
- * The branch and the worktree a family's claim names, creating whatever is
- * missing.
+ * The branch the main working tree has checked out, when it has one.
+ *
+ * Asked of git rather than derived from the claim file: what matters when a family
+ * that holds the main tree is released is where that tree stands **now**, and a
+ * detached HEAD — or a human who switched branches by hand — is exactly the case
+ * where the claim file would be wrong about it.
+ *
+ * @param git - a client bound at the repository's main working tree.
+ * @param signal - cancellation owned by the caller, forwarded to git.
+ * @returns the short branch name, or `undefined` for a detached HEAD.
+ */
+async function mainTreeBranch(git: GitClient, signal?: AbortSignal): Promise<string | undefined> {
+  const result = await git.run(["symbolic-ref", "--short", "-q", "HEAD"], { signal });
+  return result.code === 0 ? result.stdout.trim() : undefined;
+}
+
+/**
+ * Whether another family that can still come back is holding the main tree.
+ *
+ * The question is about the **tree**, not about the repository being busy: a family
+ * out in a worktree of its own leaves the main tree free, and only a family that
+ * is *here* makes the next one move out. This is what decides whether starting a
+ * family takes the main tree or a worktree.
+ *
+ * Two filters, and both matter. A record whose session can no longer be resumed is
+ * a leftover the sweep will collect — exiling the next session to a worktree
+ * because of it would keep the main tree empty forever — and the calling family's
+ * own record is not competition.
+ *
+ * @param store - the open claim file.
+ * @param sessionId - root of the calling session's delegation chain.
+ * @param resumableSessionIds - roots of the delegation chains that can come back.
+ * @returns whether the main tree is spoken for.
+ */
+async function mainTreeIsTaken(
+  store: ClaimStore,
+  sessionId: string,
+  resumableSessionIds: readonly string[],
+): Promise<boolean> {
+  const resumable = new Set(resumableSessionIds);
+  const claims = await store.find({ worktreeName: MAIN_WORKTREE });
+  return claims.some((claim) => claim.sessionId !== sessionId && resumable.has(claim.sessionId));
+}
+
+/**
+ * The branch and the tree a family's claim names, creating whatever is missing.
+ *
+ * Two shapes, both decided by the claim and neither here:
+ *
+ * - **the main tree** ({@link MAIN_WORKTREE}) — the branch is checked out in place
+ *   with `switch`, because that is the only way a tree that already exists can be
+ *   made to hold it;
+ * - **a worktree of its own** — created at its own path, with the branch.
+ *
+ * Either way the branch is cut from {@link INTEGRATION_BRANCH}, never from whatever
+ * the main tree happens to have checked out. A feature branch has to be a
+ * descendant of the integration branch for {@link gitComplete}'s merge to mean
+ * anything, and the first family leaves the main tree standing on **its** branch —
+ * so a second family cut from HEAD would be branched off the first family's work.
  *
  * Every step is skipped when it is already done, because this is also the
- * resolution a retry runs after a failure: the claim file is the authority and
- * the memo only remembers what the last attempt saw.
+ * resolution a retry runs after a failure: the claim file is the authority and the
+ * memo only remembers what the last attempt saw.
  *
  * @param runner - the process seam every git call goes through.
  * @param repoRoot - absolute path of the repository's main working tree.
  * @param sessionId - root of the calling session's delegation chain.
- * @param workspace - the paths the family's claim names.
+ * @param workspace - the branch and the tree the family's claim names.
  * @param signal - cancellation owned by the caller, forwarded to git.
- * @returns the workspace, once both the branch and the worktree exist.
+ * @returns the workspace, once the branch is checked out in its tree.
  */
 async function materializeWorkspace(
   runner: Runner,
@@ -282,27 +385,46 @@ async function materializeWorkspace(
   signal?: AbortSignal,
 ): Promise<FamilyWorkspace> {
   const git = new GitClient(runner, repoRoot);
-  if (!(await branchExists(git, workspace.branch, signal))) {
-    await git.text(["branch", workspace.branch], { signal });
-  }
-  if (!(await worktreeExists(git, workspace.workTree, signal))) {
+  const inPlace = workspace.workTree === repoRoot;
+  const exists = await branchExists(git, workspace.branch, signal);
+
+  if (inPlace) {
+    // `switch` refuses to move a tree whose tracked files the checkout would
+    // overwrite, and that refusal is the honest answer: this tree is not the
+    // plugin's to clean.
+    await git.text(
+      exists ? ["switch", workspace.branch] : ["switch", "-c", workspace.branch, INTEGRATION_BRANCH],
+      { signal },
+    );
+  } else if (!exists) {
+    await git.text(["worktree", "add", "-b", workspace.branch, workspace.workTree, INTEGRATION_BRANCH], { signal });
+  } else if (!(await worktreeExists(git, workspace.workTree, signal))) {
     await git.text(["worktree", "add", workspace.workTree, workspace.branch], { signal });
   }
+
   sessionWorkspaceMemo.set(sessionId, { workspace, complete: true });
   return workspace;
 }
 
 /**
- * Start a family: claim a working tree for it, then report where it works.
+ * Start a family: claim a tree for it, then report where it works.
  *
- * The claim is written **before** the branch or the worktree exists, so a second
+ * Where it works is decided **here**, from the claim file alone: the main working
+ * tree when no other family that can still come back is in it, and a worktree of
+ * its own when one is. A repository with no claims at all therefore starts in
+ * place — the common case, and the one where a linked worktree would be pure
+ * ceremony — while parallel families stay isolated from each other.
+ *
+ * The claim is written **before** the branch or the tree is made ready, so a second
  * session arriving during setup sees the tree as taken instead of racing for it.
+ * The chosen tree is part of the record for the same reason: a claim naming the
+ * main tree while another family was about to take it would be a lie the
+ * resolution could not repair.
  *
  * Contract:
  *
- * - parameter checks (path is inside the repository, branch name is legal, the
- *   path and the branch are both free) are the caller's, and are not repeated
- *   here;
+ * - parameter checks (path is inside the repository, branch name is legal) are the
+ *   caller's, and are not repeated here;
  * - **throws** when this family already holds a claim. Starting is not how a
  *   session moves between trees: `/git-complete` releases the old claim first;
  * - appends this family's record to the claim file;
@@ -313,8 +435,8 @@ async function materializeWorkspace(
  * @param repoRoot - absolute path of the repository's main working tree.
  * @param sessionId - root of the calling session's delegation chain.
  * @param branch - feature branch to create for the family.
- * @param worktreeName - directory name of the family's worktree, under
- *   {@link WORKTREE_ROOT}.
+ * @param resumableSessionIds - roots of the delegation chains that can come back,
+ *   which is what tells a claim for the main tree apart from a leftover.
  * @param signal - cancellation owned by the caller, a command invocation or a
  *   tool execution, carried into every git child this call starts. The claim file
  *   is not cancellable: {@link ClaimStore} takes no signal.
@@ -325,24 +447,22 @@ export async function gitStart(
   repoRoot: string,
   sessionId: string,
   branch: string,
-  worktreeName: string,
+  resumableSessionIds: readonly string[],
   signal?: AbortSignal,
 ): Promise<FamilyWorkspace> {
-  const claim: Claim = {
-    sessionId,
-    branch,
-    worktreeName,
-    createdAt: new Date().toISOString(),
-  };
-
-  // The claim is written first and released before the branch is created: the
-  // record is the only thing that tells a second session arriving mid-setup that
-  // this tree is taken.
   const store = await ClaimStore.open(repoRoot);
   try {
     if ((await store.query(sessionId)) !== undefined) {
       throw new Error(`session ${sessionId} already holds a claim; release it with gitComplete before starting another`);
     }
+    const claim: Claim = {
+      sessionId,
+      branch,
+      worktreeName: (await mainTreeIsTaken(store, sessionId, resumableSessionIds))
+        ? worktreeNameFor(branch)
+        : MAIN_WORKTREE,
+      createdAt: new Date().toISOString(),
+    };
     await store.append(claim);
   } finally {
     await store.dispose();
@@ -366,7 +486,7 @@ export async function gitStart(
  *
  * Named for what it does rather than for what it looks like: it is the question
  * "where may this session write", but answering it **creates** the branch and the
- * worktree when they are not there yet, so it is not a read.
+ * tree when they are not there yet, so it is not a read.
  *
  * Contract:
  *
@@ -376,10 +496,12 @@ export async function gitStart(
  *   entry already carries the paths it names, which saves the read and its lock
  *   on the retry path. No record means the family has no claim, which is a normal
  *   state and not an error;
- * - a recorded branch that does not exist yet is created;
- * - a recorded worktree that does not exist yet is created at
- *   `WORKTREE_ROOT/<worktreeName>` — never the main tree, which is exactly what a
- *   family is isolated from;
+ * - a recorded branch that does not exist yet is created at
+ *   {@link INTEGRATION_BRANCH};
+ * - a recorded tree that does not exist yet is created at
+ *   `WORKTREE_ROOT/<worktreeName>` — unless the record names
+ *   {@link MAIN_WORKTREE}, in which case the tree is the repository's main one and
+ *   only the branch has to be put in it;
  * - the entry is marked `complete` only after both exist, so every step is
  *   idempotent and a failure leaves the state retryable rather than poisoned.
  *
@@ -410,7 +532,7 @@ export async function ensureWorkspace(
         sessionWorkspaceMemo.set(sessionId, null);
         return null;
       }
-      workspace = { branch: claim.branch, workTree: worktreePathOf(repoRoot, claim.worktreeName) };
+      workspace = { branch: claim.branch, workTree: workspacePathOf(repoRoot, claim.worktreeName) };
     } finally {
       await store.dispose();
     }
@@ -429,7 +551,7 @@ export async function ensureWorkspace(
 }
 
 /** The step of {@link gitComplete} that failed. */
-export type CompleteStep = "merge" | "remove-worktree" | "delete-branch" | "remove-claim";
+export type CompleteStep = "merge" | "switch-back" | "remove-worktree" | "delete-branch" | "remove-claim";
 
 /**
  * The outcome of {@link gitComplete}.
@@ -469,7 +591,9 @@ export type CompleteResult =
  *    the caller to turn into "replay this branch and call again". After a
  *    successful merge the commits are in `master`, so the step skips itself on a
  *    retry;
- * 2. **remove-worktree**;
+ * 2. **release the tree** — a family in the main tree is put back on the
+ *    integration branch (`switch-back` when that fails), and a family in a
+ *    worktree of its own has that worktree removed;
  * 3. **delete-branch**;
  * 4. **remove-claim** — the commit point. The family is not finished until its
  *    record is gone, so a failure here is a failure even though the merge has
@@ -564,8 +688,30 @@ export async function gitComplete(
     }
   }
 
-  // 2. remove-worktree.
-  if (await worktreeExists(git, workspace.workTree, signal)) {
+  // 2. release the tree. The two shapes release differently, because only one of
+  // them has a tree that can be taken away:
+  //
+  // - a family in the **main tree** cannot be removed from it — git refuses to
+  //   remove the tree it is running in, and that tree is not this plugin's to
+  //   delete — so the equivalent act is to put it back on the integration branch.
+  //   That is also what lets the branch be deleted below: git will not delete a
+  //   branch that is checked out anywhere. The switch is skipped when the tree is
+  //   not on the family's branch at all, which is the retry that already got past
+  //   this step;
+  // - a family in a **worktree of its own** is simply removed.
+  if (workspace.workTree === repoRoot) {
+    if ((await mainTreeBranch(git, signal)) === workspace.branch) {
+      const result = await git.run(["switch", integration], { signal });
+      if (result.code !== 0) {
+        return {
+          kind: "failed",
+          step: "switch-back",
+          command: `git switch ${integration}`,
+          error: result.stderr.trim() || result.stdout.trim() || "no output",
+        };
+      }
+    }
+  } else if (await worktreeExists(git, workspace.workTree, signal)) {
     const result = await git.run(["worktree", "remove", workspace.workTree], { signal });
     if (result.code !== 0) {
       return {
@@ -636,7 +782,8 @@ export async function gitComplete(
  *   ago may be resumed by the human still sitting in front of it — and old alone
  *   would take a tree from a live session;
  * - its claim record is dropped from the claim file, its memo entry is dropped,
- *   its feature branch is deleted and its worktree removed;
+ *   its feature branch is deleted, and the tree it held is released — a worktree
+ *   removed, or the main tree put back on the integration branch;
  * - every other claim is left exactly as it is.
  *
  * @param runner - the process seam every git call goes through.
@@ -674,18 +821,30 @@ export async function gitClean(
       // the comparison already fails closed for it: `NaN < cutoff` is false.
       if (!(Date.parse(claim.createdAt) < cutoff)) continue;
 
-      const workTree = worktreePathOf(repoRoot, claim.worktreeName);
-      if (await worktreeExists(git, workTree, signal)) {
-        // Forced, unlike the family's own tree in gitComplete: an abandoned
-        // session's worktree is usually dirty — the edits it never committed are
-        // exactly what it left behind — and a sweep that refused those would leave
-        // every claim it exists for. The two gates above are what make taking that
-        // work acceptable.
-        const removal = await git.run(["worktree", "remove", "--force", workTree], { signal });
-        // A tree git will not give up — locked, or held by a permission problem —
-        // keeps its claim, so the next sweep finds it again instead of leaving a
-        // branch and a tree that nothing can name.
-        if (removal.code !== 0) continue;
+      // A family that held the main tree has no tree of its own to remove: the act
+      // that releases it is putting the main tree back on the integration branch,
+      // and that is only possible — or necessary — while it still stands on the
+      // dead branch. A tree git will not move, like one a human has since switched
+      // elsewhere, keeps the claim for the next sweep.
+      if (claim.worktreeName === MAIN_WORKTREE) {
+        if ((await mainTreeBranch(git, signal)) === claim.branch) {
+          const back = await git.run(["switch", INTEGRATION_BRANCH], { signal });
+          if (back.code !== 0) continue;
+        }
+      } else {
+        const workTree = workspacePathOf(repoRoot, claim.worktreeName);
+        if (await worktreeExists(git, workTree, signal)) {
+          // Forced, unlike the family's own tree in gitComplete: an abandoned
+          // session's worktree is usually dirty — the edits it never committed are
+          // exactly what it left behind — and a sweep that refused those would leave
+          // every claim it exists for. The two gates above are what make taking that
+          // work acceptable.
+          const removal = await git.run(["worktree", "remove", "--force", workTree], { signal });
+          // A tree git will not give up — locked, or held by a permission problem —
+          // keeps its claim, so the next sweep finds it again instead of leaving a
+          // branch and a tree that nothing can name.
+          if (removal.code !== 0) continue;
+        }
       }
       if (await branchExists(git, claim.branch, signal)) {
         const deletion = await git.run(["branch", "-D", claim.branch], { signal });

@@ -62,8 +62,8 @@ import {
   resumableSessionIds,
   sessionAgentOf,
   withBranchPrefix,
-  worktreeNameFor,
 } from "./shared.js";
+import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 
 /** One command this file defines: what the composer shows, and what runs it. */
 interface GitFlowCommand {
@@ -133,7 +133,7 @@ const GIT_START_DESCRIPTOR: CommandDescriptor = {
   name: "git-start",
   description:
     "Open a feature branch for this session, from the name you pass or from what the session is working on",
-  input: { hint: "[<branch-name>]" },
+  input: { hint: "[<feature-name>]" },
 };
 
 /** The `/git-complete` command, as the composer describes it. */
@@ -162,20 +162,24 @@ const GIT_CLEANUP_DESCRIPTOR: CommandDescriptor = {
  *
  * **With a name**, the handler does the work and asks nobody:
  *
- * 1. the name is normalized by `shared.withBranchPrefix`, and the worktree's
- *    directory name comes from `shared.worktreeNameFor`, so the two can never
- *    disagree about which feature this is;
- * 2. the facts come from the invocation, and `core.gitStart` claims the tree,
- *    creates the branch and creates the worktree;
- * 3. the workspace it returns becomes context for the model: this is the session's
- *    tree from now on, and every edit belongs inside it.
+ * 1. the name is normalized by `shared.withBranchPrefix`, and `shared.isValidBranchName`
+ *    refuses anything that is not a feature subject — letters, digits and dashes,
+ *    starting with a letter, twenty characters at most — before a single branch is
+ *    claimed or created;
+ * 2. the facts and the resumable sessions both come from the agent dsh handed over;
+ * 3. `core.gitStart` decides where the family works — the main tree when no other
+ *    family that can still come back is in it, a worktree of its own when one is —
+ *    claims it, and creates the branch and the tree;
+ * 4. the workspace it returns becomes context for the model — the branch, the tree,
+ *    and the instruction to load the workflow skill
+ *    ({@link GIT_FLOW_SKILL_NAMES.workflow}) — because this is the session's tree
+ *    from now on and every edit belongs inside it.
  *
- * **Without a name**, the handler decides nothing at all. It injects context and
- * lets the model judge whether the conversation already says enough to name the
- * feature, ask the human what they are working on when it does not, and then call
- * the tool form of `/git-start` — defined in another file — to finish the job.
- * The command ends at the injection, because naming a feature from a conversation
- * is exactly the judgement this file refuses to make.
+ * **Without a name**, the handler decides nothing at all. It injects one notice —
+ * load the workflow skill ({@link GIT_FLOW_SKILL_NAMES.workflow}), then judge
+ * whether the conversation already names the feature, and open the branch through
+ * the tool form of this same operation — and ends there. Naming a feature from a
+ * conversation is exactly the judgement this file refuses to make.
  *
  * @param invocation - the dispatched command, whose `rawInput` is the name or empty.
  * @returns the result the UI renders.
@@ -187,7 +191,10 @@ async function gitStartHandler(invocation: CommandInvocation): Promise<CommandRe
   if (requested === "") {
     injectContext(
       invocation,
-      "You ran `/git-start` without a branch name. Judge from this conversation whether the feature already has a name: if it does, use it, and if it does not, ask the human what they are working on. Then call the `git_start` tool with the branch name. This command names nothing by itself, so the tool call is what opens the branch.",
+      `User ran \`/git-start\` without a branch name. Load the \`${GIT_FLOW_SKILL_NAMES.workflow}\` skill. ` +
+        "Judge from this conversation whether the feature already has a name: if it does, use it, and if it does " +
+        "not, ask the user what they are working on. Then call the `git_start` tool with the branch name. " +
+        "This command names nothing by itself, so the tool call is what opens the branch.",
     );
     return {
       kind: "success",
@@ -195,20 +202,32 @@ async function gitStartHandler(invocation: CommandInvocation): Promise<CommandRe
     };
   }
 
-  const facts = await factsFor(sessionAgentOf(invocation.agent), invocation.signal);
+  const agent = sessionAgentOf(invocation.agent);
+  const facts = await factsFor(agent, invocation.signal);
   const branch = withBranchPrefix(requested);
-  const worktreeName = worktreeNameFor(branch);
   if (!(await isValidBranchName(facts.runner, facts.repoRoot, branch))) {
     return {
       kind: "error",
-      text: `git will not accept "${branch}" as a branch name. Name the feature differently and run /git-start again.`,
+      text:
+        `"${branch}" is not a name this plugin opens. Name the feature itself: letters, digits and dashes, ` +
+        'starting with a letter, at most 20 characters, and no "/" of your own — git-flow-guard opens feat/git-flow-guard. ' +
+        "Run /git-start again with a different name.",
     };
   }
 
-  const workspace = await gitStart(facts.runner, facts.repoRoot, facts.sessionId, branch, worktreeName, invocation.signal);
+  const workspace = await gitStart(
+    facts.runner,
+    facts.repoRoot,
+    facts.sessionId,
+    branch,
+    resumableSessionIds(agent.getSessions()),
+    invocation.signal,
+  );
   injectContext(
     invocation,
-    `This session now works on branch ${workspace.branch}, in the worktree ${workspace.workTree}. Every file edit from here on belongs inside that worktree; a path into the repository's main working tree is refused by the write guard.`,
+    `This session now works on branch ${workspace.branch}, in the tree ${workspace.workTree}. ` +
+      `Load the \`${GIT_FLOW_SKILL_NAMES.workflow}\` skill, and make every edit from here on inside that tree: ` +
+      "a path into the repository's main working tree is refused by the write guard.",
   );
   return {
     kind: "success",

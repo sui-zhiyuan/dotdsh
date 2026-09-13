@@ -98,6 +98,19 @@ const CLAIM_HEADER = `# Machine-local state for the dsh git-flow plugin. It reco
 `;
 
 /**
+ * The `worktreeName` that says a family works in the repository's **main** working
+ * tree rather than in one of its own.
+ *
+ * A sentinel inside the name rather than an absent field or an empty string: the
+ * row keeps the three strings it has always had, so neither the read nor the write
+ * path changes and a claim always names the tree it holds. The brackets are what
+ * make it unoccupiable — a real worktree's directory name is derived from a branch
+ * subject, which is letters, digits and dashes only — so no family can be handed
+ * this name by accident and no directory of that name can exist.
+ */
+export const MAIN_WORKTREE = "[MAIN]";
+
+/**
  * How long {@link ClaimStore.open} will wait for a peer's lock before giving up.
  *
  * Unused for now: it is the bound the lock reaches for once {@link ClaimStore.open}
@@ -114,7 +127,11 @@ export interface Claim {
   readonly sessionId: string;
   /** The family's feature branch. */
   readonly branch: string;
-  /** Directory name of the family's worktree, under the repository's worktree root. */
+  /**
+   * Directory name of the family's worktree, under the repository's worktree root,
+   * or {@link MAIN_WORKTREE} when the family works in the repository's main working
+   * tree instead. Never empty, and never a name a real worktree could take.
+   */
   readonly worktreeName: string;
   /**
    * When the claim was written, ISO-8601.
