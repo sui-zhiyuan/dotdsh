@@ -18,8 +18,7 @@
   "files": [
     "lib/index.js",
     "lib/index.d.ts",
-    "client/index.js",
-    "client/clicked-file.js"
+    "client/index.js"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
