@@ -24,9 +24,10 @@
  * diagnosis on stderr and the remote command's status, and turning that into an
  * exception would hide both. Only three things reject a call: the caller's own
  * cancellation, a destination that is not one, and a transport that could not
- * start the process at all. A rejected call also drops the server's entry, since
- * the pool can no longer say what state that connection is in; the next call
- * establishes a new one and reports it `fresh`.
+ * start the process at all. A rejected call also drops the server's entry — the
+ * pool can no longer say what state that connection is in — but only when it was
+ * the last call using it; the second rule below is the qualifier, and the next
+ * call establishes a new connection and reports it `fresh`.
  *
  * ## Three rules the design walk pinned down
  *
@@ -67,6 +68,7 @@
  */
 
 import type { SshTransport } from "../platform/ssh.js";
+import { validateDestination } from "../platform/ssh.js";
 
 /** One command to run on one server. */
 export interface SshRequest {
@@ -168,8 +170,72 @@ export class SshPool {
    * @throws Error when the pool has been disposed, or when the destination is not one.
    * @throws the abort reason when the caller cancels the call.
    */
-  run(request: SshRequest): Promise<SshResult> {
-    throw new Error(`SshPool.run is not implemented: ${request.destination}`);
+  async run(request: SshRequest): Promise<SshResult> {
+    if (this.disposed) {
+      throw new Error("SshPool is disposed and accepts no further work");
+    }
+    validateDestination(request.destination);
+
+    const { destination } = request;
+    let entry = this.connections.get(destination);
+    const connection: "reused" | "fresh" = entry === undefined ? "fresh" : "reused";
+    if (entry === undefined) {
+      // Rule 1: the entry exists before the first `await` below, so two calls
+      // that arrive together cannot both report `fresh` and race to own it.
+      entry = { destination, inFlight: 0, timer: undefined };
+      this.connections.set(destination, entry);
+    }
+
+    // A call makes the destination busy, so its idle release is no longer due.
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    entry.inFlight += 1;
+
+    const startedAt = this.options.now();
+    let rejected = true;
+    try {
+      const result = await this.transport.run(destination, request.command, {
+        timeoutMs: request.timeoutMs ?? this.options.commandTimeoutMs,
+        maxOutputBytes: this.options.maxOutputBytes,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      const sshResult: SshResult = {
+        destination,
+        command: request.command,
+        exitCode: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        connection,
+        durationMs: this.options.now() - startedAt,
+        timedOut: result.timedOut,
+        truncated: result.truncated,
+      };
+      rejected = false;
+      return sshResult;
+    } finally {
+      entry.inFlight -= 1;
+      // Only the entry that is still the current one, with no call left using
+      // it, may act: a release or a disposal may have taken the destination away.
+      if (this.connections.get(destination) === entry && entry.inFlight === 0) {
+        if (rejected) {
+          // Rule 2: only the last user may drop the entry. A failure while a
+          // sibling call is still in flight says nothing about the connection
+          // that call may be building, so the entry stays for it.
+          this.connections.delete(destination);
+        } else {
+          entry.timer = setTimeout(() => {
+            // Delete before releasing: a call that starts while the release is
+            // in flight must see `fresh`, never join a master that is exiting.
+            this.connections.delete(destination);
+            // `release` promises never to reject; this only guards a bug in it.
+            void this.transport.release(destination).catch(() => {});
+          }, this.options.idleTimeoutMs);
+          entry.timer.unref();
+        }
+      }
+    }
   }
 
   /**
@@ -179,8 +245,19 @@ export class SshPool {
    * master to exit, because a graceful shutdown has the time; the process-exit
    * hook and {@link abort} cover the shutdowns that do not.
    */
-  dispose(): Promise<void> {
-    throw new Error("SshPool.dispose is not implemented");
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const held = [...this.connections.values()];
+    this.connections.clear();
+    for (const entry of held) {
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer);
+        entry.timer = undefined;
+      }
+    }
+    // Rule 3: calls in flight are deliberately not awaited. Releasing each
+    // connection ends them where they stand, which is the point of shutdown.
+    await Promise.all(held.map((entry) => this.transport.release(entry.destination)));
   }
 
   /**
@@ -195,6 +272,20 @@ export class SshPool {
    * what is left in that case.
    */
   abort(): void {
-    throw new Error("SshPool.abort is not implemented");
+    const held = [...this.connections.values()];
+    this.connections.clear();
+    for (const entry of held) {
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer);
+        entry.timer = undefined;
+      }
+    }
+    for (const entry of held) {
+      try {
+        this.transport.detachRelease(entry.destination);
+      } catch {
+        // One destination that cannot be released must not stop the rest.
+      }
+    }
   }
 }
