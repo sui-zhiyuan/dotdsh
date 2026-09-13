@@ -121,6 +121,18 @@ function connectionOf(ctx: Context): ConnectionLike {
 }
 
 /**
+ * The session store, narrowed to the one lookup this file makes.
+ *
+ * Structural, because the value arrives from `ctx.inject(["sessions"], …)` whose
+ * argument the composition types: the shape below states the only member
+ * {@link workspaceRootOf} relies on, so a rename on the session service stays a
+ * compile error here.
+ */
+interface SessionStoreLike {
+  get(id: SessionId): { readonly header: { readonly cwd?: string } } | undefined;
+}
+
+/**
  * Every JSON body these two routes write. Naming the union keeps the frozen wire
  * types load-bearing: a renamed payload field is a compile error here rather
  * than a page that silently reads `undefined`.
@@ -219,6 +231,14 @@ function failureStatusOf(reason: EditorLaunchFailure): number {
       return 403;
     case "launch-failed":
       return 502;
+    default:
+      // Unreachable while `EditorLaunchFailure` is exhaustive, and deliberately
+      // NOT left to fall off the end: `sendJson(res, undefined, …)` makes Node
+      // throw on the status line, and the web server turns that throw into an
+      // empty 400 — the least diagnosable answer this route can give. A named
+      // 500 costs nothing and cannot hide a bug, because it is only reachable
+      // when the union has already grown past this switch.
+      return 500;
   }
 }
 
@@ -266,12 +286,20 @@ function editorSettingsOf(ctx: Context, config: Config): Pick<Config, "openInVsc
  * @param sessionId - the session named on the wire.
  * @returns the absolute workspace root, or `undefined` when it cannot be read.
  */
-export function workspaceRootOf(ctx: Context, sessionId: SessionId): string | undefined {
-  // `ctx.sessions` is a real property of this compile because
-  // `@deepseek-ai/dsh-session` is a peer dependency; the store answers
-  // `undefined` for a session it no longer holds, which is the "cannot be read"
-  // outcome the contract asks for rather than a throw.
-  const cwd = ctx.sessions.get(sessionId)?.header.cwd;
+export function workspaceRootOf(
+  sessions: { get(id: SessionId): { readonly header: { readonly cwd?: string } } | undefined },
+  sessionId: SessionId,
+): string | undefined {
+  // The store answers `undefined` for a session it no longer holds, which is the
+  // "cannot be read" outcome the contract asks for rather than a throw.
+  //
+  // WHY THE STORE IS A PARAMETER: within a plugin fiber, cordis REFUSES an
+  // undeclared service — reading `ctx.sessions` here threw `cannot get property
+  // "sessions" without inject`, the web server turned that into an empty 400, and
+  // every launch failed while the availability probe stayed green. The store is
+  // therefore obtained where the composition allows it (see the `ctx.inject`
+  // call in `openInEditorRoutes`) and handed down as data.
+  const cwd = sessions.get(sessionId)?.header.cwd;
   return typeof cwd === "string" && cwd !== "" ? cwd : undefined;
 }
 
@@ -335,6 +363,20 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
   // dependency, so by the time this function runs the service is present.
   const webServer = ctx.webServer;
 
+  /**
+   * The resident session store, captured when the service is available in this
+   * fiber, or `undefined` on a composition that mounts no session domain.
+   *
+   * `ctx.inject` rather than a plugin-level `inject`: the store is OPTIONAL for
+   * this row (without it, a launch resolves no workspace root and is checked by
+   * existence alone, exactly as the contract says), and `inject` here is also the
+   * only way to reach it at all — a plugin fiber denies `ctx.sessions` outright.
+   */
+  let sessions: SessionStoreLike | undefined;
+  ctx.inject(["sessions"], (scope) => {
+    sessions = scope.sessions;
+  });
+
   /** Answer the trust fence's rejection; true when the request was refused. */
   const rejected = (req: IncomingMessage, res: ServerResponse): boolean => {
     const rejection = connectionOf(ctx).requestRejection(req);
@@ -391,8 +433,9 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
     let text: string | null;
     try {
       text = await readBoundedBody(req);
-    } catch {
-      sendJson(res, 400, { ok: false, reason: "bad-request", detail: "request body unreadable" });
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      sendJson(res, 400, { ok: false, reason: "bad-request", detail: `request body unreadable (${detail})` });
       return;
     }
     if (text === null) {
@@ -413,7 +456,7 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
     // validated value is asserted here, at the one place the two meet: an
     // unknown id is answered by `workspaceRootOf` as "cannot be read", which is
     // the outcome the contract asks for, not a lookup on someone else's id.
-    const workspaceRoot = workspaceRootOf(ctx, fields.sessionId as SessionId);
+    const workspaceRoot = sessions === undefined ? undefined : workspaceRootOf(sessions, fields.sessionId as SessionId);
     let result: EditorLaunchResult;
     try {
       result = await launchInEditor(workspaceRoot, fields.path, fields.line, editorSettingsOf(ctx, config));
@@ -438,16 +481,64 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
     });
   };
 
+  /**
+   * Wrap one route handler so that an UNEXPECTED throw is still an answer.
+   *
+   * WHY THIS EXISTS, in the harness's own terms: `webServer` dispatches a route
+   * as `await route.handler(req, res)` and, when that rejects, logs the error and
+   * answers `res.writeHead(400); res.end()` — an EMPTY 400 with no
+   * `content-type`. To a browser that is indistinguishable from a pageless
+   * network failure, and to a developer it hides the cause in the dsh terminal.
+   * So every path in this file is written to report its own failures as values;
+   * this is the backstop for the one that is not, and it turns a silent bare 400
+   * into a 500 that NAMES the error on the wire and in the log.
+   *
+   * It cannot mask a real bug as a success: an unexpected throw is always a 500.
+   * @param name - route label used in the log line.
+   * @param handler - the route's own handler.
+   * @returns the handler the web server is given.
+   */
+  const guarded = (
+    name: string,
+    handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+  ): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
+    return async (req, res) => {
+      try {
+        await handler(req, res);
+      } catch (error) {
+        const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        ctx.logger.warn(`ui-tweaks: ${name} threw (${detail})`);
+        if (res.headersSent) {
+          // The response is already partly written; the only honest end is to
+          // close it rather than write a second status line into it.
+          res.end();
+          return;
+        }
+        sendJson(res, 500, { ok: false, reason: "internal-error", detail });
+      }
+    };
+  };
+
   // Two labeled effects rather than bare registrations: the labels are what the
   // fiber's effect diagnostics show, and tying each registration to this fiber
   // means an unload removes both routes even if the returned disposer is lost.
   const disposers = [
     ctx.effect(
-      () => webServer.register({ kind: "exact", path: OPEN_IN_EDITOR_STATUS_ROUTE, handler: statusHandler }),
+      () =>
+        webServer.register({
+          kind: "exact",
+          path: OPEN_IN_EDITOR_STATUS_ROUTE,
+          handler: guarded(`GET ${OPEN_IN_EDITOR_STATUS_ROUTE}`, statusHandler),
+        }),
       `ui-tweaks: GET ${OPEN_IN_EDITOR_STATUS_ROUTE}`,
     ),
     ctx.effect(
-      () => webServer.register({ kind: "exact", path: OPEN_IN_EDITOR_LAUNCH_ROUTE, handler: launchHandler }),
+      () =>
+        webServer.register({
+          kind: "exact",
+          path: OPEN_IN_EDITOR_LAUNCH_ROUTE,
+          handler: guarded(`POST ${OPEN_IN_EDITOR_LAUNCH_ROUTE}`, launchHandler),
+        }),
       `ui-tweaks: POST ${OPEN_IN_EDITOR_LAUNCH_ROUTE}`,
     ),
   ];
