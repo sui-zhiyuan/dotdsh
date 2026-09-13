@@ -16,6 +16,9 @@ importers:
       '@dsh-external/dotdsh-hello-world':
         specifier: workspace:*
         version: link:../hello-world
+      '@dsh-external/dotdsh-lazy-ssh':
+        specifier: workspace:*
+        version: link:../lazy-ssh
       '@dsh-external/dotdsh-ui-tweaks':
         specifier: workspace:*
         version: link:../ui-tweaks
@@ -63,6 +66,28 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
     devDependencies:
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  node_src/lazy-ssh:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.2
+      '@deepseek-ai/dsh-llm':
+        specifier: ^0.1.2-rc.1
+        version: 0.1.2-rc.1(@deepseek-ai/cordis@4.0.2)
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.1.2-rc.1
+        version: 0.1.2-rc.1(de5e1ff2d608fbe22667925341ad1dfc)
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.2
+        version: 3.18.2
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

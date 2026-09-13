@@ -1,0 +1,264 @@
+/**
+ * The ssh vocabulary: what one call to a server looks like on the wire, and the
+ * one process seam that runs it.
+ *
+ * ## The reuse this plugin exists for
+ *
+ * The plain `ssh host "command"` a shell tool runs pays for a TCP handshake, a
+ * key exchange and an authentication on *every* call. OpenSSH already knows how
+ * to pay that once: the first connection can become a **master** that keeps the
+ * authenticated transport open on a Unix socket, and every later client that
+ * names the same `ControlPath` runs its own session over that existing
+ * connection. What OpenSSH does not decide is how long to keep one; that is the
+ * pool's idle timeout, and this module is the vocabulary the pool speaks.
+ *
+ * The alternative — one long-lived `ssh` process with a shell on the far side,
+ * commands fed to its stdin — was rejected deliberately. Framing that protocol
+ * means inventing delimiters, exit codes, stderr separation, per-command
+ * cancellation and a way to survive a command that closes the pipe, and every
+ * one of those is a way to attribute one command's output to another. With
+ * multiplexing, each call is its own ssh process with its own streams and its own
+ * exit status, and only the connection is shared — which is exactly the cost that
+ * was being paid over and over. A single command still runs in a single remote
+ * shell, so `cd` does not persist between calls; join steps with `&&` instead.
+ *
+ * ## Who ends a connection
+ *
+ * Two answers, on purpose:
+ *
+ * - **Normally, this plugin.** The pool's per-server idle timer calls
+ *   {@link SshTransport.release}, which asks the master to exit. That is the
+ *   timeout the user configured, observed exactly.
+ * - **After a crash, ssh itself.** Every client this module builds also sets
+ *   `ControlPersist` to the idle timeout plus a grace period, so a master whose
+ *   owner was `SIGKILL`ed still terminates on its own. `ControlPersist` counts
+ *   *idle* time, so an actively used connection is never the one it closes.
+ *
+ * ## What this module never touches
+ *
+ * No credential of any kind is read, written, or passed. Authentication is
+ * whatever `~/.ssh` already does — keys, agent, `config` — and this module adds
+ * no mechanism that could carry a password. `BatchMode` defaults to on for the
+ * same reason: a tool call cannot answer a prompt, so a host whose key is not
+ * already trusted must fail with ssh's own message rather than hold the call
+ * open until the timeout. Connect to a new host once by hand to accept its key,
+ * or turn `batchMode` off in the row's config.
+ *
+ * The control socket is a credential in its own right: whoever can connect to it
+ * inherits the authenticated connection. The directory holding it is therefore
+ * created `0700`, and ssh keeps the socket itself `0600`.
+ *
+ * ## Layer
+ *
+ * The platform: the outside world. It imports {@link Runner} from `exec` and
+ * nothing above it.
+ *
+ * @module @dsh-external/dotdsh-lazy-ssh/ssh
+ */
+
+import { mkdirSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { spawnDetached, type RunResult, type Runner } from "./exec.js";
+
+/**
+ * Everything about a server call that comes from the row's config.
+ *
+ * One value rather than eight parameters: every function below needs most of it,
+ * and a caller that must remember to thread `idleTimeoutMs` into the argv builder
+ * is a caller that can forget.
+ */
+export interface SshConfig {
+  /** The ssh executable. Absolute, or a name resolved on `PATH`. */
+  readonly sshBinary: string;
+  /** Directory holding the per-server control sockets. Created `0700`. */
+  readonly controlDir: string;
+  /** `ConnectTimeout`, in seconds. Bounds the handshake, not the command. */
+  readonly connectTimeoutSec: number;
+  /**
+   * How long a connection may sit idle before the pool releases it.
+   *
+   * Also the basis of `ControlPersist`: the master's own backstop is this value
+   * plus {@link CONTROL_PERSIST_GRACE_SEC}.
+   */
+  readonly idleTimeoutMs: number;
+  /** Whether to pass `-o BatchMode=yes`, which turns an unanswerable prompt into a failure. */
+  readonly batchMode: boolean;
+  /** Extra `-o`/flag arguments, inserted verbatim before the destination. */
+  readonly sshOptions: readonly string[];
+}
+
+/** Extra slack on top of the idle timeout before ssh's own backstop closes a master. */
+export const CONTROL_PERSIST_GRACE_SEC = 30;
+
+/** Per-call ceiling for the best-effort release and probe invocations. */
+export const RELEASE_TIMEOUT_MS = 10_000;
+
+/**
+ * Refuse a destination that could be read as an option or cannot be a host.
+ *
+ * The destination is model-supplied and becomes the argument ssh dials, so a
+ * value beginning with `-` would be parsed as an option — a destination is not
+ * allowed to carry `-oProxyCommand=…` or anything else. Whitespace is refused
+ * too: no ssh destination contains it, and one that does is a sign the model
+ * meant two arguments.
+ *
+ * @param destination - the `ssh` destination, as the model wrote it.
+ * @throws Error naming the rule that was broken.
+ */
+export function validateDestination(destination: string): void {
+  throw new Error(`validateDestination is not implemented: ${destination}`);
+}
+
+/**
+ * The control socket path for one destination.
+ *
+ * Derived from the destination and the configured extra options, so two rows
+ * that differ only in `sshOptions` — a different port, say — never share a
+ * master. The file name is a digest rather than the destination itself because a
+ * Unix socket path is limited to about a hundred bytes and a destination is
+ * arbitrary text.
+ *
+ * @param config - the row's ssh configuration.
+ * @param destination - the validated ssh destination.
+ * @returns an absolute path under `config.controlDir`.
+ */
+export function controlPathFor(config: SshConfig, destination: string): string {
+  throw new Error(`controlPathFor is not implemented: ${destination} (${config.controlDir})`);
+}
+
+/**
+ * Create the control-socket directory if it is missing, and keep it private.
+ *
+ * Synchronous on purpose: the plugin calls it once while mounting, where a
+ * failure should fail the row rather than the first tool call, and the
+ * process-exit path has no room for a promise.
+ *
+ * @param controlDir - the directory to create.
+ * @throws Error when the directory cannot be created or made `0700`.
+ */
+export function ensureControlDir(controlDir: string): void {
+  throw new Error(`ensureControlDir is not implemented: ${controlDir}`);
+}
+
+/**
+ * The argv of one multiplexed command call.
+ *
+ * `ControlMaster=auto` lets the first call become the master and every later call
+ * join it, and it falls back to a plain connection when no master is listening —
+ * so a master that died between calls costs one handshake, never a failed call.
+ *
+ * @param config - the row's ssh configuration.
+ * @param destination - the validated ssh destination.
+ * @param command - the remote command; one argv element, interpreted by the remote shell.
+ * @returns the executable and its arguments, in order.
+ */
+export function commandArgv(
+  config: SshConfig,
+  destination: string,
+  command: string,
+): readonly [string, ...string[]] {
+  throw new Error(`commandArgv is not implemented: ${destination}`);
+}
+
+/**
+ * The argv that asks a master to exit.
+ *
+ * `-O exit` reaches the running master over its control socket and tells it to
+ * terminate; it starts no session and no connection. A missing master makes it
+ * exit non-zero, which the caller treats as "already released".
+ *
+ * @param config - the row's ssh configuration.
+ * @param destination - the validated ssh destination.
+ * @returns the executable and its arguments, in order.
+ */
+export function releaseArgv(
+  config: SshConfig,
+  destination: string,
+): readonly [string, ...string[]] {
+  throw new Error(`releaseArgv is not implemented: ${destination}`);
+}
+
+/**
+ * The ssh-facing half of the pool: build the calls, run them, end them.
+ *
+ * It owns no state. Which servers are believed connected, when each one goes
+ * idle, and what to do about it are the pool's; this class only knows how to say
+ * those things to ssh.
+ */
+export class SshTransport {
+  /** The process seam every invocation goes through. */
+  private readonly runner: Runner;
+  /** The row's ssh configuration. */
+  private readonly config: SshConfig;
+
+  /**
+   * Bind a runner to one ssh configuration.
+   *
+   * @param runner - the process seam; the same runner serves every transport.
+   * @param config - the resolved ssh configuration.
+   */
+  constructor(runner: Runner, config: SshConfig) {
+    this.runner = runner;
+    this.config = config;
+  }
+
+  /**
+   * Run one remote command over the server's multiplexed connection.
+   *
+   * @param destination - the validated ssh destination.
+   * @param command - the remote command, interpreted by the remote shell.
+   * @param options - the caller's deadline and cancellation for this call.
+   * @returns ssh's result: the remote exit status, both streams, and how the call ended.
+   * @throws the abort reason when the caller cancels.
+   */
+  run(
+    destination: string,
+    command: string,
+    options: { readonly timeoutMs: number; readonly signal?: AbortSignal },
+  ): Promise<RunResult> {
+    throw new Error(`SshTransport.run is not implemented: ${destination}`);
+  }
+
+  /**
+   * Ask the master for one destination to exit, and tidy up its socket.
+   *
+   * Best effort by contract: it never throws, because it is called from an idle
+   * timer and from teardown, where a rejected promise has no one to tell. A
+   * master that is already gone is the common, harmless case.
+   *
+   * @param destination - the validated ssh destination.
+   */
+  release(destination: string): Promise<void> {
+    throw new Error(`SshTransport.release is not implemented: ${destination}`);
+  }
+
+  /**
+   * Ask a master to exit without waiting — the teardown path.
+   *
+   * Starts the same release as {@link release} and returns immediately, because
+   * its callers are a disposer and a `process.on("exit")` hook, neither of which
+   * can await anything. The socket is removed here as well; a master that is
+   * still shutting down does not need it again.
+   *
+   * @param destination - the validated ssh destination.
+   */
+  detachRelease(destination: string): void {
+    throw new Error(`SshTransport.detachRelease is not implemented: ${destination}`);
+  }
+
+  /**
+   * The control socket this transport uses for one destination.
+   *
+   * @param destination - the validated ssh destination.
+   * @returns the absolute socket path.
+   */
+  controlPathFor(destination: string): string {
+    throw new Error(`SshTransport.controlPathFor is not implemented: ${destination}`);
+  }
+}
+
+/** Remove one control socket if it is still there, ignoring every failure. */
+export function removeControlSocket(path: string): void {
+  throw new Error(`removeControlSocket is not implemented: ${path}`);
+}
