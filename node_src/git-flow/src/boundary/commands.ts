@@ -117,8 +117,9 @@ const GIT_CLEANUP_DESCRIPTOR: CommandDescriptor = {
  *
  * **With a name**, the handler does the work and asks nobody:
  *
- * 1. the name is normalized by `shared.withBranchPrefix`, and the worktree takes
- *    the same name, so the two can never disagree about which feature this is;
+ * 1. the name is normalized by `shared.withBranchPrefix`, and the worktree's
+ *    directory name comes from `shared.worktreeNameFor`, so the two can never
+ *    disagree about which feature this is;
  * 2. the facts come from the invocation, and `core.gitStart` claims the tree,
  *    creates the branch and creates the worktree;
  * 3. the workspace it returns becomes context for the model: this is the session's

@@ -118,9 +118,10 @@ const GIT_CLEANUP_TOOL: ToolSchema = {
 /**
  * `git_start` — open a feature branch for this session.
  *
- * Required argument: `branchName`. It is normalized here (the `feat/` prefix is
- * added when missing) and the worktree takes the same name, so the two can never
- * disagree about which feature this is.
+ * Required argument: `branchName`. It is normalized here (`shared.withBranchPrefix`
+ * adds the `feat/` prefix when the name has none) and the worktree's directory
+ * name is derived from the result by `shared.worktreeNameFor`, so the two can
+ * never disagree about which feature this is.
  *
  * The answer is where the session works from now on: the branch, and the absolute
  * path of the worktree every following edit must be inside. A family that already

@@ -219,6 +219,21 @@ export function withBranchPrefix(name: string): string {
 }
 
 /**
+ * The directory name a family's worktree takes.
+ *
+ * Derived from the branch, so the two can never disagree about which feature this
+ * is, with `-` written as `_`. The rule is one line, and it lives here rather
+ * than in either door because both of them open worktrees and the two names have
+ * to be the same one.
+ *
+ * @param branch - the branch name, already prefixed.
+ * @returns the worktree's directory name, under the repository's worktree root.
+ */
+export function worktreeNameFor(branch: string): string {
+  throw new Error("worktreeNameFor is not implemented");
+}
+
+/**
  * Whether git itself accepts this as a branch name.
  *
  * `check-ref-format --branch` is git's own validator, so anything git would
