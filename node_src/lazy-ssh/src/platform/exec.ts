@@ -15,10 +15,19 @@
  *   and is meant to be read by the *remote* shell; a destination or a command
  *   that quotes its way out of a locally built command line is a class of bug
  *   this seam makes impossible rather than unlikely.
- * - **`timeoutMs` always kills.** When the deadline passes the child is signalled
- *   and the call resolves with `timedOut: true`, carrying whatever it had already
- *   written to either stream. This is the per-command backstop; it is not the
- *   idle release, which is the pool's business.
+ * - **`timeoutMs` is the bound, not the child's exit.** When the deadline passes
+ *   the child is signalled — `SIGTERM`, then `SIGKILL` five seconds later if it is
+ *   still there — and the call settles *immediately* with `timedOut: true`, a
+ *   `-1` status and whatever was already collected. Waiting for the child to exit
+ *   is not the same thing as bounding the call, and the difference is not
+ *   theoretical: a multiplexing ssh client hands its standard streams to the
+ *   master over the control socket, so when the client dies the master keeps the
+ *   pipes — and a call that resolves on `close` then hangs until the *remote*
+ *   command finishes, which for `tail -f` is never. The child, and whatever
+ *   inherited its streams, may therefore outlive the call — and so do the two
+ *   read ends this seam keeps draining, until whoever holds the other end lets
+ *   go. This is the per-command backstop; it is not the idle release, which is
+ *   the pool's business.
  * - **`signal` is the caller's cancellation.** An abort rejects the call rather
  *   than resolving it: a cancelled call has no result to report, and the caller
  *   that aborted already knows why. `timeoutMs` and `signal` are therefore
@@ -44,15 +53,23 @@
 
 import { spawn } from "node:child_process";
 
-/** One finished process. */
+/** One finished process, or one the deadline took away from its caller. */
 export interface RunResult {
-  /** Exit code, or `-1` when a signal ended the child instead of an exit. */
+  /**
+   * Exit code, or `-1` when there was none to report: a signal ended the child,
+   * or the deadline settled the call before the child was done.
+   */
   readonly code: number;
   /** Decoded standard output, capped at the caller's `maxOutputBytes`. */
   readonly stdout: string;
   /** Decoded standard error, capped at the caller's `maxOutputBytes`. */
   readonly stderr: string;
-  /** Whether `timeoutMs` expired and the child was killed for it. */
+  /**
+   * Whether this call hit its deadline and was settled there.
+   *
+   * It describes the call, not the process: the child may have exited on its own
+   * before the deadline, and it may still be alive after it.
+   */
   readonly timedOut: boolean;
   /** Whether either stream was cut off at `maxOutputBytes`. */
   readonly truncated: boolean;
@@ -104,8 +121,10 @@ export type Runner = (
  * only thing that ends one.
  *
  * The timeout is enforced here rather than by the caller so that the kill ladder
- * has exactly one implementation: the child is signalled with `SIGTERM`, and the
- * resolved result carries the partial output either way.
+ * has exactly one implementation: the child is signalled with `SIGTERM`, a child
+ * that is still alive five seconds later is sent `SIGKILL`, and the call settles
+ * at the deadline rather than at the child's exit — see the module header for why
+ * those are two different moments.
  *
  * @param argv - the executable followed by its arguments, passed verbatim.
  * @param options - directory, deadline, output cap, cancellation and environment.
@@ -116,7 +135,115 @@ export function nodeRunner(
   argv: readonly [string, ...string[]],
   options: RunnerOptions,
 ): Promise<RunResult> {
-  throw new Error(`nodeRunner is not implemented: ${argv[0]} (cwd ${options.cwd})`);
+  return new Promise<RunResult>((resolve, reject) => {
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...options.env },
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+
+    const cap = options.maxOutputBytes;
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const stdoutKept = { bytes: 0 };
+    const stderrKept = { bytes: 0 };
+    let truncated = false;
+
+    // Byte-exact, not character-exact: a chunk is cut at the remaining room, and
+    // only what falls past the cap is dropped. The listener stays attached, so
+    // the stream is still drained even after the cap is reached.
+    const collect = (chunks: Buffer[], kept: { bytes: number }, chunk: Buffer): void => {
+      const room = cap - kept.bytes;
+      if (room <= 0) {
+        truncated = true;
+        return;
+      }
+      if (chunk.length <= room) {
+        chunks.push(chunk);
+        kept.bytes += chunk.length;
+        return;
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, room)));
+      kept.bytes = cap;
+      truncated = true;
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      collect(stdoutChunks, stdoutKept, chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      collect(stderrChunks, stderrKept, chunk);
+    });
+
+    let timedOut = false;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const decode = (code: number): RunResult => ({
+      code,
+      stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+      stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      timedOut,
+      truncated,
+    });
+
+    const clearTimers = (): void => {
+      clearTimeout(deadlineTimer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+    };
+
+    /**
+     * Stop collecting without stopping the drain.
+     *
+     * The listeners go and `resume()` keeps the streams flowing into nothing, so
+     * a writer that still holds the other end — the multiplexing master, after
+     * the client it was handed the pipes by is gone — never blocks on a full
+     * pipe. `destroy()` would be the tidier-looking call and is the wrong one: it
+     * makes the stream emit an error nobody is listening for any more.
+     */
+    const stopCollecting = (): void => {
+      for (const stream of [child.stdout, child.stderr]) {
+        stream?.removeAllListeners("data");
+        stream?.resume();
+      }
+    };
+
+    const deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      // A child that ignores SIGTERM must not be able to hold its slot forever.
+      // Deliberately not cleared when the timeout settles the call below: the
+      // settle is about this promise, not about the process.
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 5000);
+      stopCollecting();
+      settle(decode(-1));
+    }, options.timeoutMs);
+
+    const settle = (result: RunResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    // Covers both a child that could not start (ENOENT and friends) and the
+    // abort Node raises when `options.signal` fires; `close` may still follow,
+    // and the first settlement is the one that counts. After a deadline settle,
+    // a late error has nothing left to report and is swallowed.
+    child.on("error", (error: Error) => {
+      if (settled) return;
+      clearTimers();
+      settled = true;
+      reject(error);
+    });
+
+    child.on("close", (code: number | null) => {
+      clearTimers();
+      settle(decode(code ?? -1));
+    });
+  });
 }
 
 /**
@@ -130,12 +257,23 @@ export function nodeRunner(
  * nothing asynchronous can be awaited at all.
  *
  * Failures are deliberately silent: this is a best-effort cleanup path, and a
- * teardown that throws is worse than a socket file left behind. The idle
- * timeout's own `ControlPersist` backstop is what covers the case where even
- * this does not run.
+ * teardown that throws is worse than a socket file left behind. It is also not
+ * the last line of defence: `SIGKILL` runs no handler at all, so the case where
+ * even this does not run falls to ssh's own `ControlPersist` — which bounds an
+ * abandoned idle master and nothing else. `ssh.ts` states the whole boundary.
  *
  * @param argv - the executable followed by its arguments, passed verbatim.
  */
 export function spawnDetached(argv: readonly [string, ...string[]]): void {
-  throw new Error(`spawnDetached is not implemented: ${argv[0]}`);
+  try {
+    const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: "ignore" });
+    // A start failure arrives asynchronously on `error`, not as a throw; without
+    // a listener Node would surface it as an uncaught exception, which is not
+    // the silence this path promises.
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // Teardown is best-effort: a release that cannot start is the socket's
+    // business, and a teardown that throws is worse than a socket left behind.
+  }
 }

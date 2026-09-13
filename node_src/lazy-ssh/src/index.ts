@@ -8,6 +8,11 @@
  * connection the pool is holding, and a `process.on("exit")` hook covers the
  * shutdowns where nothing asynchronous runs at all.
  *
+ * Neither runs under `SIGKILL`, and the boundary that leaves — an abandoned idle
+ * master for at most `idleTimeoutMs` plus the control-persist grace, and a call
+ * in flight until its remote command ends — is stated in full in
+ * `platform/ssh.ts`. It is a documented cost, not an oversight.
+ *
  * ## Why the plugin is not per-session
  *
  * The connection a session reuses is exactly the connection another session
@@ -24,13 +29,19 @@
  * | Key | Default | Meaning |
  * | --- | --- | --- |
  * | `idleTimeoutMs` | `300000` | How long a connection may sit idle before it is released. |
- * | `commandTimeoutMs` | `120000` | Default deadline for one command. |
+ * | `commandTimeoutMs` | `120000` | Default deadline for one command; the call returns at it, the remote command may not. |
  * | `connectTimeoutSec` | `10` | `ConnectTimeout`: bounds the handshake, not the command. |
  * | `maxOutputBytes` | `1048576` | Per-stream output cap; past it the stream is truncated. |
  * | `batchMode` | `true` | Pass `-o BatchMode=yes`: an unanswerable prompt fails instead of hanging. |
  * | `sshBinary` | `"ssh"` | The executable to run. |
  * | `sshOptions` | `[]` | Extra ssh arguments, inserted verbatim before the destination. |
  * | `controlDir` | `$TMPDIR/dsh-lazy-ssh-<uid>` | Where the per-server control sockets live. |
+ *
+ * The `controlDir` default is one per **user**, not one per process, so two dsh
+ * processes running as the same user share a master per server — and since
+ * releasing one asks the master to exit, an idle release in one process can end a
+ * command still running in the other. Run one, or give the second its own
+ * `controlDir`; `platform/ssh.ts` argues the whole constraint.
  *
  * ## Layer
  *
@@ -113,7 +124,28 @@ export const Config: z<Config> = z.object({
  * @throws Error naming the key whose value cannot work.
  */
 export function resolveSshConfig(config: Config): SshConfig {
-  throw new Error(`resolveSshConfig is not implemented: ${config.controlDir}`);
+  // A duration or a byte count that is not a positive number is a config
+  // mistake, and the row that mounts with one should be the thing that fails.
+  const positive = (key: string, value: number, integral: boolean): void => {
+    const ok = Number.isFinite(value) && value > 0 && (!integral || Number.isInteger(value));
+    if (!ok) throw new Error(`${key} must be a positive ${integral ? "integer" : "number"}; got ${value}`);
+  };
+
+  positive("idleTimeoutMs", config.idleTimeoutMs, false);
+  positive("commandTimeoutMs", config.commandTimeoutMs, false);
+  positive("connectTimeoutSec", config.connectTimeoutSec, true);
+  positive("maxOutputBytes", config.maxOutputBytes, true);
+  if (config.sshBinary.trim() === "") throw new Error("sshBinary must name an executable");
+  if (config.controlDir.trim() === "") throw new Error("controlDir must name a directory");
+
+  return {
+    sshBinary: config.sshBinary,
+    controlDir: config.controlDir,
+    connectTimeoutSec: config.connectTimeoutSec,
+    idleTimeoutMs: config.idleTimeoutMs,
+    batchMode: config.batchMode,
+    sshOptions: [...config.sshOptions],
+  };
 }
 
 /**
@@ -123,5 +155,53 @@ export function resolveSshConfig(config: Config): SshConfig {
  * @param config - the row's configuration, validated by {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  throw new Error("lazy-ssh apply is not implemented");
+  const ssh = resolveSshConfig(config);
+  // Fail at the row, where a human sees it, rather than at the first call that
+  // needs a socket to exist.
+  ensureControlDir(ssh.controlDir);
+
+  const pool = new SshPool(new SshTransport(nodeRunner, ssh), {
+    idleTimeoutMs: ssh.idleTimeoutMs,
+    commandTimeoutMs: config.commandTimeoutMs,
+    maxOutputBytes: config.maxOutputBytes,
+  });
+
+  for (const tool of sshTools(pool)) {
+    ctx.effect(() =>
+      ctx.tools.register(
+        defineTool({
+          ...tool.descriptor,
+          // `ToolSchema` carries the arguments as a bare `Record`, because the LLM
+          // layer only ever projects them to JSON Schema. Only here, where they are
+          // handed to the registry that compiles and enforces them, is their real
+          // author-facing shape known.
+          parameters: tool.descriptor.parameters as ParameterSchemaSpec,
+          // The declaration `ToolSchema` cannot carry: this tool answers with one
+          // text block, which is what the model reads.
+          output: {
+            schema: { type: "string" },
+            render: (_args, value) => [{ type: "text", text: value }],
+          },
+          // `sshTools` is a `SshTool<never>[]` so entries with different argument
+          // objects share one list, and its elements expose no argument type to
+          // recover; the registry has already validated the call against the very
+          // descriptor spread above.
+          execute: (args, execution) => tool.execute(args as never, execution),
+        }),
+      ),
+    );
+  }
+
+  // Two teardown paths, and neither of them runs under `SIGKILL`: the disposer
+  // that cordis awaits on unload, and a `process.on("exit")` hook for a shutdown
+  // that got no further than `process.exit`. `ssh.ts` states what is left when
+  // both are skipped.
+  ctx.effect(() => {
+    const onExit = (): void => pool.abort();
+    process.on("exit", onExit);
+    return () => {
+      process.off("exit", onExit);
+      return pool.dispose();
+    };
+  });
 }

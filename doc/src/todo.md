@@ -31,10 +31,19 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 - [x] Migrate plugin sources to TypeScript (tsc → in-package `lib/`, gitignored; auto-built)
 - [x] Fix the stale `hello_world` tool description: it claimed the greeting came from the
   removed plugin store's `applist.yaml`; the plugin now points at its row in the bundle patch
-- [ ] Create an SSH plugin for remote-server development: the backend keeps one long-lived SSH
-  connection per host (HTTP keep-alive style) instead of logging in per command — auto-connect
-  on first use, auto-recycle idle connections on timeout, avoid repeated TCP handshakes and
-  re-auth
+- [x] Create an SSH plugin for remote-server development. `node_src/lazy-ssh` is one node-only
+  package with a single `ssh_run` tool, and the long-lived connection is OpenSSH's own rather than
+  a backend of ours: the first call to a server becomes a multiplexing **master** on a
+  deterministic `ControlPath`, every later call joins it, and the plugin owns only the part
+  OpenSSH leaves to a caller — the lifetime. An idle timeout is refreshed by every call and the
+  connection is then released with `ssh -O exit`; no credential is read, written or passed, so
+  authentication stays exactly what `~/.ssh` already does. Sharing the transport without framing
+  commands over it is the point: each call keeps its own process, streams and exit status, and
+  only the TCP handshake, key exchange and authentication are paid once. One boundary is
+  documented rather than papered over: a `SIGKILL` runs no teardown, so an abandoned idle master
+  lives at most the timeout plus 30s, and a call in flight keeps its connection until that command
+  ends — the keeper design that would close that window, and what it would cost, is recorded in
+  the module
 - [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation
   bundle to de-fragment micro-features). Started: `ui-tweaks` is the first real plugin — and the
   first dual-face one, so it also established the browser-half conventions in

@@ -35,11 +35,12 @@
  *
  * ## Deferred
  *
- * **`ssh_sessions`, a read-only view of what is held open.** The pool can already
- * answer it, and it would be the natural way for a human to ask "is anything
- * still connected to that box?". It is not in this commit because the user asked
- * for the one tool, and a second tool is a second schema for the model to choose
- * between. When it is wanted, the descriptors live here and the wiring iterates.
+ * **`ssh_sessions`, a read-only view of what is held open.** It would be the
+ * natural way for a human to ask "is anything still connected to that box?", and
+ * the pool's connection table is where the answer comes from. It is not in this
+ * commit because the user asked for the one tool, and a second tool is a second
+ * schema for the model to choose between. When it is wanted, the descriptors live
+ * here, the wiring iterates, and the pool gains the view it is asked for.
  *
  * ## Layer
  *
@@ -111,10 +112,13 @@ const SSH_RUN_TOOL: ToolSchema = {
     },
     timeoutMs: {
       type: "number",
-      required: false,
+      // Optional means the key is absent: the registry's schema compiler refuses
+      // `required: false` outright, because a property that is not required is
+      // one the author schema simply does not name.
       description:
         "How long this one command may take, in milliseconds. Defaults to the plugin's configured command timeout. " +
-        "A command that hits it is killed and reported as timed out.",
+        "The call returns at the deadline with `timed out` and whatever output had already arrived; the remote " +
+        "command itself may still be running.",
     },
   },
 };
@@ -126,7 +130,25 @@ const SSH_RUN_TOOL: ToolSchema = {
  * @returns the text the model reads.
  */
 function renderResult(result: SshResult): string {
-  throw new Error(`renderResult is not implemented: ${result.destination}`);
+  // The header is one line, so the outcome is readable before the output is; the
+  // stream sections are omitted rather than printed empty, and a call that said
+  // nothing at all says so once.
+  const notes = [
+    ...(result.timedOut ? ["timed out"] : []),
+    ...(result.truncated ? ["output truncated"] : []),
+  ];
+  const parts = [
+    `ssh ${result.destination}: exit ${result.exitCode} (${result.connection} connection, ${result.durationMs} ms)` +
+      (notes.length === 0 ? "" : `, ${notes.join(", ")}`),
+  ];
+
+  const stdout = result.stdout.replace(/\n$/, "");
+  const stderr = result.stderr.replace(/\n$/, "");
+  if (stdout !== "") parts.push("--- stdout ---", stdout);
+  if (stderr !== "") parts.push("--- stderr ---", stderr);
+  if (stdout === "" && stderr === "") parts.push("(no output)");
+
+  return parts.join("\n");
 }
 
 /**
@@ -140,5 +162,23 @@ function renderResult(result: SshResult): string {
  * @returns the tools to register, in the order they should be listed.
  */
 export function sshTools(pool: SshPool): readonly SshTool<never>[] {
-  throw new Error("sshTools is not implemented");
+  const sshRun: SshTool<SshRunArguments> = {
+    descriptor: SSH_RUN_TOOL,
+    execute(args, execution) {
+      // The call's own deadline and cancellation both travel through the pool: a
+      // cancelled turn must stop waiting on the ssh child, and a command that
+      // outlives its deadline must be reported as timed out rather than as a
+      // server that never answered.
+      return pool
+        .run({
+          destination: args.server,
+          command: args.command,
+          ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }),
+          signal: execution.signal,
+        })
+        .then(renderResult);
+    },
+  };
+
+  return [sshRun];
 }

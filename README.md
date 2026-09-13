@@ -21,6 +21,7 @@
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a pre-write guard that refuses an edit landing outside the tree the session's family claimed, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
+| `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |
 
 ## The git-flow workflow
 
@@ -161,6 +162,70 @@ extension list), and a row `config` in the bundle patch would sit below them as 
 unregistered for that whole boot — the tweaks then quietly run on their defaults, and dsh reports
 it only through its logger — so fix the document and restart.
 
+## Lazy ssh
+
+`ssh x@host "command"` pays for a TCP handshake, a key exchange and an authentication every single
+time. The `ssh_run` tool keeps OpenSSH's own multiplexing instead: the first call to a server becomes a
+master held open on a control socket under `controlDir`, and every later call joins it. The plugin owns
+only the lifetime — a connection is released once it has been idle for `idleTimeoutMs`, and a call
+arriving during that window reuses it and refreshes the timeout.
+
+```text
+ssh_run(server: "deploy@build-01", command: "uptime")
+→ ssh deploy@build-01: exit 0 (fresh connection, 214 ms)
+  --- stdout ---
+   12:04:11 up 41 days,  3:19,  0 users,  load average: 0.31, 0.24, 0.19
+ssh_run(server: "deploy@build-01", command: "df -h /")
+→ ssh deploy@build-01: exit 0 (reused connection, 41 ms)
+```
+
+Each call is a new remote shell, so a `cd` does not carry over: join steps with `&&` inside one call. A
+non-zero remote status is part of the answer rather than an error, so stdout, stderr and the status are
+read together. Nothing about credentials passes through the plugin — keys, agent and `~/.ssh/config` are
+ssh's business — and `BatchMode` is on by default, which makes a host whose key is not already trusted
+fail with ssh's own message instead of waiting on a prompt a tool call cannot answer; connect to a new
+host once by hand to accept its key, or turn `batchMode` off for the row.
+
+### Configuration
+
+All eight keys are optional, and a value that cannot work fails the row while it mounts:
+
+| Key | Default | What it decides |
+| --- | --- | --- |
+| `idleTimeoutMs` | `300000` | how long a connection may sit idle before it is released |
+| `commandTimeoutMs` | `120000` | the deadline for one command, when the call sets no `timeoutMs`: the call returns then, and the remote command may not |
+| `connectTimeoutSec` | `10` | ssh's `ConnectTimeout`: the handshake, not the command |
+| `maxOutputBytes` | `1048576` | per-stream output cap; past it that stream is marked truncated |
+| `batchMode` | `true` | pass `-o BatchMode=yes` |
+| `sshBinary` | `ssh` | the executable to run |
+| `sshOptions` | `[]` | extra ssh arguments, inserted verbatim before the destination |
+| `controlDir` | `$TMPDIR/dsh-lazy-ssh-<uid>` | where the per-server control sockets live, created `0700` |
+
+The control directory is one per **user**, not one per process: two dsh processes running as the same
+user find each other's masters, and the second one joins the first one's connection instead of dialing
+again. That sharing has a sharp edge, because releasing a connection asks the master to exit — which
+ends every session on it. An idle release in one process can therefore cut a command still running in
+another, so **run one dsh process per user and machine**, or give the second one its own `controlDir`.
+
+### What a hard kill leaves behind
+
+An orderly shutdown releases every connection: the plugin's disposer runs on unload, and a
+`process.on("exit")` hook covers a shutdown that got no further than `process.exit`. `SIGKILL` runs
+neither, and OpenSSH detaches the master from this process (`daemon()` — fork plus `setsid`), so the
+terminal's `SIGINT` does not reach it either. What is left in that case:
+
+- an abandoned **idle** master closes itself within `idleTimeoutMs` plus 30s, because every client this
+  plugin runs sets `ControlPersist` to exactly that;
+- a master with a **call in flight** is never idle, so `ControlPersist` never fires, and the orphaned
+  client keeps the connection — and the remote command — alive until that command ends.
+
+That window is documented rather than closed. Closing it needs a process that outlives dsh: a tiny `sh`
+keeper holding the read end of a pipe whose write end dsh keeps, so any death closes it and the keeper
+signals ssh. Buying it means owning the master ourselves instead of letting OpenSSH daemonize it —
+starting it with `-M -N`, waiting for it to become ready, noticing its death, restarting it — and paying
+one more `sh` per call. `node_src/lazy-ssh/src/platform/ssh.ts` records that design, the experiment that
+verified it on Linux, and the cost, next to the boundary it would close.
+
 ## Prerequisites
 
 - `pnpm` and Node — for the plugin packages;
@@ -202,7 +267,7 @@ uv run python -m dev_apply           # build + link-install into the web profile
 uv run ruff check py_src/dev-apply   # lint
 uv run ruff format py_src/dev-apply  # format
 mdbook build                         # docs → target/book/
-pnpm test                            # per-package checks (ui-tweaks: both halves — host contract + browser half)
+pnpm test                            # per-package checks (lazy-ssh: the pool against a fake ssh; ui-tweaks: both halves)
 pnpm release                         # pnpm -r publish --access public
 ```
 

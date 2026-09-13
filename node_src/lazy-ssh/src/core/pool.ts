@@ -24,9 +24,10 @@
  * diagnosis on stderr and the remote command's status, and turning that into an
  * exception would hide both. Only three things reject a call: the caller's own
  * cancellation, a destination that is not one, and a transport that could not
- * start the process at all. A rejected call also drops the server's entry, since
- * the pool can no longer say what state that connection is in; the next call
- * establishes a new one and reports it `fresh`.
+ * start the process at all. A rejected call also drops the server's entry — the
+ * pool can no longer say what state that connection is in — but only when it was
+ * the last call using it; the second rule below is the qualifier, and the next
+ * call establishes a new connection and reports it `fresh`.
  *
  * ## Three rules the design walk pinned down
  *
@@ -50,6 +51,14 @@
  * path this plugin exists to shorten. Named here rather than silently dropped:
  * the field's name is `connection`, and a reader should not mistake it for proof.
  *
+ * **A read-only view of what is held open.** A future `ssh_sessions` tool would
+ * answer "is anything still connected to that box?" from the connection table
+ * this module already keeps. It is not built, because one tool was asked for and
+ * a second tool is a second schema for the model to choose between; when it is
+ * wanted, the table is here and this module is where the answer comes from. No
+ * snapshot type ships ahead of that consumer — an unused public view is a promise
+ * nothing keeps.
+ *
  * ## Layer
  *
  * The core: the pool's lifetime logic, with no knowledge of dsh. It imports
@@ -59,6 +68,7 @@
  */
 
 import type { SshTransport } from "../platform/ssh.js";
+import { validateDestination } from "../platform/ssh.js";
 
 /** One command to run on one server. */
 export interface SshRequest {
@@ -98,20 +108,6 @@ export interface SshResult {
   readonly truncated: boolean;
 }
 
-/** One server the pool currently believes is connected. */
-export interface ServerSession {
-  /** The ssh destination. */
-  readonly destination: string;
-  /** The control socket carrying it. */
-  readonly controlPath: string;
-  /** How many calls are using it right now. */
-  readonly inFlight: number;
-  /** How many calls it has served since it was established. */
-  readonly calls: number;
-  /** Milliseconds since its last call finished; `0` while a call is in flight. */
-  readonly idleMs: number;
-}
-
 /** How the pool behaves, resolved from the row's config. */
 export interface PoolOptions {
   /** How long a connection may sit idle before it is released. */
@@ -127,18 +123,15 @@ export interface PoolOptions {
 /**
  * One connection the pool is holding, and the timer that will end it.
  *
- * Mutable and private to the pool: nothing outside this module ever sees an
- * entry, which is why the public view is built fresh by {@link SshPool.sessions}.
+ * Mutable, private, and the only record of what this plugin has left open. The
+ * fields are exactly the state the lifetime protocol reads and nothing else: a
+ * call counter or a last-used timestamp would only feed a view that does not
+ * exist yet, and a field with no reader is the next reviewer's question.
  */
 interface Connection {
   readonly destination: string;
-  readonly controlPath: string;
   /** Calls currently using this connection. */
   inFlight: number;
-  /** Calls served since it was established. */
-  calls: number;
-  /** When the last call finished. */
-  lastUsedAt: number;
   /** The pending idle release, or `undefined` while a call is in flight. */
   timer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -177,20 +170,72 @@ export class SshPool {
    * @throws Error when the pool has been disposed, or when the destination is not one.
    * @throws the abort reason when the caller cancels the call.
    */
-  run(request: SshRequest): Promise<SshResult> {
-    throw new Error(`SshPool.run is not implemented: ${request.destination}`);
-  }
+  async run(request: SshRequest): Promise<SshResult> {
+    if (this.disposed) {
+      throw new Error("SshPool is disposed and accepts no further work");
+    }
+    validateDestination(request.destination);
 
-  /**
-   * What the pool is holding right now, as plain data.
-   *
-   * A snapshot built per call, with no reference to the pool's own entries: a
-   * caller cannot reach in and change a lifetime by accident.
-   *
-   * @returns one entry per destination the pool believes connected.
-   */
-  sessions(): readonly ServerSession[] {
-    throw new Error("SshPool.sessions is not implemented");
+    const { destination } = request;
+    let entry = this.connections.get(destination);
+    const connection: "reused" | "fresh" = entry === undefined ? "fresh" : "reused";
+    if (entry === undefined) {
+      // Rule 1: the entry exists before the first `await` below, so two calls
+      // that arrive together cannot both report `fresh` and race to own it.
+      entry = { destination, inFlight: 0, timer: undefined };
+      this.connections.set(destination, entry);
+    }
+
+    // A call makes the destination busy, so its idle release is no longer due.
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    entry.inFlight += 1;
+
+    const startedAt = this.options.now();
+    let rejected = true;
+    try {
+      const result = await this.transport.run(destination, request.command, {
+        timeoutMs: request.timeoutMs ?? this.options.commandTimeoutMs,
+        maxOutputBytes: this.options.maxOutputBytes,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      });
+      const sshResult: SshResult = {
+        destination,
+        command: request.command,
+        exitCode: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        connection,
+        durationMs: this.options.now() - startedAt,
+        timedOut: result.timedOut,
+        truncated: result.truncated,
+      };
+      rejected = false;
+      return sshResult;
+    } finally {
+      entry.inFlight -= 1;
+      // Only the entry that is still the current one, with no call left using
+      // it, may act: a release or a disposal may have taken the destination away.
+      if (this.connections.get(destination) === entry && entry.inFlight === 0) {
+        if (rejected) {
+          // Rule 2: only the last user may drop the entry. A failure while a
+          // sibling call is still in flight says nothing about the connection
+          // that call may be building, so the entry stays for it.
+          this.connections.delete(destination);
+        } else {
+          entry.timer = setTimeout(() => {
+            // Delete before releasing: a call that starts while the release is
+            // in flight must see `fresh`, never join a master that is exiting.
+            this.connections.delete(destination);
+            // `release` promises never to reject; this only guards a bug in it.
+            void this.transport.release(destination).catch(() => {});
+          }, this.options.idleTimeoutMs);
+          entry.timer.unref();
+        }
+      }
+    }
   }
 
   /**
@@ -200,8 +245,19 @@ export class SshPool {
    * master to exit, because a graceful shutdown has the time; the process-exit
    * hook and {@link abort} cover the shutdowns that do not.
    */
-  dispose(): Promise<void> {
-    throw new Error("SshPool.dispose is not implemented");
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    const held = [...this.connections.values()];
+    this.connections.clear();
+    for (const entry of held) {
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer);
+        entry.timer = undefined;
+      }
+    }
+    // Rule 3: calls in flight are deliberately not awaited. Releasing each
+    // connection ends them where they stand, which is the point of shutdown.
+    await Promise.all(held.map((entry) => this.transport.release(entry.destination)));
   }
 
   /**
@@ -210,9 +266,26 @@ export class SshPool {
    * Synchronous by necessity: it is called from a `process.on("exit")` handler,
    * where the event loop is already over. It starts each release and returns;
    * whether any of them completed is not observable from here, which is why ssh's
-   * own `ControlPersist` exists as the final backstop.
+   * own `ControlPersist` exists as the final backstop — and that backstop is a
+   * bounded one: it closes an idle master, never one with a call in flight. A
+   * `SIGKILL` gets neither this method nor the hook that calls it; `ssh.ts` states
+   * what is left in that case.
    */
   abort(): void {
-    throw new Error("SshPool.abort is not implemented");
+    const held = [...this.connections.values()];
+    this.connections.clear();
+    for (const entry of held) {
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer);
+        entry.timer = undefined;
+      }
+    }
+    for (const entry of held) {
+      try {
+        this.transport.detachRelease(entry.destination);
+      } catch {
+        // One destination that cannot be released must not stop the rest.
+      }
+    }
   }
 }

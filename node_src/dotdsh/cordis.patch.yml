@@ -56,3 +56,27 @@
   # repository overrides them here or in its own profile layer. See the README.
   - id: git-flow
     name: '@dsh-external/dotdsh-git-flow'
+  # Lazy ssh: one `ssh_run` tool for remote commands, and one multiplexed ssh
+  # connection per server kept open until it has been idle long enough to be worth
+  # closing — so a sequence of calls to the same host pays the TCP handshake and
+  # the key exchange once. Authentication stays entirely in `~/.ssh`: this plugin
+  # reads, writes and passes no credential, and `batchMode` (on by default) makes a
+  # host whose key is not already trusted fail with ssh's own message rather than
+  # wait on a prompt nothing can answer.
+  #
+  # Every key has a default: `idleTimeoutMs` (300000), `commandTimeoutMs`
+  # (120000), `connectTimeoutSec` (10), `maxOutputBytes` (1048576), `batchMode`
+  # (true), `sshBinary` (`ssh`), `sshOptions` ([]) and `controlDir`
+  # (`$TMPDIR/dsh-lazy-ssh-<uid>`, created 0700). A value that cannot work fails
+  # this row while it mounts.
+  #
+  # The one boundary worth knowing: a `SIGKILL` of dsh runs no teardown at all, so
+  # an abandoned idle master lives at most `idleTimeoutMs` plus 30s, and a call in
+  # flight keeps its connection until that command ends. `platform/ssh.ts` explains
+  # why, and what a keeper process that would close the window costs.
+  #
+  # The `controlDir` default is one per user, so two dsh processes running as the
+  # same user share a master — and releasing it ends every session on it. Run one
+  # such process per machine, or give the second its own `controlDir`.
+  - id: lazy-ssh
+    name: '@dsh-external/dotdsh-lazy-ssh'
