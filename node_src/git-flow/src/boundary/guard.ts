@@ -57,6 +57,7 @@
 
 import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { ensureWorkspace } from "../core/core.js";
+import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 import { factsFor, sessionAgentOf } from "./shared.js";
 
 /**
@@ -71,15 +72,28 @@ import { factsFor, sessionAgentOf } from "./shared.js";
  * single relative-path comparison, used once, with nothing to share it with.
  *
  * The two refusals are the whole of the guard's output, and both are addressed to
- * the model rather than to a human:
+ * the model rather than to a human. Both also name the workflow skill
+ * ({@link GIT_FLOW_SKILL_NAMES.workflow}), because a model that has just been
+ * refused is a model that has not read the rules yet — and a refusal is the one
+ * moment the rules can be handed to it exactly when they are needed. The name
+ * comes from the skill module rather than being written here, so the instruction
+ * and the skill it points at cannot drift apart.
  *
  * - **no claim** — the session has no branch and no tree yet, so a change has
- *   nowhere to land. The refusal says to name the feature (asking the human when
- *   the conversation does not already say) and call `git_start`, then repeat the
- *   change;
+ *   nowhere to land:
+ *
+ *   > This session has no feature branch yet, so there is nowhere for this change
+ *   > to land. Load the `git-flow` skill, then call `git_start` with a branch
+ *   > name — ask the human what they are working on if you cannot name it — and
+ *   > repeat this change.
+ *
  * - **outside the tree** — the family writes in its own worktree and nowhere
  *   else. The refusal names the exact path to use instead, because the model
- *   cannot derive where its family was put.
+ *   cannot derive where its family was put:
+ *
+ *   > This session writes inside its own worktree, at `<worktree>`. Load the
+ *   > `git-flow` skill, and write to `<worktree>/<relative>` instead of
+ *   > `<target>`.
  *
  * @param execution - the pending call: name, arguments, and calling agent.
  * @param next - the waterfall continuation, which allows the call.
