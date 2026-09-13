@@ -5,8 +5,8 @@ it ships is described in [Design decisions](./design.md) and in the
 [README](./README.md#the-git-flow-workflow); where this note and `node_src/git-flow/src/**`
 disagree, the code is right. The reasoning that survived the rewrite is kept here as the record of
 it, and each section says whether it still describes the shipped design or is the record of an
-argument the rewrite decided against. The implementation this note was written against is kept
-beside the rewrite in `node_src/git-flow/old/`.
+argument the rewrite decided against. The implementation this note was written against is not in the
+tree any more; to read it, take it from the repository's history.
 
 ## What the rewrite kept, and what it changed
 
