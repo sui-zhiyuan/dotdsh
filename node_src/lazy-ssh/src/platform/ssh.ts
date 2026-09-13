@@ -85,6 +85,11 @@
  * @module @dsh-external/dotdsh-lazy-ssh/ssh
  */
 
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+
+import { spawnDetached } from "./exec.js";
 import type { RunResult, Runner } from "./exec.js";
 
 /**
@@ -148,7 +153,15 @@ const RELEASE_MAX_OUTPUT_BYTES = 4_096;
  * @throws Error naming the rule that was broken.
  */
 export function validateDestination(destination: string): void {
-  throw new Error(`validateDestination is not implemented: ${destination}`);
+  if (destination.trim() === "") {
+    throw new Error(`ssh destination must not be empty or only whitespace: ${JSON.stringify(destination)}`);
+  }
+  if (destination.startsWith("-")) {
+    throw new Error(`ssh destination must not begin with "-" (ssh would read it as an option): ${JSON.stringify(destination)}`);
+  }
+  if (/\s/.test(destination)) {
+    throw new Error(`ssh destination must not contain whitespace: ${JSON.stringify(destination)}`);
+  }
 }
 
 /**
@@ -165,7 +178,13 @@ export function validateDestination(destination: string): void {
  * @returns an absolute path under `config.controlDir`.
  */
 function controlPathFor(config: SshConfig, destination: string): string {
-  throw new Error(`controlPathFor is not implemented: ${destination} (${config.controlDir})`);
+  const digest = createHash("sha256")
+    .update(destination)
+    .update("\0")
+    .update(config.sshOptions.join("\0"))
+    .digest("hex")
+    .slice(0, 16);
+  return join(config.controlDir, `${digest}.sock`);
 }
 
 /**
@@ -179,7 +198,15 @@ function controlPathFor(config: SshConfig, destination: string): string {
  * @throws Error when the directory cannot be created or made `0700`.
  */
 export function ensureControlDir(controlDir: string): void {
-  throw new Error(`ensureControlDir is not implemented: ${controlDir}`);
+  try {
+    mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+    chmodSync(controlDir, 0o700);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`cannot create or secure the ssh control directory ${controlDir}: ${reason}`, {
+      cause,
+    });
+  }
 }
 
 /**
@@ -199,7 +226,27 @@ export function commandArgv(
   destination: string,
   command: string,
 ): readonly [string, ...string[]] {
-  throw new Error(`commandArgv is not implemented: ${destination}`);
+  const controlPersistSec = Math.max(
+    1,
+    Math.ceil(config.idleTimeoutMs / 1000) + CONTROL_PERSIST_GRACE_SEC,
+  );
+
+  const argv: string[] = [
+    config.sshBinary,
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    `ControlPath=${controlPathFor(config, destination)}`,
+    "-o",
+    `ControlPersist=${controlPersistSec}`,
+    "-o",
+    `ConnectTimeout=${config.connectTimeoutSec}`,
+  ];
+  if (config.batchMode) {
+    argv.push("-o", "BatchMode=yes");
+  }
+  argv.push(...config.sshOptions, destination, command);
+  return argv as [string, ...string[]];
 }
 
 /**
@@ -217,7 +264,14 @@ export function releaseArgv(
   config: SshConfig,
   destination: string,
 ): readonly [string, ...string[]] {
-  throw new Error(`releaseArgv is not implemented: ${destination}`);
+  return [
+    config.sshBinary,
+    "-o",
+    `ControlPath=${controlPathFor(config, destination)}`,
+    "-O",
+    "exit",
+    destination,
+  ];
 }
 
 /**
@@ -262,7 +316,12 @@ export class SshTransport {
       readonly signal?: AbortSignal;
     },
   ): Promise<RunResult> {
-    throw new Error(`SshTransport.run is not implemented: ${destination}`);
+    return this.runner(commandArgv(this.config, destination, command), {
+      cwd: process.cwd(),
+      timeoutMs: options.timeoutMs,
+      maxOutputBytes: options.maxOutputBytes,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
   }
 
   /**
@@ -275,7 +334,18 @@ export class SshTransport {
    * @param destination - the validated ssh destination.
    */
   release(destination: string): Promise<void> {
-    throw new Error(`SshTransport.release is not implemented: ${destination}`);
+    return (async (): Promise<void> => {
+      try {
+        await this.runner(releaseArgv(this.config, destination), {
+          cwd: process.cwd(),
+          timeoutMs: RELEASE_TIMEOUT_MS,
+          maxOutputBytes: RELEASE_MAX_OUTPUT_BYTES,
+        });
+      } catch {
+        // Best effort by contract: a master that is already gone is harmless.
+      }
+      removeControlSocket(controlPathFor(this.config, destination));
+    })();
   }
 
   /**
@@ -283,17 +353,27 @@ export class SshTransport {
    *
    * Starts the same release as {@link release} and returns immediately, because
    * its callers are a disposer and a `process.on("exit")` hook, neither of which
-   * can await anything. The socket is removed here as well; a master that is
-   * still shutting down does not need it again.
+   * can await anything. The socket is deliberately left in place: the release
+   * process was only just started and needs it, and the master removes its own
+   * socket when it exits.
    *
    * @param destination - the validated ssh destination.
    */
   detachRelease(destination: string): void {
-    throw new Error(`SshTransport.detachRelease is not implemented: ${destination}`);
+    try {
+      spawnDetached(releaseArgv(this.config, destination));
+    } catch {
+      // Best effort by contract: this runs during teardown, where there is no
+      // one left to tell about a failure.
+    }
   }
 }
 
 /** Remove one control socket if it is still there, ignoring every failure. */
 function removeControlSocket(path: string): void {
-  throw new Error(`removeControlSocket is not implemented: ${path}`);
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort: whoever is still listening removes its own socket.
+  }
 }
