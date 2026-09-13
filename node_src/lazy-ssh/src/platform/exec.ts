@@ -128,9 +128,10 @@ export function nodeRunner(
  * nothing asynchronous can be awaited at all.
  *
  * Failures are deliberately silent: this is a best-effort cleanup path, and a
- * teardown that throws is worse than a socket file left behind. The idle
- * timeout's own `ControlPersist` backstop is what covers the case where even
- * this does not run.
+ * teardown that throws is worse than a socket file left behind. It is also not
+ * the last line of defence: `SIGKILL` runs no handler at all, so the case where
+ * even this does not run falls to ssh's own `ControlPersist` — which bounds an
+ * abandoned idle master and nothing else. `ssh.ts` states the whole boundary.
  *
  * @param argv - the executable followed by its arguments, passed verbatim.
  */

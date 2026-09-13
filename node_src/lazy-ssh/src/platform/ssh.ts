@@ -24,15 +24,44 @@
  *
  * ## Who ends a connection
  *
- * Two answers, on purpose:
+ * Three paths, and the third one is the one to be honest about:
  *
  * - **Normally, this plugin.** The pool's per-server idle timer calls
  *   {@link SshTransport.release}, which asks the master to exit. That is the
  *   timeout the user configured, observed exactly.
- * - **After a crash, ssh itself.** Every client this module builds also sets
- *   `ControlPersist` to the idle timeout plus a grace period, so a master whose
- *   owner was `SIGKILL`ed still terminates on its own. `ControlPersist` counts
- *   *idle* time, so an actively used connection is never the one it closes.
+ * - **On a graceful shutdown.** Cordis disposes the plugin, which releases every
+ *   master, and a `process.on("exit")` hook repeats the release for a shutdown
+ *   that got no further than `process.exit`.
+ * - **After a hard kill, ssh itself — with a hole in it.** `SIGKILL` runs no
+ *   handler at all, so neither of the above happens. What is left is
+ *   `ControlPersist`, which every client here sets to the idle timeout plus
+ *   {@link CONTROL_PERSIST_GRACE_SEC}: an *idle* master closes itself within that
+ *   window. A call still in flight is a different story — the master has a client,
+ *   so it is not idle and `ControlPersist` never fires, and the orphaned client
+ *   keeps both the connection and the remote command alive until that command
+ *   ends. A remote command that never ends leaves both behind.
+ *
+ * Nothing in the process can close that hole: a `SIGKILL`ed process runs no code,
+ * and OpenSSH detaches the master from it anyway — the binary calls glibc's
+ * `daemon()` (fork plus `setsid`), so the master is in no session or process group
+ * of ours and the terminal's `SIGINT` never reaches it. Closing the hole needs a
+ * process of ours that outlives us; see *Deferred*.
+ *
+ * ## Deferred
+ *
+ * **A keeper process per server.** A dead process cannot clean up after itself,
+ * but the kernel will: hold the write end of a pipe, give the read end to a tiny
+ * `sh` that starts ssh in the background and then blocks on `read`, and any death
+ * — `SIGKILL` included — closes the pipe, ends the read, and lets the keeper
+ * signal ssh. The mechanism was built and verified on Linux (`SIGKILL` of the
+ * holder and a plain `stdin.end()` both ended the child within milliseconds). It
+ * is not what this version does, for a reason worth stating: the master OpenSSH
+ * daemonizes is not a process we own, so a keeper would have to *be* the master's
+ * owner — start it with `-M -N`, wait for it to become ready, notice its death,
+ * restart it — and every call would pay one more `sh`. That is real machinery,
+ * and this version documents the window instead of buying it away. If the window
+ * ever matters, this is where it gets closed, and the experiment above is where
+ * to start.
  *
  * ## What this module never touches
  *
@@ -85,7 +114,14 @@ export interface SshConfig {
   readonly sshOptions: readonly string[];
 }
 
-/** Extra slack on top of the idle timeout before ssh's own backstop closes a master. */
+/**
+ * Extra slack on top of the idle timeout before ssh's own backstop closes a master.
+ *
+ * It exists for a master nobody is left to release: `ControlPersist` counts idle
+ * time, so this is how long an abandoned *idle* master survives a `SIGKILL` of
+ * dsh. It does not bound a master with a call in flight — see the module's *Who
+ * ends a connection*.
+ */
 export const CONTROL_PERSIST_GRACE_SEC = 30;
 
 /** Per-call ceiling for the best-effort release and probe invocations. */

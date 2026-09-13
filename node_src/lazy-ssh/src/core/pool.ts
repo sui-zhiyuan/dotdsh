@@ -189,7 +189,10 @@ export class SshPool {
    * Synchronous by necessity: it is called from a `process.on("exit")` handler,
    * where the event loop is already over. It starts each release and returns;
    * whether any of them completed is not observable from here, which is why ssh's
-   * own `ControlPersist` exists as the final backstop.
+   * own `ControlPersist` exists as the final backstop — and that backstop is a
+   * bounded one: it closes an idle master, never one with a call in flight. A
+   * `SIGKILL` gets neither this method nor the hook that calls it; `ssh.ts` states
+   * what is left in that case.
    */
   abort(): void {
     throw new Error("SshPool.abort is not implemented");

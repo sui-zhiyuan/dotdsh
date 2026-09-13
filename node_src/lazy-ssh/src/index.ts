@@ -8,6 +8,11 @@
  * connection the pool is holding, and a `process.on("exit")` hook covers the
  * shutdowns where nothing asynchronous runs at all.
  *
+ * Neither runs under `SIGKILL`, and the boundary that leaves — an abandoned idle
+ * master for at most `idleTimeoutMs` plus the control-persist grace, and a call
+ * in flight until its remote command ends — is stated in full in
+ * `platform/ssh.ts`. It is a documented cost, not an oversight.
+ *
  * ## Why the plugin is not per-session
  *
  * The connection a session reuses is exactly the connection another session
