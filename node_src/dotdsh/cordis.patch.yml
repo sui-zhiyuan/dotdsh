@@ -80,3 +80,42 @@
   # such process per machine, or give the second its own `controlDir`.
   - id: lazy-ssh
     name: '@dsh-external/dotdsh-lazy-ssh'
+  # Copilot sign-in: the half of a GitHub Copilot subscription that dsh does not
+  # ship. The stock `@deepseek-ai/dsh-llm-pi-ai` adapter already serves the
+  # `github-copilot` route for any `llm-pi-ai:` provider profile in
+  # $DSH_HOME/settings.yaml, and it reads the sign-in out of the credential
+  # record `llm-pi-ai/github-copilot` — but nothing in the harness can *obtain*
+  # that record: the web Models page edits API keys, and the authorization seam
+  # has no client that calls it. This row adds that missing half, and nothing
+  # else.
+  #
+  # Three slash commands, typed by a human and executed without the model:
+  #   /copilot-login   run the device-code flow; it answers with the verification
+  #                    URL and the code as soon as the flow has them, then
+  #                    finishes in the background and stores the grant. Run it
+  #                    again (or /copilot-status) to confirm the outcome.
+  #   /copilot-status  report the stored grant, its expiry, the account's model
+  #                    list, and whether the route is registered at all
+  #   /copilot-logout  remove the stored grant (local only)
+  # The same sign-in runs from a terminal as `dotdsh-copilot-auth login`, this
+  # package's bin: it mounts dsh's own credential provider in a throwaway Cordis
+  # context, so the document format, the 0600 mode, the atomic replace and the
+  # cross-process writer lock are dsh's, not this package's.
+  #
+  # What this row deliberately does NOT do: register the provider route (a
+  # second adapter for `github-copilot` would collide with the stock one),
+  # register any tool (a model must never be able to start an authorization or
+  # drop a grant), or write the profile's settings. So the route still has to be
+  # declared once — `llm-pi-ai: {providers: {github-copilot: {}}}` in
+  # settings.yaml, or the provider row on the Models page — and until it is,
+  # `/copilot-status` says exactly that instead of leaving a signed-in user
+  # wondering why no model appeared.
+  #
+  # A stored grant is validated both before it is written and before it is used:
+  # only the official `proxy-ep` endpoint is accepted, and a payload carrying an
+  # `enterpriseUrl` is refused outright, because pi-ai builds the refresh
+  # endpoint from that field while sending the refresh token to it. GitHub
+  # Enterprise sign-in is therefore not supported by design. `loginWindowMs`
+  # (180000) is the only configuration key.
+  - id: copilot-auth
+    name: '@dsh-external/dotdsh-copilot-auth'
