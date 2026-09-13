@@ -31,6 +31,45 @@
 // namespace, and $DSH_HOME/settings.yaml is the user layer on top of it. Until
 // the first accepted section arrives — and forever without a settings provider —
 // the `settings` object below carries the schema's own defaults.
+// The open-in-editor click handler lives in its own committed script beside this
+// one (clicked-file.js) so this file stays the boot-protocol registration and
+// that behaviour keeps its own file. A classic script has no import, so the
+// second file is injected here — the same `<script src>` technique the module
+// system uses for its own bundles, resolved against THIS script's own URL so no
+// absolute path is ever written down.
+//
+// The handshake is a ready queue rather than a read of the global, because a
+// dynamically inserted `<script src>` loads ASYNCHRONOUSLY: this file's factory
+// may materialize before the sibling has executed (the shell materializes
+// factories after its own preloads, which can outlast one small sibling fetch),
+// and a single read at that instant would then install nothing and silently lose
+// the tweak. So the sibling announces itself through
+// `window.__dshDotdshOpenInEditorReady(exports)` — whichever of the two happens
+// second runs the installer — and the installer is idempotent, so the ordering
+// cannot produce two listeners.
+window.__dshDotdshOpenInEditorReadyQueue = [];
+(() => {
+  /**
+   * Called once by clicked-file.js with the handler's exports. Drains whatever
+   * the factory has already queued and switches to installing immediately, so a
+   * factory that materializes later still works.
+   * @param {object} handler - the handler's exported surface.
+   */
+  window.__dshDotdshOpenInEditorReady = (handler) => {
+    const queued = window.__dshDotdshOpenInEditorReadyQueue;
+    window.__dshDotdshOpenInEditorReadyQueue = { handler };
+    for (const install of queued) install(handler);
+  };
+  const current = document.currentScript;
+  if (current === null || current === undefined) return;
+  const script = document.createElement("script");
+  script.src = new URL("clicked-file.js", current.src).href;
+  script.addEventListener("error", () => {
+    console.error("ui-tweaks: clicked-file.js failed to load; Ctrl/Cmd+click keeps dsh's own preview");
+  });
+  document.head.append(script);
+})();
+
 window.__ModuleLoader__.load({
   id: "@dsh-external/dotdsh-ui-tweaks",
   factory: (require) => {
@@ -50,6 +89,10 @@ window.__ModuleLoader__.load({
      * schema also declares — keep the two in step. A page cannot read the row's
      * config, so these values are what it uses until the first accepted settings
      * section arrives, and forever in a composition with no settings provider.
+     *
+     * `openInVscode`/`editorCommand` are deliberately absent: those two are
+     * enforced by the host route, which is the only side that can act on them, so
+     * the page reads neither and cannot disagree with the authority.
      * @type {{composerEnterNewline: boolean, statusWording: boolean, statusPhrases: string[]}}
      */
     const settings = {
@@ -57,6 +100,20 @@ window.__ModuleLoader__.load({
       statusWording: true,
       statusPhrases: [],
     };
+
+    /**
+     * The open-in-editor installers waiting for the sibling script, or the
+     * handler itself once it has arrived.
+     *
+     * A factory may materialize before the injected script has executed, so this
+     * cannot be a single read: `installOpenInEditor` pushes an installer here and
+     * `window.__dshDotdshOpenInEditorReady` (installed by the preamble above)
+     * drains the list — or, if the sibling already ran, hands the handler
+     * straight over. `openInEditor` below is that second state.
+     */
+    const openInEditorInstallers = window.__dshDotdshOpenInEditorReadyQueue;
+    const openInEditorArrived = openInEditorInstallers !== null && typeof openInEditorInstallers === "object" && !Array.isArray(openInEditorInstallers);
+    const openInEditor = openInEditorArrived ? openInEditorInstallers.handler : undefined;
 
     /** The resident composer's editable host (ComposerContentEditable's attribute). */
     const COMPOSER_INPUT = "[data-composer-input]";
@@ -318,6 +375,52 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Install the Ctrl/Cmd+click → editor tweak.
+     *
+     * No settings field is read here. Two reasons, and both matter:
+     * `openInVscode`/`editorCommand` are enforced by the HOST — the route answers
+     * `available: false` when the switch is off or the command does not resolve —
+     * so a page that read them again would only be able to disagree with the
+     * authority; and unlike the tweaks above, this one cannot act on a
+     * late-arriving section anyway, because a settings commit may land long after
+     * the listener's one-time availability probe.
+     *
+     * A missing sibling script is a supported state, not an error: the page then
+     * keeps dsh's own preview for every click.
+     * @param ctx - Client root Context, whose `sessions` service supplies the
+     *   current session's workspace root.
+     * @returns the no-op {@link apply}'s aggregate disposer requires — NOT a
+     *   claim of ownership: the handler installs its listener inside its own
+     *   `ctx.effect` on this same context, so the fiber owns the removal (see the
+     *   comment in the body).
+     */
+    function installOpenInEditor(ctx) {
+      // The sibling script may not have executed yet (injected scripts load
+      // asynchronously and the shell can materialize this factory first), so an
+      // installer is QUEUED when the handler is not here yet, and runs the moment
+      // it arrives. The queue drains exactly once and this function is called
+      // once per plugin activation, so the ordering cannot double-install.
+      const install = (openInEditor) => {
+        if (openInEditor === undefined || typeof openInEditor.apply !== "function") return;
+        // Deliberately NOT wrapped in a `ctx.effect` of our own.
+        // `openInEditor.apply` is synchronous by contract and installs its
+        // capture-phase click listener inside its OWN `ctx.effect` on this very
+        // context, so the listener already belongs to this plugin's fiber and is
+        // removed when the row unloads. It returns nothing, so there is no
+        // disposer here to forward; adding a second effect would own nothing and
+        // only invite a duplicate listener. The no-op below is what `apply`'s
+        // aggregate disposer needs, not a claim of ownership.
+        openInEditor.apply(ctx);
+      };
+      if (openInEditor !== undefined) {
+        install(openInEditor);
+      } else if (Array.isArray(window.__dshDotdshOpenInEditorReadyQueue)) {
+        window.__dshDotdshOpenInEditorReadyQueue.push(install);
+      }
+      return () => {};
+    }
+
+    /**
      * Every small browser-side tweak this package owns, in install order: the
      * reason this is one generalized package rather than one package per tweak.
      * Each one names the settings field that switches it.
@@ -333,6 +436,11 @@ window.__ModuleLoader__.load({
         id: "llm-status-wording",
         description: "While a turn runs, the Chinese chat status line shows a random DeepSeek meme phrase. Settings: statusWording, statusPhrases.",
         install: installLlmStatusWording,
+      },
+      {
+        id: "open-in-editor",
+        description: "Ctrl/Cmd+click on a file in the produced-files row or the sidebar tree opens it in the configured editor. Settings: openInVscode, editorCommand (both enforced by the host route).",
+        install: installOpenInEditor,
       },
     ];
 
