@@ -10,9 +10,9 @@
  * }
  * ```
  *
- * An entry's `execute` is always the registry's own shape — `(args, execution)` —
- * even for a tool that takes no arguments: the adapter lives in the list below
- * rather than in the handler's signature.
+ * An entry's `execute` is always the registry's own shape — `(args, execution)`.
+ * A tool whose descriptor declares no parameters is no exception: it is called
+ * with the same two arguments and reads `{}` where the others read their fields.
  *
  * ## How a tool differs from the command that does the same thing
  *
@@ -218,16 +218,18 @@ async function gitCompleteTool(
 /**
  * `git_cleanup` — reclaim what unrecoverable sessions left behind.
  *
- * Takes no argument: a sweep is "now", and its scope — the sessions that can
- * still be resumed — is read the same way the command reads it, from the calling
- * agent rather than from the model. Everything outside that scope loses its
- * claim, its worktree and its branch.
+ * Declares no arguments — a sweep is "now" — so the registry hands it the empty
+ * object its schema describes. Its scope, the sessions that can still be resumed,
+ * is read the same way the command reads it: from the calling agent rather than
+ * from the model. Everything outside that scope loses its claim, its worktree and
+ * its branch.
  *
+ * @param _args - the validated argument object; empty by declaration.
  * @param execution - the call, whose agent carries the session, the runner and
  *   the sweep scope.
  * @returns what the sweep did.
  */
-async function gitCleanupTool(execution: ToolRunContext): Promise<string> {
+async function gitCleanupTool(_args: Record<string, never>, execution: ToolRunContext): Promise<string> {
   // One view, built once: the facts carry the runner and the repository, while
   // the sweep scope is only reachable through the session store on the agent.
   const agent = sessionAgentOf(execution.agent);
@@ -252,10 +254,9 @@ async function gitCleanupTool(execution: ToolRunContext): Promise<string> {
 export const GIT_FLOW_TOOLS: readonly GitFlowTool<never>[] = [
   { descriptor: GIT_START_TOOL, execute: gitStartTool },
   { descriptor: GIT_COMPLETE_TOOL, execute: gitCompleteTool },
-  // Adapted rather than passed straight through: the registry calls every
-  // executor as `(args, execution)`, and `git_cleanup` takes no arguments at all —
-  // its sweep scope comes from the calling agent, not from the model — so its
-  // executor is handed the execution alone. Listing the bare function here would
-  // feed it the empty argument object and drop the context.
-  { descriptor: GIT_CLEANUP_TOOL, execute: (_args, execution) => gitCleanupTool(execution) },
+  // Listed bare like the others: it reads `(args, execution)` too, and its
+  // descriptor declares the argument object empty, so what arrives is `{}` —
+  // "takes no arguments" describes the model's side of the call, not the shape
+  // the registry invokes.
+  { descriptor: GIT_CLEANUP_TOOL, execute: gitCleanupTool },
 ];

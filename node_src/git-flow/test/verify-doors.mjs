@@ -281,12 +281,12 @@ await check("every command answer is a CommandResult", async () => {
   }
 });
 
-await check("git_cleanup runs through the list, which is where its signature differs", async () => {
-  // The registry calls every executor as `(args, execution)`, while `git_cleanup`
-  // takes no arguments at all — its sweep scope comes from the calling agent. The
-  // entry in `GIT_FLOW_TOOLS` adapts that call, and this check exists because the
-  // first version of the list passed the handler straight through, handing it the
-  // empty argument object as its execution.
+await check("git_cleanup is called with the registry's two arguments, an empty one first", async () => {
+  // Every executor is invoked as `(args, execution)`, including the tool whose
+  // descriptor declares no parameters. This check exists because the first version
+  // of `git_cleanup` took the execution alone: the registry then handed the empty
+  // argument object to that parameter and the real context was dropped, so every
+  // call threw "not a live agent".
   const repo = await scratchRepo();
   try {
     const { agent } = makeAgent(sessionId("cmd-sweep"), repo.root);
