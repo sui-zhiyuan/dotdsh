@@ -36,6 +36,8 @@
  * @module @dsh-external/dotdsh-git-flow/exec
  */
 
+import { spawn } from "node:child_process";
+
 /** One finished process. */
 export interface RunResult {
   /** Exit code; `-1` when the child was killed by a signal instead of exiting. */
@@ -94,10 +96,14 @@ export class GitError extends Error {
    * @param result - the finished process, whose stderr is quoted in the message.
    */
   constructor(args: readonly string[], result: RunResult) {
-    // A derived constructor has to call `super` before it may throw; the message
-    // this error ends up carrying is the implementation's business.
-    super();
-    throw new Error("GitError is not implemented");
+    // The message quotes whichever stream said something: git puts the diagnosis
+    // on stderr, but a usage error can land on stdout.
+    const detail = result.stderr.trim() || result.stdout.trim() || "no output";
+    super(`git ${args.join(" ")} failed (exit ${result.code}): ${detail}`);
+    this.name = "GitError";
+    this.args = args;
+    this.code = result.code;
+    this.stderr = result.stderr.trim();
   }
 }
 
@@ -135,7 +141,8 @@ export class GitClient {
    *   client forces {@link GIT_ENV} and nothing above this module asks for more.
    */
   constructor(runner: Runner, cwd: string) {
-    throw new Error("GitClient is not implemented");
+    this.runner = runner;
+    this.cwd = cwd;
   }
 
   /**
@@ -146,7 +153,11 @@ export class GitClient {
    * @returns the exit code and both decoded streams.
    */
   run(args: readonly string[], options?: GitCallOptions): Promise<RunResult> {
-    throw new Error("GitClient.run is not implemented");
+    return this.runner(["git", ...args], {
+      cwd: this.cwd,
+      env: GIT_ENV,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
   }
 
   /**
@@ -158,8 +169,10 @@ export class GitClient {
    * @throws GitError when git exits non-zero — the shape every caller above
    *   turns into the command and the message it shows a human.
    */
-  text(args: readonly string[], options?: GitCallOptions): Promise<string> {
-    throw new Error("GitClient.text is not implemented");
+  async text(args: readonly string[], options?: GitCallOptions): Promise<string> {
+    const result = await this.run(args, options);
+    if (result.code !== 0) throw new GitError(args, result);
+    return result.stdout.trim();
   }
 
   /**
@@ -173,8 +186,8 @@ export class GitClient {
    * @param options - optional cancellation.
    * @returns whether git exited zero.
    */
-  ok(args: readonly string[], options?: GitCallOptions): Promise<boolean> {
-    throw new Error("GitClient.ok is not implemented");
+  async ok(args: readonly string[], options?: GitCallOptions): Promise<boolean> {
+    return (await this.run(args, options)).code === 0;
   }
 }
 
@@ -194,5 +207,28 @@ export function nodeRunner(
   argv: readonly [string, ...string[]],
   options: RunnerOptions,
 ): Promise<RunResult> {
-  throw new Error("nodeRunner is not implemented");
+  return new Promise((resolve, reject) => {
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...options.env },
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+  });
 }

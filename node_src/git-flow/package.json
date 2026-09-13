@@ -33,7 +33,8 @@
     "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "smol-toml": "^1.8.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
