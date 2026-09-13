@@ -19,10 +19,13 @@ export const SETTINGS_NAMESPACE = "ui-tweaks";
  * Configuration of the tweak set: one switch per tweak, plus the extra wording
  * and the editor command.
  *
- * The browser half mirrors these field names — and their defaults — in its own
- * settings seed (`client/index.js`), because a page cannot read its row's
+ * The browser half mirrors the PAGE-OWNED field names — and their defaults — in
+ * its own settings seed (`client/index.js`), because a page cannot read its row's
  * config: the boot graph carries no config, so the settings namespace is the one
- * channel. `test/verify-host.mjs` pins that the two lists stay in step.
+ * channel. `openInVscode` and `editorCommand` are deliberately NOT mirrored: they
+ * are enforced by the host routes, which are the only side that can act on them,
+ * so a page copy could only disagree with the authority. `test/verify-host.mjs`
+ * pins which fields each side reads.
  */
 export interface Config {
   /**
@@ -61,7 +64,7 @@ export interface Config {
  * row's `config` as the settings `base` layer, then the user layer in
  * `$DSH_HOME/settings.yaml`. Its serialized form is also the wire envelope the
  * browser scope validates the resolved section against, which is why the browser
- * half's defaults mirror the five defaults below.
+ * half's seed mirrors the three page-owned defaults below (see the note above).
  */
 export const Config: z<Config> = z.object({
   composerEnterNewline: z.boolean().default(true),

@@ -309,8 +309,11 @@ export function workspaceRootOf(ctx: Context, sessionId: SessionId): string | un
  *   most 64 KiB; anything else is `415` / `413`.
  * - the body is validated field by field at the wire (`sessionId`, `path`, and
  *   an optional integer `line`); a malformed body is `400`, not a crash.
- * - every response is `no-store` JSON, because availability and launch outcomes
- *   are live facts about this machine.
+ * - every JSON response (both routes' payloads and every failure a route reports
+ *   itself) is `no-store`, because availability and launch outcomes are live
+ *   facts about this machine. The two bodiless answers are the exception and
+ *   deliberately plain: the trust fence's rejection and the `405` write a status
+ *   (the `405` also an `allow`) and no body.
  *
  * Status mapping for the launch route (the reason travels in the body as well):
  * - `disabled` / `not-installed` -> `503` (this machine cannot do it now; the
