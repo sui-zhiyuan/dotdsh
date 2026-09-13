@@ -1,0 +1,198 @@
+/**
+ * The git client: one runner seam, plus the small vocabulary every other module
+ * speaks.
+ *
+ * The runner is injected rather than imported so that this plugin has exactly
+ * one process-spawning site in production and none in its tests:
+ *
+ * - **In the harness** the runner is built on `ctx.subprocess`, whose
+ *   `spawn({ argv })` is *never shell-interpreted*. That matters more here than
+ *   anywhere else in the plugin: a branch name, a path and — above all — a
+ *   commit message are model- and human-supplied strings, and building a command
+ *   line out of them would let a quote or a `$(…)` change what runs. Passing
+ *   every argument as its own argv element makes that class of bug impossible
+ *   rather than merely unlikely.
+ * - **In the committed tests** the runner is {@link nodeRunner}, a plain
+ *   `node:child_process` spawn, so `pnpm test` needs no harness, no profile and
+ *   no network to exercise the whole git workflow against a scratch repository.
+ *
+ * The trade-off this seam accepts, stated plainly: `ctx.subprocess.spawn` takes
+ * an `argv`, while the confinement that `ctx.shell` can apply takes a command
+ * *string*. This plugin chooses argv-exactness and does not confine the git
+ * child. The work it does is inside the session's own workspace and repository,
+ * and it is reached only through an explicit human command.
+ *
+ * A client is bound to one working directory by its constructor and never
+ * re-bound: to work in another tree, construct another client over the same
+ * runner. Binding is an argument, not a method, because a client that can turn
+ * into a different client is how a merge ends up in the wrong tree.
+ *
+ * ## Layer
+ *
+ * The platform: the outside world. This layer starts processes and reads and
+ * writes files, and it imports nothing above it — neither `core` nor the
+ * boundary. The dependency only ever points down.
+ *
+ * @module @dsh-external/dotdsh-git-flow/exec
+ */
+
+/** One finished process. */
+export interface RunResult {
+  /** Exit code; `-1` when the child was killed by a signal instead of exiting. */
+  readonly code: number;
+  /** Decoded standard output. */
+  readonly stdout: string;
+  /** Decoded standard error. */
+  readonly stderr: string;
+}
+
+/** What one process invocation needs. */
+export interface RunnerOptions {
+  /** Directory the child runs in. */
+  readonly cwd: string;
+  /** Cancellation owned by the caller. */
+  readonly signal?: AbortSignal;
+  /**
+   * Environment entries layered over the runner's own.
+   *
+   * Internal plumbing, not a caller knob: it is how {@link GIT_ENV} reaches the
+   * child, and no module above this one sets it.
+   */
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Anything that can run one process and report its result.
+ *
+ * The whole plugin's testability rests on this being the only place a process is
+ * started.
+ */
+export type Runner = (
+  argv: readonly [string, ...string[]],
+  options: RunnerOptions,
+) => Promise<RunResult>;
+
+/** Per-call options for one git invocation. */
+export interface GitCallOptions {
+  /** Cancellation owned by the caller. */
+  readonly signal?: AbortSignal;
+}
+
+/** A git invocation that exited non-zero. */
+export class GitError extends Error {
+  /** The arguments as passed, without the program name. */
+  readonly args: readonly string[];
+  /** The captured exit code. */
+  readonly code: number;
+  /** The captured standard error, trimmed. */
+  readonly stderr: string;
+
+  /**
+   * Build the error for one failed invocation.
+   *
+   * @param args - git's arguments, as passed.
+   * @param result - the finished process, whose stderr is quoted in the message.
+   */
+  constructor(args: readonly string[], result: RunResult) {
+    // A derived constructor has to call `super` before it may throw; the message
+    // this error ends up carrying is the implementation's business.
+    super();
+    throw new Error("GitError is not implemented");
+  }
+}
+
+/**
+ * Environment forced onto every git invocation.
+ *
+ * `LC_ALL=C` keeps git's own messages stable enough to quote back to a human;
+ * `GIT_TERMINAL_PROMPT=0` turns a missing credential into an immediate failure
+ * instead of a process waiting on a terminal that will never answer;
+ * `GIT_OPTIONAL_LOCKS=0` stops read-only commands such as `status` from taking
+ * the index lock just to refresh it, which is what lets a guard run git while
+ * another session is mid-commit.
+ *
+ * Not exported: it is a property of every client, not a caller's choice.
+ */
+const GIT_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+  LC_ALL: "C",
+};
+
+/** Git, bound to one working directory. */
+export class GitClient {
+  /** The directory git runs in. */
+  readonly cwd: string;
+  /** The process seam every invocation of this client goes through. */
+  private readonly runner: Runner;
+
+  /**
+   * Bind a runner to a working directory.
+   *
+   * @param runner - the process runner to use. The same runner binds as many
+   *   working trees as a caller needs, one client each.
+   * @param cwd - the directory git runs in. No environment parameter: every
+   *   client forces {@link GIT_ENV} and nothing above this module asks for more.
+   */
+  constructor(runner: Runner, cwd: string) {
+    throw new Error("GitClient is not implemented");
+  }
+
+  /**
+   * Run git and return the raw result, including on failure.
+   *
+   * @param args - git's arguments.
+   * @param options - optional cancellation.
+   * @returns the exit code and both decoded streams.
+   */
+  run(args: readonly string[], options?: GitCallOptions): Promise<RunResult> {
+    throw new Error("GitClient.run is not implemented");
+  }
+
+  /**
+   * Run git and return its trimmed stdout.
+   *
+   * @param args - git's arguments.
+   * @param options - optional cancellation.
+   * @returns the trimmed standard output.
+   * @throws GitError when git exits non-zero — the shape every caller above
+   *   turns into the command and the message it shows a human.
+   */
+  text(args: readonly string[], options?: GitCallOptions): Promise<string> {
+    throw new Error("GitClient.text is not implemented");
+  }
+
+  /**
+   * Run git and report whether it succeeded, discarding all output.
+   *
+   * This is the predicate form for the many git questions whose answer is an
+   * exit code: `merge-base --is-ancestor`, `check-ignore`, `diff --quiet`,
+   * `rev-parse --verify`.
+   *
+   * @param args - git's arguments.
+   * @param options - optional cancellation.
+   * @returns whether git exited zero.
+   */
+  ok(args: readonly string[], options?: GitCallOptions): Promise<boolean> {
+    throw new Error("GitClient.ok is not implemented");
+  }
+}
+
+/**
+ * The standalone runner: `node:child_process` with no shell.
+ *
+ * Exported for the committed tests and for any caller that has no harness
+ * `ctx.subprocess` at hand. Production code inside a profile uses the
+ * `ctx.subprocess`-backed runner instead, which additionally scopes the child to
+ * the harness's teardown and env hygiene.
+ *
+ * @param argv - the executable followed by its arguments, passed verbatim.
+ * @param options - cwd, cancellation, and environment entries.
+ * @returns the exit code and both decoded streams.
+ */
+export function nodeRunner(
+  argv: readonly [string, ...string[]],
+  options: RunnerOptions,
+): Promise<RunResult> {
+  throw new Error("nodeRunner is not implemented");
+}

@@ -1,0 +1,110 @@
+/**
+ * The pre-write guard: one hook, one question — may this session change that file?
+ *
+ * `tools/pre-execute` is a waterfall that runs before a call is dispatched and
+ * may return `allow`, `deny` or `ask`, which is what makes the answer
+ * enforceable rather than advisory. Two properties of that seam shape everything
+ * below:
+ *
+ * - **arguments cannot be rewritten.** There is no such decision variant, and
+ *   `exec.arguments` is frozen before listeners run, so what was logged and what
+ *   ran cannot diverge. A guard therefore either lets a call through or refuses
+ *   it, and the refusal's text has to carry the correction.
+ * - **it is on the hot path.** Nothing here runs more than it must: the tool name
+ *   is filtered first, the declared path second, and only then is anything asked
+ *   of the repository.
+ *
+ * ## What it decides, and what it refuses to decide
+ *
+ * It answers `allow` or `deny`, and never `ask`: the guard is not where a human
+ * is consulted. It also never *starts* anything on its own initiative. A session
+ * that may not write is told so, in the terms the model needs — "call `git_start`
+ * with a branch name, then repeat the change" — and the model decides what to do
+ * about it. Naming a feature and opening a branch are the model's calls, made
+ * where a human can be asked; a guard that made them itself would be deciding
+ * with no one watching.
+ *
+ * ## The rules
+ *
+ * A write is allowed when it lands inside the tree its own family claimed, and
+ * refused otherwise:
+ *
+ * 1. only the harness's file-mutating tools are its business — everything else
+ *    is `next()`;
+ * 2. a call that declares no target is `next()`: there is nothing to check;
+ * 3. a target outside the repository is `next()`: this plugin has no opinion
+ *    about files it does not own;
+ * 4. a family with no claim is refused, and told to open a branch first — this is
+ *    the ordinary first-write case, not an error;
+ * 5. a family with a claim writes inside its worktree and nowhere else. A write
+ *    aimed at the main tree is refused with the path to use instead, because that
+ *    is the one place the model cannot derive: it does not know where the family
+ *    was put.
+ *
+ * The Bash tool is deliberately absent. Its arguments name a command, not a
+ * path, so it can neither be checked for containment nor told apart from
+ * `git status` — and a rule that refused every shell command would be worse than
+ * the hole it closed.
+ *
+ * ## Layer
+ *
+ * The boundary: dsh calls in here, and this is the only layer that talks to it.
+ * References point downward — `core` and `platform` are both fair game — and
+ * never upward: nothing below this layer may import it.
+ *
+ * @module @dsh-external/dotdsh-git-flow/guard
+ */
+
+import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
+import { ensureWorkspace } from "../core/core.js";
+import { factsFor, sessionAgentOf } from "./shared.js";
+
+/**
+ * Decide one tool call.
+ *
+ * The rules are in this module's header; what matters here is the order they run
+ * in. The cheap filters come first — the tool name, then the declared path, which
+ * is `file_path` for `write` and `edit` and `path` for `str_replace_editor`
+ * unless its sub-command is `view` — because this runs before *every* tool call
+ * the session makes, and the repository is asked nothing until a call has
+ * survived them. The containment test is the other piece that stays here: a
+ * single relative-path comparison, used once, with nothing to share it with.
+ *
+ * The two refusals are the whole of the guard's output, and both are addressed to
+ * the model rather than to a human:
+ *
+ * - **no claim** — the session has no branch and no tree yet, so a change has
+ *   nowhere to land. The refusal says to name the feature (asking the human when
+ *   the conversation does not already say) and call `git_start`, then repeat the
+ *   change;
+ * - **outside the tree** — the family writes in its own worktree and nowhere
+ *   else. The refusal names the exact path to use instead, because the model
+ *   cannot derive where its family was put.
+ *
+ * @param execution - the pending call: name, arguments, and calling agent.
+ * @param next - the waterfall continuation, which allows the call.
+ * @returns the decision.
+ */
+async function beforeToolCall(
+  execution: ToolExecution,
+  next: () => Promise<PreToolDecision>,
+): Promise<PreToolDecision> {
+  throw new Error("beforeToolCall is not implemented");
+}
+
+/**
+ * The one hook this plugin intercepts.
+ *
+ * A single object rather than a list: there is exactly one interception point,
+ * and a list of one would only invite the question of what a second would mean.
+ * Typed `as const` so `hook` stays the literal the harness's listener overloads
+ * resolve against. The wiring module registers it as it stands:
+ *
+ * ```ts
+ * ctx.effect(() => ctx.on(GIT_FLOW_INTERCEPTOR.hook, GIT_FLOW_INTERCEPTOR.handle));
+ * ```
+ */
+export const GIT_FLOW_INTERCEPTOR = {
+  hook: "tools/pre-execute",
+  handle: beforeToolCall,
+} as const;
