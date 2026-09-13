@@ -52,7 +52,7 @@ export const OPEN_IN_EDITOR_LAUNCH_ROUTE = `${OPEN_IN_EDITOR_ROUTE_BASE}/launch`
  * already finished dispatching, so a decision made from it could no longer
  * cancel dsh's own preview.
  */
-export interface OpenInEditorStatusPayload {
+export interface OpenInEditorStatusResp {
   /** Whether `openInVscode` is on AND the editor command resolves on this host. */
   readonly available: boolean;
   /** The resolved absolute executable path, when available (diagnostics). */
@@ -62,7 +62,7 @@ export interface OpenInEditorStatusPayload {
 }
 
 /** `POST` body of {@link OPEN_IN_EDITOR_LAUNCH_ROUTE}. */
-export interface OpenInEditorLaunchPayload {
+export interface OpenInEditorLaunchReq {
   /**
    * The session whose workspace root resolves a relative `path`. Required: the
    * host resolves the root from the session rather than trusting a root the
@@ -76,14 +76,14 @@ export interface OpenInEditorLaunchPayload {
 }
 
 /** `POST` 200 body: the file was handed to the editor. */
-export interface OpenInEditorLaunchedPayload {
+export interface OpenInEditorLaunchedResp {
   readonly ok: true;
   /** Canonical absolute path that was opened. */
   readonly file: string;
 }
 
 /** `POST` non-200 body: nothing was opened, and why. */
-export interface OpenInEditorFailurePayload {
+export interface OpenInEditorFailureResp {
   readonly ok: false;
   /** Machine-readable cause; the browser only needs to know that it was not opened. */
   readonly reason: string;
@@ -146,7 +146,7 @@ export function workspaceRootOf(ctx: Context, sessionId: SessionId): string | un
  *   page falls back to dsh's preview).
  * - `unresolvable` / `outside-workspace` -> `404` / `403`.
  * - `launch-failed` -> `502`.
- * - success -> `200` with {@link OpenInEditorLaunchedPayload}.
+ * - success -> `200` with {@link OpenInEditorLaunchedResp}.
  *
  * The route never throws to the server: a handler rejection would leave the
  * response open, so every failure path answers.

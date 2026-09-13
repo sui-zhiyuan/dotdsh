@@ -58,10 +58,10 @@ export { Config, SETTINGS_NAMESPACE } from "./settings.js";
 export type { Config as UiTweaksConfig } from "./settings.js";
 export type { EditorLaunchFailure, EditorLaunchResult } from "./editor-launch.js";
 export type {
-  OpenInEditorFailurePayload,
-  OpenInEditorLaunchPayload,
-  OpenInEditorLaunchedPayload,
-  OpenInEditorStatusPayload,
+  OpenInEditorFailureResp,
+  OpenInEditorLaunchReq,
+  OpenInEditorLaunchedResp,
+  OpenInEditorStatusResp,
 } from "./open-in-vscode.js";
 
 /**
