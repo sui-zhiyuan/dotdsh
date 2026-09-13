@@ -128,6 +128,14 @@ export const CONTROL_PERSIST_GRACE_SEC = 30;
 export const RELEASE_TIMEOUT_MS = 10_000;
 
 /**
+ * Output kept from a release invocation.
+ *
+ * Small on purpose: `ssh -O exit` answers with at most one short line, and this
+ * cap exists only so the release path cannot be the one that grows a buffer.
+ */
+const RELEASE_MAX_OUTPUT_BYTES = 4_096;
+
+/**
  * Refuse a destination that could be read as an option or cannot be a host.
  *
  * The destination is model-supplied and becomes the argument ssh dials, so a
@@ -241,14 +249,18 @@ export class SshTransport {
    *
    * @param destination - the validated ssh destination.
    * @param command - the remote command, interpreted by the remote shell.
-   * @param options - the caller's deadline and cancellation for this call.
+   * @param options - the caller's deadline, output cap and cancellation for this call.
    * @returns ssh's result: the remote exit status, both streams, and how the call ended.
    * @throws the abort reason when the caller cancels.
    */
   run(
     destination: string,
     command: string,
-    options: { readonly timeoutMs: number; readonly signal?: AbortSignal },
+    options: {
+      readonly timeoutMs: number;
+      readonly maxOutputBytes: number;
+      readonly signal?: AbortSignal;
+    },
   ): Promise<RunResult> {
     throw new Error(`SshTransport.run is not implemented: ${destination}`);
   }
