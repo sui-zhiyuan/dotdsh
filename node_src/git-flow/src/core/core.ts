@@ -54,6 +54,17 @@ import type { Runner } from "../platform/exec.js";
  */
 const WORKTREE_ROOT = ".dsh.local/worktrees";
 
+/**
+ * How old a claim must be before a sweep may take it.
+ *
+ * Unrecoverable is not enough on its own. A session that was archived a minute
+ * ago is one a human may be about to reopen, and a sweep that ran in that window
+ * would take the worktree out from under a family that was coming back. A day is
+ * long enough that nobody is still coming back for it, and short enough that a
+ * dead worktree does not sit there for a week.
+ */
+const CLAIM_SWEEP_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** Where one family works: the branch it commits on, and the tree it writes in. */
 export interface FamilyWorkspace {
   /** The family's feature branch. */
@@ -264,21 +275,25 @@ export async function gitComplete(
  * A session that was killed, or whose turn ended without `/git-complete`, leaves
  * a claim behind, usually with a worktree and a branch. Until that session is
  * archived it can still come back and expect its worktree to be there, so the
- * sweep is gated on recoverability, not on liveness: the caller passes what can
- * still be resumed, and everything else is fair game.
+ * sweep is gated on recoverability rather than on liveness: the caller passes
+ * what can still be resumed, and everything else is a candidate.
  *
  * Contract:
  *
- * - every claim whose session id is **not** in `resumableSessionIds` is visited;
+ * - a claim is visited when its session id is **not** in `resumableSessionIds`
+ *   **and** the claim is older than {@link CLAIM_SWEEP_AGE_MS}. Both conditions
+ *   are required: unrecoverable alone is too eager — a session archived a minute
+ *   ago may be resumed by the human still sitting in front of it — and old alone
+ *   would take a tree from a live session;
  * - its claim record is dropped from the claim file, its memo entry is dropped,
  *   its feature branch is deleted and its worktree removed;
- * - a claim held by a session that can still be resumed is left exactly as it is.
+ * - every other claim is left exactly as it is.
  *
  * @param runner - the process seam every git call goes through.
  * @param repoRoot - absolute path of the repository's main working tree.
  * @param resumableSessionIds - session ids that can still be resumed, and whose
- *   claims are therefore off limits. A claim outside this set belongs to a
- *   session that is archived and can no longer come back for it.
+ *   claims are therefore off limits whatever their age. A claim outside this set
+ *   belongs to a session that is archived and can no longer come back for it.
  */
 export async function gitClean(
   runner: Runner,
