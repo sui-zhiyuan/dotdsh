@@ -9,6 +9,7 @@
   "dependencies": {
     "@dsh-external/dotdsh-git-flow": "workspace:*",
     "@dsh-external/dotdsh-hello-world": "workspace:*",
+    "@dsh-external/dotdsh-lazy-ssh": "workspace:*",
     "@dsh-external/dotdsh-ui-tweaks": "workspace:*"
   },
   "dsh": {
