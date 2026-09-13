@@ -365,10 +365,20 @@ window.__ModuleLoader__.load({
      * keeps dsh's own preview for every click.
      * @param ctx - Client root Context, whose `sessions` service supplies the
      *   current session's workspace root.
-     * @returns the disposer removing the click listener.
+     * @returns the no-op {@link apply}'s aggregate disposer requires — NOT a
+     *   claim of ownership: the handler installs its listener inside its own
+     *   `ctx.effect` on this same context, so the fiber owns the removal (see the
+     *   comment in the body).
      */
     function installOpenInEditor(ctx) {
       if (openInEditor === undefined || typeof openInEditor.apply !== "function") return () => {};
+      // Deliberately NOT wrapped in a `ctx.effect` of our own. `openInEditor.apply`
+      // is synchronous by contract and installs its capture-phase click listener
+      // inside its OWN `ctx.effect` on this very context, so the listener already
+      // belongs to this plugin's fiber and is removed when the row unloads. It
+      // returns nothing, so there is no disposer here to forward; adding a second
+      // effect would own nothing and only invite a duplicate listener. The no-op
+      // below is what `apply`'s aggregate disposer needs, not a claim of ownership.
       openInEditor.apply(ctx);
       return () => {};
     }
