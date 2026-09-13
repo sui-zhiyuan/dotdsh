@@ -25,12 +25,16 @@
  * authenticates anything, that the control socket is really a credential, that
  * the control directory is on a filesystem a real ssh would accept, or that
  * `nodeRunner` behaves like the harness's own subprocess service. The fake ssh
- * decides "master" and "join" from a marker file; that is this check's stand-in
- * for OpenSSH's behaviour, not a measurement of it. Nor does it prove the idle
- * timer is exact to the millisecond — timers are only ever asserted to fall
- * inside a window wide enough to survive a loaded machine.
+ * decides "master" and "join" from a marker file, and it reproduces a mux
+ * client's held-open pipes with a subshell that inherits its streams; both are
+ * this check's stand-in for OpenSSH's behaviour, not a measurement of it. The
+ * deadline checks therefore prove that a runner resolving on `close` cannot
+ * settle at its deadline, not that a real master holds pipes the way this
+ * stand-in does. Nor does it prove the idle timer is exact to the millisecond —
+ * timers are only ever asserted to fall inside a window wide enough to survive a
+ * loaded machine.
  */
-import { statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -52,6 +56,7 @@ import {
   controlPathFor,
   deferred,
   fakePool,
+  processAlive,
   readEvents,
   realSeam,
   report,
@@ -641,6 +646,116 @@ await check("a command that outlives its own deadline is killed, reported timedO
     assert.ok(elapsed < 5000, `the call must end at its deadline, not at the remote command's: ${elapsed} ms`);
   } finally {
     await pool.dispose();
+    await seam.cleanup();
+  }
+});
+
+await check("the deadline settles the call at its deadline even while the child's pipes are still held open", async () => {
+  // The regression this pins is a live one, found against a real sshd with a
+  // remote `sleep 30` under an 800 ms deadline: the call SETTLED at 30.02 s, with
+  // ssh's own 255, because it resolved on the child's `close`. A multiplexing ssh
+  // client hands its standard streams to the master over the control socket, so
+  // when the client dies the master keeps the pipes and `close` waits for the
+  // REMOTE command. The fake ssh's `orphan` command is that shape: it starts a
+  // writer that inherits its stdout and stderr and outlives it, prints one line,
+  // and exits 255 at once. Only the writer closing the pipes, two seconds later,
+  // lets the child's `close` fire.
+  //
+  // The earlier deadline check cannot see this: its `block` command is a shell
+  // loop that dies on SIGTERM and takes its pipes with it, so `close` arrives
+  // promptly and a resolve-on-close runner looks correct.
+  const seam = await realSeam();
+  const pool = seamPool(seam);
+  try {
+    const started = Date.now();
+    const result = await pool.run({ destination: "deploy@build-01", command: "orphan", timeoutMs: 300 });
+    const elapsed = Date.now() - started;
+
+    // Roughly the deadline, and nowhere near the writer's two seconds.
+    assert.ok(
+      elapsed < 1_500,
+      `the call must settle at its deadline, not when the writer lets go of the pipes: ${elapsed} ms`,
+    );
+    assert.equal(result.timedOut, true);
+    // `-1`, not the 255 the child itself exited with: the deadline is the bound,
+    // so the settled result describes the kill rather than the child's status.
+    assert.equal(result.exitCode, -1);
+    // Everything that had arrived before the deadline is still reported...
+    assert.equal(result.stdout, "early-line\n");
+    // ...and collection stops there: the late line is never in the result.
+    assert.ok(!result.stdout.includes("late-line"), "collection must stop when the call settles");
+
+    // And no stray writer: its last act is to record that it finished, so the
+    // check waits for that instead of returning while it still holds the pipes.
+    await waitFor(() => readEvents(seam.logPath).some((event) => event.kind === "ORPHAN"), {
+      label: "the inherited-stream writer to finish",
+      timeoutMs: 6_000,
+    });
+  } finally {
+    // However the assertions went, do not leave the writer running.
+    await waitFor(() => readEvents(seam.logPath).some((event) => event.kind === "ORPHAN"), {
+      label: "the inherited-stream writer to finish",
+      timeoutMs: 6_000,
+    }).catch(() => {});
+    await pool.dispose();
+    await seam.cleanup();
+  }
+});
+
+await check("the SIGKILL rung still fires for a child that ignores SIGTERM and holds its pipes open", async () => {
+  // The other half of the new contract: the settle is about the promise, not
+  // about the process, so the five-second SIGKILL must NOT be cancelled by it.
+  // A child that ignores SIGTERM and holds a pipe open never reports `close`, so
+  // if that rung were dropped with the settle this process would spin forever —
+  // a leaked ssh nobody would ever reap.
+  const seam = await realSeam();
+  let pid;
+  try {
+    const started = Date.now();
+    const result = await nodeRunner(commandArgv(seam.config, "deploy@build-01", "stubborn"), {
+      cwd: process.cwd(),
+      timeoutMs: 250,
+      maxOutputBytes: 1 << 16,
+    });
+    const elapsed = Date.now() - started;
+
+    assert.equal(result.timedOut, true);
+    assert.equal(result.code, -1);
+    assert.equal(result.stdout, "stubborn-started\n");
+    assert.ok(elapsed < 1_000, `the call must settle at its deadline, not wait for the child: ${elapsed} ms`);
+
+    // The child recorded its own pid before it started ignoring signals.
+    const pidFile = `${seam.logPath}.pid`;
+    await waitFor(
+      () => {
+        try {
+          pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+        } catch {
+          pid = undefined;
+        }
+        return Number.isInteger(pid) && pid > 0;
+      },
+      { label: "the child to record its pid", timeoutMs: 2_000 },
+    );
+
+    // SIGTERM was delivered at the deadline and it is deliberately still there:
+    // the settle did not, and must not, fake the child's death.
+    assert.equal(processAlive(pid), true, "a TERM-ignoring child survives the deadline signal");
+
+    await waitFor(() => !processAlive(pid), {
+      label: "the SIGKILL the deadline armed five seconds later",
+      timeoutMs: 8_000,
+      intervalMs: 100,
+    });
+  } finally {
+    // A failed check must not leave the spinning child behind.
+    if (pid !== undefined && processAlive(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone between the check and the kill.
+      }
+    }
     await seam.cleanup();
   }
 });

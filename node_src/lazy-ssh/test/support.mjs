@@ -108,6 +108,25 @@ export function deferred() {
 }
 
 /**
+ * Whether a process id is still present.
+ *
+ * Signal 0 performs the existence check without delivering anything. Node reaps
+ * its own children, so a child that has been signalled and has exited reads as
+ * gone rather than lingering as a zombie.
+ *
+ * @param pid - the process id to look for.
+ * @returns whether the process is still there.
+ */
+export function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One scratch directory, removed by the caller.
  *
  * @param prefix - the mkdtemp prefix, so a leftover directory names its check.
@@ -260,6 +279,34 @@ case "$last" in
     # A command that outlives its deadline, emulated without a child process so
     # the SIGTERM that ends it is observable at once.
     printf 'partial-output\\n'
+    while :; do :; done
+    ;;
+  orphan*)
+    # The shape a real ssh failure takes: a multiplexing client hands its
+    # standard streams to the master over the control socket, so when the client
+    # is gone the master keeps the pipes. Emulated by starting a writer that
+    # inherits this process's stdout and stderr and outlives it, then leaving —
+    # the pipes stay open after this child has exited, and only the writer
+    # closing them (two seconds later) lets node's close event fire. It records
+    # that it finished as its very last act, so a check can wait for it and not
+    # leave it behind.
+    (
+      sleep 2
+      printf 'late-line\\n'
+      record ORPHAN late
+    ) &
+    printf 'early-line\\n'
+    # ssh's own failure status for a torn-down session: nothing may mistake it
+    # for the result of a call the deadline already settled.
+    exit 255
+    ;;
+  stubborn*)
+    # A child that refuses SIGTERM and holds its pipes open: it survives the
+    # deadline signal and only the SIGKILL rung can end it. It writes its pid
+    # first, so a check can watch the process rather than guess at it.
+    trap '' TERM
+    printf '%s' "$$" > "$LOG.pid"
+    printf 'stubborn-started\\n'
     while :; do :; done
     ;;
   *)
