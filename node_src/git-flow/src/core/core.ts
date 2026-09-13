@@ -118,6 +118,11 @@ interface MemoEntry {
  * operations that take a workspace away. Dropping it earlier would let a retry
  * rebuild a worktree it is about to delete again.
  *
+ * {@link gitStart} drops it too, and for the mirror-image reason: it is the one
+ * operation that *adds* a claim, and the entry standing in its way is the `null`
+ * a guard memoized moments earlier, when this session had nothing. Adding without
+ * dropping would write a record the very next read denies.
+ *
  * Process-local by design: a cache of a fact the claim file already owns, never
  * the fact itself. Another process can change the file underneath it.
  */
@@ -342,6 +347,12 @@ export async function gitStart(
   } finally {
     await store.dispose();
   }
+
+  // The memo is dropped before the resolution and not after it: it is very likely
+  // holding the `null` a guard memoized when it asked about this session *before*
+  // the claim existed, and a memoized "no claim" is precisely the answer that is
+  // now wrong. Without this the record is written and then read as if it were not.
+  forgetWorkspace(sessionId);
 
   // The claim is there, so the resolution cannot come back empty — it reads the
   // record this function just wrote.
