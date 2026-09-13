@@ -24,8 +24,10 @@
  *   master over the control socket, so when the client dies the master keeps the
  *   pipes — and a call that resolves on `close` then hangs until the *remote*
  *   command finishes, which for `tail -f` is never. The child, and whatever
- *   inherited its streams, may therefore outlive the call. This is the
- *   per-command backstop; it is not the idle release, which is the pool's business.
+ *   inherited its streams, may therefore outlive the call — and so do the two
+ *   read ends this seam keeps draining, until whoever holds the other end lets
+ *   go. This is the per-command backstop; it is not the idle release, which is
+ *   the pool's business.
  * - **`signal` is the caller's cancellation.** An abort rejects the call rather
  *   than resolving it: a cancelled call has no result to report, and the caller
  *   that aborted already knows why. `timeoutMs` and `signal` are therefore

@@ -58,6 +58,15 @@
  * master that carries it. `commandTimeoutMs` is therefore a bound on how long the
  * model waits, and never a promise that the server stopped working.
  *
+ * What that leaves behind is worth stating exactly, because it is observable: the
+ * read ends of the call's two streams stay open in this process — drained and
+ * discarded — until the remote command ends. A one-shot host process that makes
+ * one such call therefore lingers after printing its result; dsh is long-lived,
+ * and what it retains is two file descriptors per command that outlived its
+ * deadline. Destroying them instead would close the read end the master is
+ * writing to, and a master killed by its own failed write would take every other
+ * session on it — the reuse this plugin exists for — with it.
+ *
  * ## One process owns a connection
  *
  * The control directory is one per user, so two dsh processes running as the same
