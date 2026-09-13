@@ -10,6 +10,10 @@
  * }
  * ```
  *
+ * An entry's `execute` is always the registry's own shape — `(args, execution)` —
+ * even for a tool that takes no arguments: the adapter lives in the list below
+ * rather than in the handler's signature.
+ *
  * ## How a tool differs from the command that does the same thing
  *
  * - **The model supplies the judgement, and must.** A command may be run bare and
@@ -248,5 +252,10 @@ async function gitCleanupTool(execution: ToolRunContext): Promise<string> {
 export const GIT_FLOW_TOOLS: readonly GitFlowTool<never>[] = [
   { descriptor: GIT_START_TOOL, execute: gitStartTool },
   { descriptor: GIT_COMPLETE_TOOL, execute: gitCompleteTool },
-  { descriptor: GIT_CLEANUP_TOOL, execute: gitCleanupTool },
+  // Adapted rather than passed straight through: the registry calls every
+  // executor as `(args, execution)`, and `git_cleanup` takes no arguments at all —
+  // its sweep scope comes from the calling agent, not from the model — so its
+  // executor is handed the execution alone. Listing the bare function here would
+  // feed it the empty argument object and drop the context.
+  { descriptor: GIT_CLEANUP_TOOL, execute: (_args, execution) => gitCleanupTool(execution) },
 ];
