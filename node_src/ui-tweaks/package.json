@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dotdsh-ui-tweaks",
   "version": "0.1.0",
-  "description": "dotdsh UI tweaks: one dual-face plugin package owning every small browser-side behaviour change (the composer Enter remap, the running-turn status wording), each switchable per machine through the ui-tweaks settings namespace",
+  "description": "dotdsh UI tweaks: one dual-face plugin package owning every small browser-side behaviour change (the composer Enter remap, the running-turn status wording, Ctrl/Cmd+click to open a file in a local editor), each switchable per machine through the ui-tweaks settings namespace",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -18,7 +18,8 @@
   "files": [
     "lib/index.js",
     "lib/index.d.ts",
-    "client/index.js"
+    "client/index.js",
+    "client/clicked-file.js"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

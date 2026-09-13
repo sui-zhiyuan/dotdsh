@@ -31,6 +31,26 @@
 // namespace, and $DSH_HOME/settings.yaml is the user layer on top of it. Until
 // the first accepted section arrives — and forever without a settings provider —
 // the `settings` object below carries the schema's own defaults.
+// The open-in-editor click handler lives in its own committed script beside this
+// one (clicked-file.js) so this file stays the boot-protocol registration and
+// that behaviour keeps its own file. A classic script has no import, so the
+// second file is injected here — the same `<script src>` technique the module
+// system uses for its own bundles, resolved against THIS script's own URL so no
+// absolute path is ever written down — and it publishes its exports on
+// `window.__dshDotdshOpenInEditor`, which `apply` below reads. Injection is
+// synchronous (a plain script element, not a module), so by the time the page
+// can dispatch a click the handler is registered.
+(() => {
+  const current = document.currentScript;
+  if (current === null || current === undefined) return;
+  const script = document.createElement("script");
+  script.src = new URL("clicked-file.js", current.src).href;
+  script.addEventListener("error", () => {
+    console.error("ui-tweaks: clicked-file.js failed to load; Ctrl/Cmd+click keeps dsh's own preview");
+  });
+  document.head.append(script);
+})();
+
 window.__ModuleLoader__.load({
   id: "@dsh-external/dotdsh-ui-tweaks",
   factory: (require) => {
@@ -50,6 +70,10 @@ window.__ModuleLoader__.load({
      * schema also declares — keep the two in step. A page cannot read the row's
      * config, so these values are what it uses until the first accepted settings
      * section arrives, and forever in a composition with no settings provider.
+     *
+     * `openInVscode`/`editorCommand` are deliberately absent: those two are
+     * enforced by the host route, which is the only side that can act on them, so
+     * the page reads neither and cannot disagree with the authority.
      * @type {{composerEnterNewline: boolean, statusWording: boolean, statusPhrases: string[]}}
      */
     const settings = {
@@ -57,6 +81,15 @@ window.__ModuleLoader__.load({
       statusWording: true,
       statusPhrases: [],
     };
+
+    /**
+     * The open-in-editor half, loaded as a sibling script (see the injection
+     * above). A page that failed to load it — or a fake DOM in the committed
+     * check — leaves this undefined, and the tweak below then installs nothing:
+     * Ctrl/Cmd+click keeps dsh's own preview instead of throwing at boot.
+     * @type {object|undefined}
+     */
+    const openInEditor = window.__dshDotdshOpenInEditor;
 
     /** The resident composer's editable host (ComposerContentEditable's attribute). */
     const COMPOSER_INPUT = "[data-composer-input]";
@@ -318,6 +351,29 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Install the Ctrl/Cmd+click → editor tweak.
+     *
+     * No settings field is read here. Two reasons, and both matter:
+     * `openInVscode`/`editorCommand` are enforced by the HOST — the route answers
+     * `available: false` when the switch is off or the command does not resolve —
+     * so a page that read them again would only be able to disagree with the
+     * authority; and unlike the tweaks above, this one cannot act on a
+     * late-arriving section anyway, because a settings commit may land long after
+     * the listener's one-time availability probe.
+     *
+     * A missing sibling script is a supported state, not an error: the page then
+     * keeps dsh's own preview for every click.
+     * @param ctx - Client root Context, whose `sessions` service supplies the
+     *   current session's workspace root.
+     * @returns the disposer removing the click listener.
+     */
+    function installOpenInEditor(ctx) {
+      if (openInEditor === undefined || typeof openInEditor.apply !== "function") return () => {};
+      openInEditor.apply(ctx);
+      return () => {};
+    }
+
+    /**
      * Every small browser-side tweak this package owns, in install order: the
      * reason this is one generalized package rather than one package per tweak.
      * Each one names the settings field that switches it.
@@ -333,6 +389,11 @@ window.__ModuleLoader__.load({
         id: "llm-status-wording",
         description: "While a turn runs, the Chinese chat status line shows a random DeepSeek meme phrase. Settings: statusWording, statusPhrases.",
         install: installLlmStatusWording,
+      },
+      {
+        id: "open-in-editor",
+        description: "Ctrl/Cmd+click on a file in the produced-files row or the sidebar tree opens it in the configured editor. Settings: openInVscode, editorCommand (both enforced by the host route).",
+        install: installOpenInEditor,
       },
     ];
 
