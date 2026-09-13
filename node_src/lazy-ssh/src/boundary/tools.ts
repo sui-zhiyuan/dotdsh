@@ -117,7 +117,8 @@ const SSH_RUN_TOOL: ToolSchema = {
       // one the author schema simply does not name.
       description:
         "How long this one command may take, in milliseconds. Defaults to the plugin's configured command timeout. " +
-        "A command that hits it is killed and reported as timed out.",
+        "The call returns at the deadline with `timed out` and whatever output had already arrived; the remote " +
+        "command itself may still be running.",
     },
   },
 };

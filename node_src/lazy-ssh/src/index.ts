@@ -29,7 +29,7 @@
  * | Key | Default | Meaning |
  * | --- | --- | --- |
  * | `idleTimeoutMs` | `300000` | How long a connection may sit idle before it is released. |
- * | `commandTimeoutMs` | `120000` | Default deadline for one command. |
+ * | `commandTimeoutMs` | `120000` | Default deadline for one command; the call returns at it, the remote command may not. |
  * | `connectTimeoutSec` | `10` | `ConnectTimeout`: bounds the handshake, not the command. |
  * | `maxOutputBytes` | `1048576` | Per-stream output cap; past it the stream is truncated. |
  * | `batchMode` | `true` | Pass `-o BatchMode=yes`: an unanswerable prompt fails instead of hanging. |

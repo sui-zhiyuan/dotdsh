@@ -193,7 +193,7 @@ All eight keys are optional, and a value that cannot work fails the row while it
 | Key | Default | What it decides |
 | --- | --- | --- |
 | `idleTimeoutMs` | `300000` | how long a connection may sit idle before it is released |
-| `commandTimeoutMs` | `120000` | the deadline for one command, when the call sets no `timeoutMs` |
+| `commandTimeoutMs` | `120000` | the deadline for one command, when the call sets no `timeoutMs`: the call returns then, and the remote command may not |
 | `connectTimeoutSec` | `10` | ssh's `ConnectTimeout`: the handshake, not the command |
 | `maxOutputBytes` | `1048576` | per-stream output cap; past it that stream is marked truncated |
 | `batchMode` | `true` | pass `-o BatchMode=yes` |

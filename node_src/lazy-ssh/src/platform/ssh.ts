@@ -47,6 +47,17 @@
  * of ours and the terminal's `SIGINT` never reaches it. Closing the hole needs a
  * process of ours that outlives us; see *Deferred*.
  *
+ * ## A deadline stops the waiting, not the command
+ *
+ * The same shape shows up in a single call. The client hands its standard streams
+ * to the master over the control socket, so when a command hits its deadline and
+ * the client is signalled, the master still carries the session: the call returns
+ * — `nodeRunner` settles at the deadline, measured against real ssh rather than
+ * assumed — while the remote command keeps running. Ending *that* would mean
+ * ending the session, and the only handle this plugin has on a session is the
+ * master that carries it. `commandTimeoutMs` is therefore a bound on how long the
+ * model waits, and never a promise that the server stopped working.
+ *
  * ## One process owns a connection
  *
  * The control directory is one per user, so two dsh processes running as the same
