@@ -29,8 +29,10 @@
  * A write is allowed when it lands inside the tree its own family claimed, and
  * refused otherwise:
  *
- * 1. only the harness's file-mutating tools are its business — everything else
- *    is `next()`;
+ * 1. only the harness's file-mutating tools are its business — everything else is
+ *    `next()`, including a call that carries no agent at all, which is a call no
+ *    session asked for and therefore nothing this plugin can have an opinion
+ *    about;
  * 2. a call that declares no target is `next()`: there is nothing to check;
  * 3. a target outside the repository is `next()`: this plugin has no opinion
  *    about files it does not own;
@@ -70,6 +72,12 @@ import { factsFor, sessionAgentOf } from "./shared.js";
  * the session makes, and the repository is asked nothing until a call has
  * survived them. The containment test is the other piece that stays here: a
  * single relative-path comparison, used once, with nothing to share it with.
+ *
+ * Every git call goes through the runner with `execution.signal`. The registry
+ * checks cancellation before this listener runs and again after it settles, so a
+ * turn that is cancelled while the guard is working is handled either way — but
+ * without the signal the guard would keep running git, and keep holding the claim
+ * file's lock, for a call nobody is waiting for any more.
  *
  * The two refusals are the whole of the guard's output, and both are addressed to
  * the model rather than to a human. Both also name the workflow skill
