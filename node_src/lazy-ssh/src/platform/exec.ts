@@ -42,8 +42,6 @@
  * @module @dsh-external/dotdsh-lazy-ssh/exec
  */
 
-import { spawn } from "node:child_process";
-
 /** One finished process. */
 export interface RunResult {
   /** Exit code, or `-1` when a signal ended the child instead of an exit. */

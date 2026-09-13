@@ -44,12 +44,8 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
-import { defineTool, type ParameterSchemaSpec } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
-import { SshPool } from "./core/pool.js";
-import { sshTools } from "./boundary/tools.js";
-import { nodeRunner } from "./platform/exec.js";
-import { ensureControlDir, SshTransport, type SshConfig } from "./platform/ssh.js";
+import type { SshConfig } from "./platform/ssh.js";
 
 /** The plugin name, following dsh's convention: the package name minus scope and prefix. */
 export const name = "lazy-ssh";

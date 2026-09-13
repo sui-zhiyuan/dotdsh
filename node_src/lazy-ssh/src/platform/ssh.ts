@@ -56,10 +56,7 @@
  * @module @dsh-external/dotdsh-lazy-ssh/ssh
  */
 
-import { mkdirSync, rmSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
-import { spawnDetached, type RunResult, type Runner } from "./exec.js";
+import type { RunResult, Runner } from "./exec.js";
 
 /**
  * Everything about a server call that comes from the row's config.
