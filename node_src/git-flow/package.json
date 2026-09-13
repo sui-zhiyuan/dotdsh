@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dotdsh-git-flow",
   "version": "0.1.0",
-  "description": "dotdsh git-flow: the /git-start and /git-complete feature-branch workflow — a branch guard before file writes, per-step commits, a bundled commit-message skill, and git-worktree isolation for parallel sessions",
+  "description": "dotdsh git-flow: the /git-start, /git-complete and /git-cleanup feature-branch workflow — a pre-write guard, a per-family claim that records which tree a session writes in, the bundled git-flow and git-master skills, and a worktree only for the sessions that have to move out of the main checkout",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
