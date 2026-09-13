@@ -38,6 +38,7 @@
  */
 
 import type { Context } from "@deepseek-ai/cordis";
+import { defineTool, type ParameterSchemaSpec } from "@deepseek-ai/dsh-tools";
 import { GIT_FLOW_COMMANDS } from "./boundary/commands.js";
 import { GIT_FLOW_INTERCEPTOR } from "./boundary/guard.js";
 import { GIT_FLOW_SKILL_PROVIDER } from "./boundary/skill.js";
@@ -70,5 +71,37 @@ export const inject = ["commands", "skills", "tools"];
  * @param ctx - the plugin context, with `commands`, `skills` and `tools` injected.
  */
 export function apply(ctx: Context): void {
-  throw new Error("apply is not implemented");
+  for (const command of GIT_FLOW_COMMANDS) {
+    ctx.effect(() => ctx.commands.register({ ...command.descriptor, handler: command.handler }));
+  }
+
+  for (const tool of GIT_FLOW_TOOLS) {
+    ctx.effect(() =>
+      ctx.tools.register(
+        defineTool({
+          ...tool.descriptor,
+          // `ToolSchema` carries the arguments as a bare `Record`, because the
+          // LLM layer only ever projects them to JSON Schema. Only here, where
+          // they are handed to the registry that compiles and enforces them, is
+          // their real author-facing shape known.
+          parameters: tool.descriptor.parameters as ParameterSchemaSpec,
+          // The declaration `ToolSchema` cannot carry: every tool answers with
+          // one text block, which is what the model reads.
+          output: {
+            schema: { type: "string" },
+            render: (_args, value) => [{ type: "text", text: value }],
+          },
+          // `GIT_FLOW_TOOLS` is a `GitFlowTool<never>[]` so entries with
+          // different argument objects share one list, and its elements expose
+          // no argument type to recover; the registry has already validated the
+          // call against the very descriptor spread above.
+          execute: (args, execution) => tool.execute(args as never, execution),
+        }),
+      ),
+    );
+  }
+
+  ctx.effect(() => ctx.on(GIT_FLOW_INTERCEPTOR.hook, GIT_FLOW_INTERCEPTOR.handle));
+
+  ctx.effect(() => ctx.skills.registerProvider(() => GIT_FLOW_SKILL_PROVIDER));
 }
