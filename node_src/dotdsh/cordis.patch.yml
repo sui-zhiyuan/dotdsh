@@ -74,5 +74,9 @@
   # an abandoned idle master lives at most `idleTimeoutMs` plus 30s, and a call in
   # flight keeps its connection until that command ends. `platform/ssh.ts` explains
   # why, and what a keeper process that would close the window costs.
+  #
+  # The `controlDir` default is one per user, so two dsh processes running as the
+  # same user share a master — and releasing it ends every session on it. Run one
+  # such process per machine, or give the second its own `controlDir`.
   - id: lazy-ssh
     name: '@dsh-external/dotdsh-lazy-ssh'

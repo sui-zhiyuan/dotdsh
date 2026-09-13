@@ -47,6 +47,24 @@
  * of ours and the terminal's `SIGINT` never reaches it. Closing the hole needs a
  * process of ours that outlives us; see *Deferred*.
  *
+ * ## One process owns a connection
+ *
+ * The control directory is one per user, so two dsh processes running as the same
+ * user find each other's masters: the second joins the first one's connection
+ * instead of dialling again. That sharing is OpenSSH's own behaviour and costs
+ * nothing while nobody releases the master — but this plugin does release it, and
+ * `ssh -O exit` ends a master together with every session on it (where `-O stop`
+ * is the one that only refuses new sessions). An idle release in one process can
+ * therefore cut a command still running in another.
+ *
+ * So: **one dsh process per user and machine uses lazy ssh.** A deployment that
+ * runs a second one gives it its own `controlDir` — the row's config, or that
+ * profile's own patch layer — and the two keep to their own sockets. This is
+ * documented rather than enforced, and the fix, if it is ever wanted, is the
+ * socket's name: the digest below would take the process id, which costs the
+ * sharing that makes a second process cheap and leaves the single-process case
+ * this repository runs exactly as it is.
+ *
  * ## Deferred
  *
  * **A keeper process per server.** A dead process cannot clean up after itself,
@@ -102,7 +120,12 @@ import type { RunResult, Runner } from "./exec.js";
 export interface SshConfig {
   /** The ssh executable. Absolute, or a name resolved on `PATH`. */
   readonly sshBinary: string;
-  /** Directory holding the per-server control sockets. Created `0700`. */
+  /**
+   * Directory holding the per-server control sockets. Created `0700`.
+   *
+   * One per user rather than one per process, so it is shared by every dsh process
+   * running as that user — see the module's *One process owns a connection*.
+   */
   readonly controlDir: string;
   /** `ConnectTimeout`, in seconds. Bounds the handshake, not the command. */
   readonly connectTimeoutSec: number;

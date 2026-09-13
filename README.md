@@ -201,6 +201,12 @@ All eight keys are optional, and a value that cannot work fails the row while it
 | `sshOptions` | `[]` | extra ssh arguments, inserted verbatim before the destination |
 | `controlDir` | `$TMPDIR/dsh-lazy-ssh-<uid>` | where the per-server control sockets live, created `0700` |
 
+The control directory is one per **user**, not one per process: two dsh processes running as the same
+user find each other's masters, and the second one joins the first one's connection instead of dialing
+again. That sharing has a sharp edge, because releasing a connection asks the master to exit — which
+ends every session on it. An idle release in one process can therefore cut a command still running in
+another, so **run one dsh process per user and machine**, or give the second one its own `controlDir`.
+
 ### What a hard kill leaves behind
 
 An orderly shutdown releases every connection: the plugin's disposer runs on unload, and a

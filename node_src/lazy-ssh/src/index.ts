@@ -37,6 +37,12 @@
  * | `sshOptions` | `[]` | Extra ssh arguments, inserted verbatim before the destination. |
  * | `controlDir` | `$TMPDIR/dsh-lazy-ssh-<uid>` | Where the per-server control sockets live. |
  *
+ * The `controlDir` default is one per **user**, not one per process, so two dsh
+ * processes running as the same user share a master per server — and since
+ * releasing one asks the master to exit, an idle release in one process can end a
+ * command still running in the other. Run one, or give the second its own
+ * `controlDir`; `platform/ssh.ts` argues the whole constraint.
+ *
  * ## Layer
  *
  * The boundary: dsh calls in here, and this is the only layer that talks to it.
