@@ -28,13 +28,16 @@
  * ## What this module does not own
  *
  * Running git is `exec`'s job, and the claim file's format and its exclusive
- * access belong to the claim module — including the lock, which is taken on the
- * file descriptor itself, so that one `open → read → modify → write → close` is
- * the whole critical section. This module states what it needs from both and
- * nothing more, and the process seam arrives as an argument: it is never imported
- * here, and a test can drive every path against a scratch repository with no
- * harness. Pinning a session's working directory to the worktree it was given is
- * an upstream wrapper's job, not this one's.
+ * access belong to the claim module — including the lock, which is taken when a
+ * store opens and released when it is disposed, so a store's lifetime is the whole
+ * critical section. The rule that comes with it is this module's to keep: a store
+ * is never held across a git call, because the lock expires on its own mtime and a
+ * critical section long enough to look abandoned can be taken over while it is
+ * still running. This module states what it needs from both and nothing more, and
+ * the process seam arrives as an argument: it is never imported here, and a test
+ * can drive every path against a scratch repository with no harness. Pinning a
+ * session's working directory to the worktree it was given is an upstream
+ * wrapper's job, not this one's.
  *
  * ## Layer
  *
@@ -784,7 +787,12 @@ export async function gitComplete(
  * - its claim record is dropped from the claim file, its memo entry is dropped,
  *   its feature branch is deleted, and the tree it held is released — a worktree
  *   removed, or the main tree put back on the integration branch;
- * - every other claim is left exactly as it is.
+ * - every other claim is left exactly as it is;
+ * - the claim file is read as **one snapshot** and the lock is let go before any
+ *   tree is touched. A sweep runs git, and a store held across those calls would
+ *   hold the lock for as long as they take, past the point where another process
+ *   may take it over — so the record of each claim is dropped under a lock of its
+ *   own instead.
  *
  * @param runner - the process seam every git call goes through.
  * @param repoRoot - absolute path of the repository's main working tree.
@@ -809,56 +817,67 @@ export async function gitClean(
   const cutoff = Date.now() - CLAIM_SWEEP_AGE_MS;
   const git = new GitClient(runner, repoRoot);
 
-  // The store is held open for the whole sweep, and nothing it does is
-  // cancellable — it takes no signal. Only the git children below stop early.
-  const store = await ClaimStore.open(repoRoot);
+  // The file is the only place a claim can be found: a record is the sole thing
+  // that names the branch and the worktree a family holds. It is read as one
+  // snapshot, under one short lock — and that lock is given back before the first
+  // git call below. The sweep is the one operation here that runs git, and a store
+  // kept open across it would hold the claim lock for seconds, which is longer than
+  // the lock's own expiry: another process would take it over mid-sweep.
+  const snapshot = await ClaimStore.open(repoRoot);
+  let claims: readonly Claim[];
   try {
-    // The file is the only place a claim can be found: a record is the sole thing
-    // that names the branch and the worktree a family holds.
-    for (const claim of await store.find()) {
-      if (resumable.has(claim.sessionId)) continue;
-      // A `createdAt` nobody can parse is a claim this sweep may not judge, and
-      // the comparison already fails closed for it: `NaN < cutoff` is false.
-      if (!(Date.parse(claim.createdAt) < cutoff)) continue;
-
-      // A family that held the main tree has no tree of its own to remove: the act
-      // that releases it is putting the main tree back on the integration branch,
-      // and that is only possible — or necessary — while it still stands on the
-      // dead branch. A tree git will not move, like one a human has since switched
-      // elsewhere, keeps the claim for the next sweep.
-      if (claim.worktreeName === MAIN_WORKTREE) {
-        if ((await mainTreeBranch(git, signal)) === claim.branch) {
-          const back = await git.run(["switch", INTEGRATION_BRANCH], { signal });
-          if (back.code !== 0) continue;
-        }
-      } else {
-        const workTree = workspacePathOf(repoRoot, claim.worktreeName);
-        if (await worktreeExists(git, workTree, signal)) {
-          // Forced, unlike the family's own tree in gitComplete: an abandoned
-          // session's worktree is usually dirty — the edits it never committed are
-          // exactly what it left behind — and a sweep that refused those would leave
-          // every claim it exists for. The two gates above are what make taking that
-          // work acceptable.
-          const removal = await git.run(["worktree", "remove", "--force", workTree], { signal });
-          // A tree git will not give up — locked, or held by a permission problem —
-          // keeps its claim, so the next sweep finds it again instead of leaving a
-          // branch and a tree that nothing can name.
-          if (removal.code !== 0) continue;
-        }
-      }
-      if (await branchExists(git, claim.branch, signal)) {
-        const deletion = await git.run(["branch", "-D", claim.branch], { signal });
-        if (deletion.code !== 0) continue;
-      }
-
-      // The record goes last, the memo with it: this is the commit point, as in
-      // gitComplete. Dropped any earlier it would take the branch and worktree
-      // names with it, and a sweep that finds its work by enumerating records
-      // could never see the leftovers again.
-      await store.remove(claim.sessionId);
-      forgetWorkspace(claim.sessionId);
-    }
+    claims = await snapshot.find();
   } finally {
-    await store.dispose();
+    await snapshot.dispose();
+  }
+
+  for (const claim of claims) {
+    if (resumable.has(claim.sessionId)) continue;
+    // A `createdAt` nobody can parse is a claim this sweep may not judge, and
+    // the comparison already fails closed for it: `NaN < cutoff` is false.
+    if (!(Date.parse(claim.createdAt) < cutoff)) continue;
+
+    // A family that held the main tree has no tree of its own to remove: the act
+    // that releases it is putting the main tree back on the integration branch,
+    // and that is only possible — or necessary — while it still stands on the
+    // dead branch. A tree git will not move, like one a human has since switched
+    // elsewhere, keeps the claim for the next sweep.
+    if (claim.worktreeName === MAIN_WORKTREE) {
+      if ((await mainTreeBranch(git, signal)) === claim.branch) {
+        const back = await git.run(["switch", INTEGRATION_BRANCH], { signal });
+        if (back.code !== 0) continue;
+      }
+    } else {
+      const workTree = workspacePathOf(repoRoot, claim.worktreeName);
+      if (await worktreeExists(git, workTree, signal)) {
+        // Forced, unlike the family's own tree in gitComplete: an abandoned
+        // session's worktree is usually dirty — the edits it never committed are
+        // exactly what it left behind — and a sweep that refused those would leave
+        // every claim it exists for. The two gates above are what make taking that
+        // work acceptable.
+        const removal = await git.run(["worktree", "remove", "--force", workTree], { signal });
+        // A tree git will not give up — locked, or held by a permission problem —
+        // keeps its claim, so the next sweep finds it again instead of leaving a
+        // branch and a tree that nothing can name.
+        if (removal.code !== 0) continue;
+      }
+    }
+    if (await branchExists(git, claim.branch, signal)) {
+      const deletion = await git.run(["branch", "-D", claim.branch], { signal });
+      if (deletion.code !== 0) continue;
+    }
+
+    // The record goes last, the memo with it: this is the commit point, as in
+    // gitComplete. Dropped any earlier it would take the branch and worktree
+    // names with it, and a sweep that finds its work by enumerating records
+    // could never see the leftovers again. The lock is taken around this record
+    // alone — and taken after the git work, never before it.
+    const store = await ClaimStore.open(repoRoot);
+    try {
+      await store.remove(claim.sessionId);
+    } finally {
+      await store.dispose();
+    }
+    forgetWorkspace(claim.sessionId);
   }
 }

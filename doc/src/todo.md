@@ -70,9 +70,11 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   family holds the main checkout. The rewrite that settled this removed the system-prompt section and
   the state context (the workflow is a bundled `git-flow` skill now), the prompt-derived naming tiers
   and the pid liveness rule, replaced the JSON ledger with the TOML claim file, and gave the model
-  the three tools. The lock remains deferred (`platform/claim.ts` carries the TODO). The committed
-  checks grew with it: 77 checks in six files under `test/`, pinning the process seam, the claim
-  file, the core lifecycle, the guard, both doors and the skills. Design rationale in
+  the three tools. The claim file's lock shipped with it: `<claimFile>.lock` is created by
+  `ClaimStore.open` and deleted by `dispose`, a peer's lock is refused rather than waited for, and a
+  lock whose mtime is older than ten seconds is taken over. The committed
+  checks grew with it: 83 checks in six files under `test/`, pinning the process seam, the claim
+  file and its lock, the core lifecycle, the guard, both doors and the skills. Design rationale in
   [Design decisions](./design.md)
 - [x] Decide what a delegate's own branch does to the family record. Settled by the rewrite by
   removing the case: every decision is keyed by the root of the delegation chain, `git_start` refuses
@@ -98,8 +100,9 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   records which working tree a family writes in, and it is now written when the branch is opened —
   `git_start`, or `/git-start` — rather than before the first write. Liveness is
   `resumableSessionIds`: the resident root sessions a human opened, which is what the harness can
-  resume. The pid rule is gone, and the lock is still deferred (`platform/claim.ts` carries the
-  TODO). `/git-cleanup` is the counterpart for the sessions that never finished; it sweeps a claim
+  resume. The pid rule is gone: a claim file lock whose mtime is older than ten seconds is a leftover
+  the next process takes over, and liveness is not read from the file at all. `/git-cleanup` is the
+  counterpart for the sessions that never finished; it sweeps a claim
   only when its session is not resumable **and** the claim is older than 24 hours
 
 ## Home config

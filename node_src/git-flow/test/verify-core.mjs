@@ -17,10 +17,10 @@
  *
  * Boundary: these checks prove what the core decides and the paths it leaves on
  * disk. They do not exercise the boundary layer (commands, tools, the write
- * guard), the claim lock (not implemented yet), or concurrency between
- * processes. Where a check pins a behaviour the module documents as out of
- * contract, its name says `characterized` so the boundary is not mistaken for a
- * promise.
+ * guard), the claim lock — which `verify-claim.mjs` checks, a second process
+ * included — or concurrency between processes beyond it. Where a check pins a
+ * behaviour the module documents as out of contract, its name says `characterized`
+ * so the boundary is not mistaken for a promise.
  *
  * @module @dsh-external/dotdsh-git-flow/test/verify-core
  */

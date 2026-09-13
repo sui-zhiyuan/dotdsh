@@ -7,20 +7,26 @@
  * live tree to the next family; a write that dropped a peer's row would do the
  * same with no error anywhere. So the checks below pin the format (header,
  * version), the identity rule (the table key, never a second copy in the row),
- * replacement and removal, and both read paths — the point query a command makes
- * and the full enumeration the sweep makes.
+ * replacement and removal, both read paths — the point query a command makes and
+ * the full enumeration the sweep makes — and the lock's comings and goings.
  *
  * Every case drives the BUILT `lib/platform/claim.js` against a real scratch
  * repository, with built-ins and the real filesystem only: no harness, no profile,
  * no network.
  *
- * What a green run does NOT mean: that two *processes* are serialized. The lock the
- * module doc defers is still deferred, so the interleaving that loses a claim
- * across processes is outside anything one process can settle — including a check
- * that opens two stores over one file.
+ * The lock is checked against a real second process as well as in this one: a
+ * store that finds the claim file locked is refused rather than made to wait, a
+ * holder's lock goes away with the holder, and a lock left behind by a holder that
+ * died is taken over once its mtime is old enough.
+ *
+ * What a green run does NOT mean: that the lock is a proof. Two processes that find
+ * the same expired lock and touch it in the same instant can both believe they hold
+ * it — the gap the module doc records — and no check can close that window.
  */
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
@@ -28,6 +34,9 @@ import { check, report, scratchRepo } from "./support.mjs";
 
 /** The claim file's path in one repository, spelled out rather than imported: the checks assert where it lands on disk, not the module's idea of it. */
 const claimPath = (repoRoot) => join(repoRoot, ".dsh.local", "git-flow.toml");
+
+/** The lock file's path, spelled out for the same reason as the claim file's. */
+const lockPath = (repoRoot) => `${claimPath(repoRoot)}.lock`;
 
 // Three fixed identities, with branches and worktree names that are deliberately
 // not derived from them: the file has to mention an identity exactly once, and a
@@ -335,5 +344,190 @@ await check("a malformed document throws instead of reading as no claim", async 
     await repo.cleanup();
   }
 });
+
+await check("a store holds a lock file while it is open, and dispose takes it away", async () => {
+  const repo = await scratchRepo();
+  try {
+    const store = await ClaimStore.open(repo.root);
+    try {
+      // The lock file's existence *is* the lock, so a store that is open without one
+      // is a store no other process can see. What the file says is for whoever finds
+      // it — the plugin never reads it back.
+      const owner = await readFile(lockPath(repo.root), "utf8");
+      assert.match(owner, /^pid=\d+ at=\d{4}-\d{2}-\d{2}T[\d:.]+Z\n$/, owner);
+    } finally {
+      await store.dispose();
+    }
+    await assert.rejects(stat(lockPath(repo.root)), { code: "ENOENT" }, "dispose has to remove the lock file");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a second store over a locked claim file is refused, and names the lock", async () => {
+  const repo = await scratchRepo();
+  try {
+    const held = await ClaimStore.open(repo.root);
+    try {
+      await assert.rejects(ClaimStore.open(repo.root), (error) => {
+        assert.ok(error instanceof Error, "the refusal must be an Error");
+        // Refused rather than queued: the message has to name the file in the way, so
+        // that whoever reads it can decide to try again — and a human can look.
+        assert.match(error.message, /held by another process/);
+        assert.ok(error.message.includes(lockPath(repo.root)), error.message);
+        return true;
+      });
+    } finally {
+      await held.dispose();
+    }
+
+    // The refusal left the holder's lock alone, and letting go is all it takes for
+    // the next attempt to go through.
+    const next = await ClaimStore.open(repo.root);
+    await next.dispose();
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a lock left behind by a holder that died is taken over once it is old enough", async () => {
+  const repo = await scratchRepo();
+  try {
+    await mkdir(join(repo.root, ".dsh.local"), { recursive: true });
+    // Exactly what a killed process leaves: the file is there, nobody is behind it,
+    // and its mtime is the only thing that says so.
+    await writeFile(lockPath(repo.root), "pid=999999 at=1970-01-01T00:00:00.000Z\n", "utf8");
+    const longAgo = new Date(Date.now() - 60_000);
+    await utimes(lockPath(repo.root), longAgo, longAgo);
+
+    const store = await ClaimStore.open(repo.root);
+    try {
+      await store.append(ALPHA_CLAIM);
+      assert.deepEqual(await store.query(ALPHA), ALPHA_CLAIM);
+      // Taking it over touches the file, and the touch rewrites the owner line: it
+      // now names this process rather than the one that never came back.
+      assert.match(await readFile(lockPath(repo.root), "utf8"), new RegExp(`^pid=${process.pid} `));
+    } finally {
+      await store.dispose();
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a lock younger than the bound is respected, owner line or none", async () => {
+  const repo = await scratchRepo();
+  try {
+    await mkdir(join(repo.root, ".dsh.local"), { recursive: true });
+    // The empty file is the harder of the two: a holder that died between creating
+    // the lock and writing its owner. Young is young either way.
+    await writeFile(lockPath(repo.root), "", "utf8");
+    await assert.rejects(ClaimStore.open(repo.root), /held by another process/);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("an open that fails on the document gives the lock back", async () => {
+  const repo = await scratchRepo();
+  try {
+    await mkdir(join(repo.root, ".dsh.local"), { recursive: true });
+    await writeFile(
+      claimPath(repo.root),
+      [
+        'version = "0.1.0"',
+        "",
+        "[claims.session-broken]",
+        'worktreeName = "session-broken"',
+        'createdAt = "2026-09-13T00:34:56.840Z"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await assert.rejects(ClaimStore.open(repo.root), /missing branch/);
+    // The document is still unusable, so the second refusal has to be about the
+    // document again. A lock left behind by the failed open would answer "held by
+    // another process" instead, and every attempt from then on would be blocked by a
+    // store that never existed.
+    await assert.rejects(ClaimStore.open(repo.root), (error) => {
+      assert.match(error.message, /missing branch/);
+      assert.doesNotMatch(error.message, /held by another process/);
+      return true;
+    });
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a lock held by another process is refused here, and goes away with that process", async () => {
+  const repo = await scratchRepo();
+  const moduleUrl = new URL("../lib/platform/claim.js", import.meta.url).href;
+  // A real second process, because that is the case the lock exists for: every other
+  // check here runs in one process, where a lock is only ever taken, never
+  // contended. It holds until its input ends, which is the signal to dispose.
+  const holder = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      [
+        `const { ClaimStore } = await import(${JSON.stringify(moduleUrl)});`,
+        `const store = await ClaimStore.open(${JSON.stringify(repo.root)});`,
+        'process.stdout.write("held\\n");',
+        "process.stdin.resume();",
+        'await new Promise((resolve) => process.stdin.on("end", resolve));',
+        "await store.dispose();",
+      ].join("\n"),
+    ],
+    { stdio: ["pipe", "pipe", "inherit"] },
+  );
+  const holderDone = once(holder, "exit").then(
+    () => undefined,
+    () => undefined,
+  );
+
+  try {
+    await waitForLine(holder, "held");
+    await assert.rejects(ClaimStore.open(repo.root), /held by another process/);
+
+    holder.stdin.end();
+    await holderDone;
+
+    // The holder disposed on its way out, so the lock is gone with it and the file
+    // is free again without anyone waiting for an expiry.
+    const after = await ClaimStore.open(repo.root);
+    await after.dispose();
+  } finally {
+    holder.kill();
+    await repo.cleanup();
+  }
+});
+
+/**
+ * Wait for a child process to print something, or fail the check instead of hanging.
+ *
+ * @param child - the spawned child.
+ * @param line - the text to wait for in its stdout.
+ * @returns a promise that settles once the child has printed it.
+ */
+function waitForLine(child, line) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`the child never printed ${line}`)), 10_000);
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes(line)) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`the child exited with ${code} before printing ${line}: ${output}`));
+    });
+  });
+}
 
 report();

@@ -20,13 +20,12 @@ it changed, and they are why this note cannot be read as a description of the co
   branch name is the input, so naming and claiming happen together and the record never has to
   describe a family that has no branch. The guard only reads; a session with no claim is refused and
   told to load the `git-flow` skill and call `git_start`.
-- **The lock is deferred.** `ClaimStore` holds the claim file open for its whole lifetime and every
-  write goes through that descriptor, but it takes no lock and releases none — two processes can
-  still interleave a read and a write, and no lock file stands in for it. The store's own doc carries
-  the TODO: take the exclusive lock on that descriptor, wait for a peer on the event loop up to a
-  fixed bound, never block and never fail on sight. The `O_EXCL` lock file this note specified is not
-  the mechanism the rewrite reaches for, because a lock riding the file's own descriptor needs no
-  second file to go stale.
+- **The lock shipped, and it is a second file.** `ClaimStore.open` creates `<claimFile>.lock` —
+  creating it is taking the lock — and `dispose` deletes it, so a store's lifetime is the whole
+  critical section and readers take the lock too. A peer's lock is refused rather than waited for, and
+  a lock file older than ten seconds is a leftover the next process takes over. The descriptor-riding
+  lock the rewrite first reached for cannot be built: Node exposes no `flock`/`fcntl` locking at all,
+  and the section on claiming under concurrency below records what that leaves.
 - **Liveness is the session registry, and there is no pid.** `resumableSessionIds` answers "can this
   session still come back" from the resident sessions that have no `parentSession` — the roots a
   human opened. A claim outside that set is a sweep candidate, and the sweep's second gate is age.
@@ -211,27 +210,49 @@ immutable, so after isolation its cwd is still the main tree, and only the recor
 supposed to write. That fact is *not* derivable from the session's cwd, and every door reads the
 record instead.
 
-## Claiming under concurrency (deferred)
+## Claiming under concurrency
 
-**Not implemented: `ClaimStore` takes no lock.** Its own module doc says so and carries the TODO. The
-read-modify-write race this section describes is therefore real across processes today, and
-`test/verify-claim.mjs` says the same in its header: it proves the file's format and both read paths,
-not that two processes are serialized.
+**The lock shipped, as a second file.** `ClaimStore.open` creates `<claimFile>.lock` and
+`ClaimStore.dispose` deletes it, so creating the file is taking the lock and deleting it is releasing
+it. A store holds it for its whole lifetime, which makes the read on the way in, every `append` and
+`remove`, and the read a `query` or a `find` makes one critical section; readers take the lock too,
+because the decisions above this module read and then write. A peer's lock is **refused rather than
+waited for** — `open` throws, and whoever is above it runs the operation again — and the lock file's
+**mtime** is the whole expiry rule: younger than ten seconds is held, older is a leftover, and the next
+process takes a leftover over by writing its own owner line over it. Ten seconds is hardcoded for now,
+like the plugin's other bounds; it moves into configuration with them.
 
-Two of the note's conclusions are the terms the deferred lock is written in:
+That bound is sound only because a critical section is a few filesystem operations on a small file:
+microseconds, not seconds. The invariant that keeps it sound is that **no store is held across a git
+call** — the sweep takes its snapshot under one short lock, releases it, and only then removes trees.
+Renewing the mtime while the lock is held was considered and rejected: a heartbeat has to run on the
+event loop, a long synchronous turn delays it, and the lock then looks expired while it is still held.
 
-- **There is no separate lock file.** The lock rides the claim file's own descriptor, so one
-  `open → read → modify → write → close` is the whole critical section, and there is no second file
-  to go stale — which is the deadlock the note's lock file carried.
-- **Waiting is asynchronous and bounded.** `ClaimStore.open`'s doc says a peer's lock is waited for
-  on the event loop, up to a fixed timeout, and that the attempt then throws rather than waiting
-  forever. A busy-wait would block the event loop, which in the same-process case blocks the very
-  holder whose release is being waited for: a deadlock, not a delay.
+**The gap this leaves** is recorded in `platform/claim.ts` rather than papered over here: two processes
+can find the same expired lock and take it over in the same instant, and both then believe they hold
+it. Closing it needs a primitive the filesystem does not offer — `unlink` removes whatever is at the
+path now, not the file that was judged — so the alternatives are an election over one file per
+contender, or never taking a lock over at all, and both cost more than the window.
 
-The mechanism this note specified — a separate lock file beside the ledger, opened `O_EXCL` with a
-pid and a timestamp, broken when the holder's pid is gone — was not taken up. Its measurement of
-`open(path, "wx")` (200 concurrent calls in one process produce exactly one winner) belongs to that
-rejected mechanism, not to the shipped one.
+The two terms this note wrote its deferred lock in are therefore **both reversed**, and the reason is
+what Node does not provide:
+
+- **There is a separate lock file after all.** The descriptor cannot carry the lock: `fs.constants`
+  holds no `LOCK_*` flag and a `FileHandle` has no lock method, so there is no advisory lock to ride
+  the descriptor the store writes through. Node's answer is that it will not provide one —
+  [nodejs/node#49256](https://github.com/nodejs/node/issues/49256) was closed as not-planned on
+  libuv's ruling that cross-platform file locking is broken differently on every platform — and this
+  package takes no native dependency. A file whose existence *is* the lock is what is left.
+- **Nothing waits, so there is no wait to bound.** The bounded wait existed to keep a busy-wait off
+  the event loop; a refusal has no wait at all. What it costs is a retry one layer up, which the tool
+  and the command already have a channel for.
+
+The mechanism this note specified — a lock file beside the ledger, opened `O_EXCL`, broken once it is
+old — is close to what shipped, and its measurement of `open(path, "wx")` (200 concurrent calls in one
+process produce exactly one winner) is precisely the primitive the shipped lock is built on. What did
+not survive is the pid: the owner line is written for whoever reads the file and nothing in the plugin
+parses it, so the mtime is the only clock. A pid rule would have to survive pid reuse, and a pid
+*veto* — never taking a lock whose owner is still alive — was considered and left out.
 
 The alternative the note considered and rejected — **one claim file per family** — is still rejected
 for the same reason: it removes the shared read-modify-write but not the decision, since two families
@@ -397,9 +418,12 @@ network. What this note planned is not quite what shipped, so here is what each 
 - `verify-exec.mjs` (8 checks) — the process seam: argv is never shell-interpreted, `GitClient`
   forces argv[0], cwd and the git environment, `text`/`run`/`ok`/`GitError` behave as their callers
   assume, and a caller's signal reaches the runner.
-- `verify-claim.mjs` (11 checks) — the claim file's format (header, version), the table key as the
-  identity, replacement and removal, both read paths, and that a malformed document throws rather
-  than reading as no claim.
+- `verify-claim.mjs` (17 checks) — the claim file's format (header, version), the table key as the
+  identity, replacement and removal, both read paths, that a malformed document throws rather than
+  reading as no claim, and the lock: that a store holds a lock file while it is open, that a second
+  store is refused by name, that a young lock is respected, that an old one is taken over, that an open
+  which fails on the document gives the lock back, and — with a real second process — that a lock held
+  elsewhere refuses this one and dies with the process that held it.
 - `verify-core.mjs` (30 checks) — the decisions: both workspace shapes, the memo's four states and
   its retry path, `gitComplete`'s steps including `not-descendant`, the temporary merge worktree, and
   the sweep's two gates. A check that pins a behaviour the module calls out of contract says
