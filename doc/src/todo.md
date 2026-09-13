@@ -63,42 +63,44 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   namespace and field-name agreement it checks against `client/index.js` is a name-level check —
   what the page does with an adopted section stays the browser half's own check, and whether dsh
   resolves and persists a section is settled by loading the page once
-- [x] Build the git workflow as one node-only plugin (`node_src/git-flow`): `/git-start` and
-  `/git-complete`, the `tools/pre-execute` branch guard, the system-prompt contract and state
-  context, a bundled `git-commit` skill, and worktree isolation for parallel sessions. Two
-  committed checks cover the parts that fail silently — the ignore guard (including an assertion
-  that git *does* stage a gitlink without it, so the premise cannot rot) and the merge semantics
-  (asserting the rebase really happened, by reading the parents of the resulting merge commit back
-  out of git). Design rationale in [Design decisions](./design.md)
-- [ ] Decide what a delegate's own branch does to the family record. A subagent that names a branch
-  explicitly is isolated — correct, since switching the shared checkout would repoint its parent's
-  work — but it records under the family's key, so the family's record now names the *newest* branch
-  and the parent's own branch would never be completed by `/git-complete`. Either a delegate that
-  diverges takes its own key (it has become a separate workflow), or the record keeps a list of the
-  branches the family opened. The first is smaller and matches what the divergence means
-- [ ] Let the model open a feature branch. `/git-start` is a human command, so when the guard
-  refuses — the parallel-session case, where it will not pick a branch over another session's work
-  — the model can only ask the human to type it. A `git_start` tool would close that gap; it needs
-  its own decision about naming (who chooses the name when the model calls it) because the whole
-  value of the deny path is that a branch is not opened on a guess
-- [ ] Decide whether stacked feature branches should be replayed. `/git-complete` replays the branch
-  being finished, with `--onto` and an explicit upstream so only that branch's own commits move. A
-  branch cut *from* another feature is detected by nothing today: after its parent merges, its
-  branch point is stale and it will be replayed on the next `/git-complete` — but the human is not
-  told that this is why
+- [x] Build the git workflow as one node-only plugin (`node_src/git-flow`): the `/git-start`,
+  `/git-complete` and `/git-cleanup` commands with the matching `git_start`, `git_complete` and
+  `git_cleanup` tools, the `tools/pre-execute` write guard, a claim file that records which tree each
+  family writes in, and worktree isolation only for the families that arrive while another resumable
+  family holds the main checkout. The rewrite that settled this removed the system-prompt section and
+  the state context (the workflow is a bundled `git-flow` skill now), the prompt-derived naming tiers
+  and the pid liveness rule, replaced the JSON ledger with the TOML claim file, and gave the model
+  the three tools. The lock remains deferred (`platform/claim.ts` carries the TODO). The committed
+  checks grew with it: 77 checks in six files under `test/`, pinning the process seam, the claim
+  file, the core lifecycle, the guard, both doors and the skills. Design rationale in
+  [Design decisions](./design.md)
+- [x] Decide what a delegate's own branch does to the family record. Settled by the rewrite by
+  removing the case: every decision is keyed by the root of the delegation chain, `git_start` refuses
+  a family that already holds a claim, and a subagent runs in its parent's directory, so a delegate
+  shares the family's tree and branch and cannot open one of its own. The record names exactly one
+  branch per family, and no list of branches has to be kept
+- [x] Let the model open a feature branch. Done: `git_start` takes `branchName` as a required
+  argument and is the model's path, with a bare `/git-start` injecting a notice that tells the model
+  to call it. The naming question is answered by making the name required input rather than derived:
+  a model that cannot name the feature asks the human, and the guard's refusal names the skill and
+  the call
+- [ ] Decide whether stacked feature branches should be replayed. `/git-complete` never rebases: a
+  branch whose branch point has fallen behind `master` is reported `not-descendant` with the
+  `git rebase --onto` command to run, and the caller replays it. A branch cut *from* another feature
+  is detected by nothing today: after its parent merges its branch point is stale, so the next
+  `/git-complete` asks for a replay — but nothing tells the caller that a second feature is why
 - [ ] Reconsider a `commit-msg` hook alongside the skill. The skill shapes the message before it is
   written, which is the right instrument for a convention; a hook is the right one for a rule a
   human must not be able to talk past (a missing `Refs:` on a repo that requires one). Adding it
   means an installer, because `.git/hooks` is unversioned
-- [x] Record multi-session liveness authoritatively. Done as part of the claim design
-  ([git-flow: many sessions in one repository](./git-flow-multi-session.md)): a **claim** records which
-  working tree a family writes in, it is written before the first write rather than when a branch is
-  opened, and liveness comes from the harness's own session registry first — a claim whose session is
-  resident is live whatever the pid says, and a claim naming a session of this process that is no
-  longer resident is dead, which is the phantom neighbour a pid could never see. The pid is the
-  fallback for a claim from another process, and the ledger is still the only channel that reaches
-  across processes, because the registry is in memory. `/git-cleanup` is the interactive counterpart
-  for the sessions that never finished
+- [x] Record multi-session liveness authoritatively. Done, and then settled differently by the
+  rewrite ([git-flow: many sessions in one repository](./git-flow-multi-session.md)): a **claim**
+  records which working tree a family writes in, and it is now written when the branch is opened —
+  `git_start`, or `/git-start` — rather than before the first write. Liveness is
+  `resumableSessionIds`: the resident root sessions a human opened, which is what the harness can
+  resume. The pid rule is gone, and the lock is still deferred (`platform/claim.ts` carries the
+  TODO). `/git-cleanup` is the counterpart for the sessions that never finished; it sweeps a claim
+  only when its session is not resumable **and** the claim is older than 24 hours
 
 ## Home config
 
