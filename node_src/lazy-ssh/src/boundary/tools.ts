@@ -35,11 +35,12 @@
  *
  * ## Deferred
  *
- * **`ssh_sessions`, a read-only view of what is held open.** The pool can already
- * answer it, and it would be the natural way for a human to ask "is anything
- * still connected to that box?". It is not in this commit because the user asked
- * for the one tool, and a second tool is a second schema for the model to choose
- * between. When it is wanted, the descriptors live here and the wiring iterates.
+ * **`ssh_sessions`, a read-only view of what is held open.** It would be the
+ * natural way for a human to ask "is anything still connected to that box?", and
+ * the pool's connection table is where the answer comes from. It is not in this
+ * commit because the user asked for the one tool, and a second tool is a second
+ * schema for the model to choose between. When it is wanted, the descriptors live
+ * here, the wiring iterates, and the pool gains the view it is asked for.
  *
  * ## Layer
  *

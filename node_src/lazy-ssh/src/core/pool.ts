@@ -50,6 +50,14 @@
  * path this plugin exists to shorten. Named here rather than silently dropped:
  * the field's name is `connection`, and a reader should not mistake it for proof.
  *
+ * **A read-only view of what is held open.** A future `ssh_sessions` tool would
+ * answer "is anything still connected to that box?" from the connection table
+ * this module already keeps. It is not built, because one tool was asked for and
+ * a second tool is a second schema for the model to choose between; when it is
+ * wanted, the table is here and this module is where the answer comes from. No
+ * snapshot type ships ahead of that consumer — an unused public view is a promise
+ * nothing keeps.
+ *
  * ## Layer
  *
  * The core: the pool's lifetime logic, with no knowledge of dsh. It imports
@@ -98,20 +106,6 @@ export interface SshResult {
   readonly truncated: boolean;
 }
 
-/** One server the pool currently believes is connected. */
-export interface ServerSession {
-  /** The ssh destination. */
-  readonly destination: string;
-  /** The control socket carrying it. */
-  readonly controlPath: string;
-  /** How many calls are using it right now. */
-  readonly inFlight: number;
-  /** How many calls it has served since it was established. */
-  readonly calls: number;
-  /** Milliseconds since its last call finished; `0` while a call is in flight. */
-  readonly idleMs: number;
-}
-
 /** How the pool behaves, resolved from the row's config. */
 export interface PoolOptions {
   /** How long a connection may sit idle before it is released. */
@@ -127,8 +121,9 @@ export interface PoolOptions {
 /**
  * One connection the pool is holding, and the timer that will end it.
  *
- * Mutable and private to the pool: nothing outside this module ever sees an
- * entry, which is why the public view is built fresh by {@link SshPool.sessions}.
+ * Mutable, private, and the only record of what this plugin has left open: the
+ * table of these below is what a future read-only view would read, and nothing
+ * outside this module ever sees an entry.
  */
 interface Connection {
   readonly destination: string;
@@ -179,18 +174,6 @@ export class SshPool {
    */
   run(request: SshRequest): Promise<SshResult> {
     throw new Error(`SshPool.run is not implemented: ${request.destination}`);
-  }
-
-  /**
-   * What the pool is holding right now, as plain data.
-   *
-   * A snapshot built per call, with no reference to the pool's own entries: a
-   * caller cannot reach in and change a lifetime by accident.
-   *
-   * @returns one entry per destination the pool believes connected.
-   */
-  sessions(): readonly ServerSession[] {
-    throw new Error("SshPool.sessions is not implemented");
   }
 
   /**
