@@ -112,7 +112,9 @@ const SSH_RUN_TOOL: ToolSchema = {
     },
     timeoutMs: {
       type: "number",
-      required: false,
+      // Optional means the key is absent: the registry's schema compiler refuses
+      // `required: false` outright, because a property that is not required is
+      // one the author schema simply does not name.
       description:
         "How long this one command may take, in milliseconds. Defaults to the plugin's configured command timeout. " +
         "A command that hits it is killed and reported as timed out.",
