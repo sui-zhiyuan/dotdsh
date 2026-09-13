@@ -120,7 +120,7 @@ export function validateDestination(destination: string): void {
  * @param destination - the validated ssh destination.
  * @returns an absolute path under `config.controlDir`.
  */
-export function controlPathFor(config: SshConfig, destination: string): string {
+function controlPathFor(config: SshConfig, destination: string): string {
   throw new Error(`controlPathFor is not implemented: ${destination} (${config.controlDir})`);
 }
 
@@ -243,19 +243,9 @@ export class SshTransport {
   detachRelease(destination: string): void {
     throw new Error(`SshTransport.detachRelease is not implemented: ${destination}`);
   }
-
-  /**
-   * The control socket this transport uses for one destination.
-   *
-   * @param destination - the validated ssh destination.
-   * @returns the absolute socket path.
-   */
-  controlPathFor(destination: string): string {
-    throw new Error(`SshTransport.controlPathFor is not implemented: ${destination}`);
-  }
 }
 
 /** Remove one control socket if it is still there, ignoring every failure. */
-export function removeControlSocket(path: string): void {
+function removeControlSocket(path: string): void {
   throw new Error(`removeControlSocket is not implemented: ${path}`);
 }

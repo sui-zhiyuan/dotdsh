@@ -121,19 +121,15 @@ export interface PoolOptions {
 /**
  * One connection the pool is holding, and the timer that will end it.
  *
- * Mutable, private, and the only record of what this plugin has left open: the
- * table of these below is what a future read-only view would read, and nothing
- * outside this module ever sees an entry.
+ * Mutable, private, and the only record of what this plugin has left open. The
+ * fields are exactly the state the lifetime protocol reads and nothing else: a
+ * call counter or a last-used timestamp would only feed a view that does not
+ * exist yet, and a field with no reader is the next reviewer's question.
  */
 interface Connection {
   readonly destination: string;
-  readonly controlPath: string;
   /** Calls currently using this connection. */
   inFlight: number;
-  /** Calls served since it was established. */
-  calls: number;
-  /** When the last call finished. */
-  lastUsedAt: number;
   /** The pending idle release, or `undefined` while a call is in flight. */
   timer: ReturnType<typeof setTimeout> | undefined;
 }
