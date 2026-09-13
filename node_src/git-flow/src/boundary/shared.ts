@@ -415,16 +415,22 @@ export function withBranchPrefix(name: string): string {
 /**
  * The directory name a family's worktree takes.
  *
+ * The branch without its prefix, with `-` written as `_`: `feat/foo-bar` becomes
+ * `foo_bar` — one directory directly under the worktree root. The prefix earns
+ * nothing there, since it is the same for every family, and keeping it would nest
+ * every worktree a level deeper under a name that says only "this plugin made
+ * it", which the claim file already says.
+ *
  * Derived from the branch, so the two can never disagree about which feature this
- * is, with `-` written as `_`. The rule is one line, and it lives here rather
- * than in either door because both of them open worktrees and the two names have
- * to be the same one.
+ * is. The rule lives here rather than in either door because both of them open
+ * worktrees and the two names have to be the same one.
  *
  * @param branch - the branch name, already prefixed.
  * @returns the worktree's directory name, under the repository's worktree root.
  */
 export function worktreeNameFor(branch: string): string {
-  return branch.replaceAll("-", "_");
+  const unprefixed = branch.startsWith(BRANCH_PREFIX) ? branch.slice(BRANCH_PREFIX.length) : branch;
+  return unprefixed.replaceAll("-", "_");
 }
 
 /**
