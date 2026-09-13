@@ -63,23 +63,48 @@ export interface FamilyWorkspace {
 }
 
 /**
+ * One family's memoized workspace, and whether its tree is known to exist.
+ */
+interface MemoEntry {
+  /** The branch and the worktree the family's claim names. */
+  readonly workspace: FamilyWorkspace;
+  /**
+   * Whether both were created, or found already there.
+   *
+   * `true` is the state that lets a write skip every git call: nothing about a
+   * family's tree changes except through this module, and every operation that
+   * changes it drops the entry. `false` means the paths are known — so the claim
+   * file and its lock are not touched again — while the existence checks still
+   * run, which is what makes an attempt that died halfway retryable.
+   */
+  readonly complete: boolean;
+}
+
+/**
  * Per-family memo of the resolved workspace, keyed by the root session id.
  *
- * Written **last** in {@link ensureWorkspace}, once the branch and the worktree
- * both exist — so a failure anywhere earlier caches nothing, the next call reads
- * the claim file again, and the whole path stays re-entrant and retryable. That
- * is what lets a status check run it on the hot path.
+ * Four states, each of which means something different:
  *
- * An entry that is present and `null` means "asked, and this family holds no
- * claim"; an absent entry means "not resolved yet". An entry is dropped together
- * with the claim record it mirrors — by {@link gitComplete}'s last step, and by
- * {@link gitClean} — the two operations that take a workspace away. Dropping it
- * earlier would let a retry rebuild a worktree it is about to delete again.
+ * - **absent** — not resolved yet;
+ * - **`null`** — asked, and this family holds no claim;
+ * - **`complete: false`** — the claim named a branch and a worktree, and nothing
+ *   is known yet about whether they exist;
+ * - **`complete: true`** — both are there, so the resolution short-circuits with
+ *   no git call and no claim file read at all. This is the state a write on the
+ *   hot path needs.
+ *
+ * `complete` is only ever set where the work succeeded: {@link ensureWorkspace}
+ * marks it once the branch and the worktree are both in place, so a failure
+ * leaves an incomplete entry rather than a lie, and the next call resumes instead
+ * of starting over. An entry is dropped together with the claim record it mirrors
+ * — by {@link gitComplete}'s last step, and by {@link gitClean} — the two
+ * operations that take a workspace away. Dropping it earlier would let a retry
+ * rebuild a worktree it is about to delete again.
  *
  * Process-local by design: a cache of a fact the claim file already owns, never
  * the fact itself. Another process can change the file underneath it.
  */
-const sessionWorkspaceMemo = new Map<string, FamilyWorkspace | null>();
+const sessionWorkspaceMemo = new Map<string, MemoEntry | null>();
 
 /**
  * Start a family: claim a working tree for it, then report where it works.
@@ -125,16 +150,18 @@ export async function gitStart(
  *
  * Contract:
  *
- * - the memo is consulted first — a family whose workspace is already resolved
- *   returns immediately and runs no git command;
- * - otherwise the claim file is read for this session id. No record means the
- *   family has no claim, which is a normal state and not an error;
+ * - an entry marked `complete` in the memo answers immediately: no git call, no
+ *   claim file, no lock;
+ * - otherwise the claim file is read for this session id — unless an incomplete
+ *   entry already carries the paths it names, which saves the read and its lock
+ *   on the retry path. No record means the family has no claim, which is a normal
+ *   state and not an error;
  * - a recorded branch that does not exist yet is created;
  * - a recorded worktree that does not exist yet is created at
  *   `WORKTREE_ROOT/<worktreeName>` — never the main tree, which is exactly what a
  *   family is isolated from;
- * - every step is idempotent, and the memo is written only after the last one
- *   succeeds, so a failure leaves the state retryable rather than poisoned.
+ * - the entry is marked `complete` only after both exist, so every step is
+ *   idempotent and a failure leaves the state retryable rather than poisoned.
  *
  * @param runner - the process seam every git call goes through.
  * @param repoRoot - absolute path of the repository's main working tree.
