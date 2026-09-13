@@ -124,7 +124,7 @@ export async function commitFile(git, cwd, name, message) {
  *
  * @returns a service whose `spawn` returns a handle shaped like the harness's.
  */
-export function subprocessService() {
+function subprocessService() {
   return {
     spawn(spec) {
       const child = spawn(spec.argv[0], spec.argv.slice(1), {
@@ -167,7 +167,7 @@ export function subprocessService() {
  * @param records - the resident sessions, in the order `list` should report them.
  * @returns a store with `get` and `list`.
  */
-export function sessionsService(records) {
+function sessionsService(records) {
   const byId = new Map(records.map((record) => [record.id, record]));
   return { get: (id) => byId.get(id), list: () => [...byId.values()] };
 }
@@ -191,9 +191,6 @@ export function makeAgent(sessionId, cwd, records = [{ id: sessionId, header: { 
   };
   return { agent, sessions, injected };
 }
-
-/** The waterfall continuation that allows a call. */
-export const allow = () => Promise.resolve({ kind: "allow" });
 
 /** A caller-owned cancellation that never fires. */
 export const signal = new AbortController().signal;

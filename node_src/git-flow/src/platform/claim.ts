@@ -36,8 +36,8 @@
  * version = "0.1.0"
  *
  * [claims.session-ea4ebc37-0e8e-4dbd-9a70-f1f442c58c0c]
- * branch = "feature/git-flow-rewrite"
- * worktreeName = "session-ea4ebc37"
+ * branch = "feat/git-flow-rewrite"
+ * worktreeName = "git_flow_rewrite"
  * createdAt = "2026-09-13T00:34:56.840Z"
  * ```
  *

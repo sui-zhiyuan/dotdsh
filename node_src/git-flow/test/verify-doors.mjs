@@ -27,7 +27,6 @@ import { GIT_FLOW_COMMANDS } from "../lib/boundary/commands.js";
 import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
-import { GitClient, nodeRunner } from "../lib/platform/exec.js";
 import { check, commitFile, makeAgent, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
 
 /**
