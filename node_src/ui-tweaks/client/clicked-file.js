@@ -174,7 +174,9 @@
    * of the surface's tested contract.
    *
    * @param {EventTarget|null} target - the clicked node.
-   * @returns {{path: string, line: number}|null} what the surface names, or null.
+   * @returns {{path: string, line?: number}|null} what the surface names, or null.
+   *   `line` is absent on both surfaces this script handles today; it stays in the
+   *   shape because the wire payload accepts one and a future surface may name it.
    */
   function fileFromClickTarget(target) {
     // A non-element (the document, a text node, `window`) has no `closest`, and
@@ -540,8 +542,12 @@
   }
 
   // The exports `index.js` picks up. A classic script has no module object, so
-  // the global IS the interface between the two files.
-  window.__dshDotdshOpenInEditor = {
+  // the global IS the interface between the two files. `index.js` may have run
+  // its factory before or after this file executed (an injected script loads
+  // asynchronously), so the export is announced through its ready hook when it
+  // installed one, and left on the global as well for a reader that arrives
+  // later or for a page that never installed the hook.
+  const exports_ = {
     STATUS_ROUTE,
     LAUNCH_ROUTE,
     PRODUCED_FILE_SELECTOR,
@@ -553,4 +559,8 @@
     probeEditorStatus,
     apply,
   };
+  window.__dshDotdshOpenInEditor = exports_;
+  if (typeof window.__dshDotdshOpenInEditorReady === "function") {
+    window.__dshDotdshOpenInEditorReady(exports_);
+  }
 })();

@@ -36,11 +36,30 @@
 // that behaviour keeps its own file. A classic script has no import, so the
 // second file is injected here — the same `<script src>` technique the module
 // system uses for its own bundles, resolved against THIS script's own URL so no
-// absolute path is ever written down — and it publishes its exports on
-// `window.__dshDotdshOpenInEditor`, which `apply` below reads. Injection is
-// synchronous (a plain script element, not a module), so by the time the page
-// can dispatch a click the handler is registered.
+// absolute path is ever written down.
+//
+// The handshake is a ready queue rather than a read of the global, because a
+// dynamically inserted `<script src>` loads ASYNCHRONOUSLY: this file's factory
+// may materialize before the sibling has executed (the shell materializes
+// factories after its own preloads, which can outlast one small sibling fetch),
+// and a single read at that instant would then install nothing and silently lose
+// the tweak. So the sibling announces itself through
+// `window.__dshDotdshOpenInEditorReady(exports)` — whichever of the two happens
+// second runs the installer — and the installer is idempotent, so the ordering
+// cannot produce two listeners.
+window.__dshDotdshOpenInEditorReadyQueue = [];
 (() => {
+  /**
+   * Called once by clicked-file.js with the handler's exports. Drains whatever
+   * the factory has already queued and switches to installing immediately, so a
+   * factory that materializes later still works.
+   * @param {object} handler - the handler's exported surface.
+   */
+  window.__dshDotdshOpenInEditorReady = (handler) => {
+    const queued = window.__dshDotdshOpenInEditorReadyQueue;
+    window.__dshDotdshOpenInEditorReadyQueue = { handler };
+    for (const install of queued) install(handler);
+  };
   const current = document.currentScript;
   if (current === null || current === undefined) return;
   const script = document.createElement("script");
@@ -83,13 +102,18 @@ window.__ModuleLoader__.load({
     };
 
     /**
-     * The open-in-editor half, loaded as a sibling script (see the injection
-     * above). A page that failed to load it — or a fake DOM in the committed
-     * check — leaves this undefined, and the tweak below then installs nothing:
-     * Ctrl/Cmd+click keeps dsh's own preview instead of throwing at boot.
-     * @type {object|undefined}
+     * The open-in-editor installers waiting for the sibling script, or the
+     * handler itself once it has arrived.
+     *
+     * A factory may materialize before the injected script has executed, so this
+     * cannot be a single read: `installOpenInEditor` pushes an installer here and
+     * `window.__dshDotdshOpenInEditorReady` (installed by the preamble above)
+     * drains the list — or, if the sibling already ran, hands the handler
+     * straight over. `openInEditor` below is that second state.
      */
-    const openInEditor = window.__dshDotdshOpenInEditor;
+    const openInEditorInstallers = window.__dshDotdshOpenInEditorReadyQueue;
+    const openInEditorArrived = openInEditorInstallers !== null && typeof openInEditorInstallers === "object" && !Array.isArray(openInEditorInstallers);
+    const openInEditor = openInEditorArrived ? openInEditorInstallers.handler : undefined;
 
     /** The resident composer's editable host (ComposerContentEditable's attribute). */
     const COMPOSER_INPUT = "[data-composer-input]";
@@ -371,15 +395,28 @@ window.__ModuleLoader__.load({
      *   comment in the body).
      */
     function installOpenInEditor(ctx) {
-      if (openInEditor === undefined || typeof openInEditor.apply !== "function") return () => {};
-      // Deliberately NOT wrapped in a `ctx.effect` of our own. `openInEditor.apply`
-      // is synchronous by contract and installs its capture-phase click listener
-      // inside its OWN `ctx.effect` on this very context, so the listener already
-      // belongs to this plugin's fiber and is removed when the row unloads. It
-      // returns nothing, so there is no disposer here to forward; adding a second
-      // effect would own nothing and only invite a duplicate listener. The no-op
-      // below is what `apply`'s aggregate disposer needs, not a claim of ownership.
-      openInEditor.apply(ctx);
+      // The sibling script may not have executed yet (injected scripts load
+      // asynchronously and the shell can materialize this factory first), so an
+      // installer is QUEUED when the handler is not here yet, and runs the moment
+      // it arrives. The queue drains exactly once and this function is called
+      // once per plugin activation, so the ordering cannot double-install.
+      const install = (openInEditor) => {
+        if (openInEditor === undefined || typeof openInEditor.apply !== "function") return;
+        // Deliberately NOT wrapped in a `ctx.effect` of our own.
+        // `openInEditor.apply` is synchronous by contract and installs its
+        // capture-phase click listener inside its OWN `ctx.effect` on this very
+        // context, so the listener already belongs to this plugin's fiber and is
+        // removed when the row unloads. It returns nothing, so there is no
+        // disposer here to forward; adding a second effect would own nothing and
+        // only invite a duplicate listener. The no-op below is what `apply`'s
+        // aggregate disposer needs, not a claim of ownership.
+        openInEditor.apply(ctx);
+      };
+      if (openInEditor !== undefined) {
+        install(openInEditor);
+      } else if (Array.isArray(window.__dshDotdshOpenInEditorReadyQueue)) {
+        window.__dshDotdshOpenInEditorReadyQueue.push(install);
+      }
       return () => {};
     }
 
