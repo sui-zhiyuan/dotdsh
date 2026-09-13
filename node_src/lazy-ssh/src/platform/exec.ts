@@ -53,15 +53,23 @@
 
 import { spawn } from "node:child_process";
 
-/** One finished process. */
+/** One finished process, or one the deadline took away from its caller. */
 export interface RunResult {
-  /** Exit code, or `-1` when a signal ended the child instead of an exit. */
+  /**
+   * Exit code, or `-1` when there was none to report: a signal ended the child,
+   * or the deadline settled the call before the child was done.
+   */
   readonly code: number;
   /** Decoded standard output, capped at the caller's `maxOutputBytes`. */
   readonly stdout: string;
   /** Decoded standard error, capped at the caller's `maxOutputBytes`. */
   readonly stderr: string;
-  /** Whether `timeoutMs` expired and the child was killed for it. */
+  /**
+   * Whether this call hit its deadline and was settled there.
+   *
+   * It describes the call, not the process: the child may have exited on its own
+   * before the deadline, and it may still be alive after it.
+   */
   readonly timedOut: boolean;
   /** Whether either stream was cut off at `maxOutputBytes`. */
   readonly truncated: boolean;
