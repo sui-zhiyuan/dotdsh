@@ -117,5 +117,13 @@
   # endpoint from that field while sending the refresh token to it. GitHub
   # Enterprise sign-in is therefore not supported by design. `loginWindowMs`
   # (180000) is the only configuration key.
-  - id: copilot-auth
-    name: '@dsh-external/dotdsh-copilot-auth'
+  #
+  # Not mounted: the three commands above are rarely used, and once a grant has
+  # been signed in the subscription needs nothing more from this plugin — the
+  # stock `llm-pi-ai` adapter reads the record `llm-pi-ai/github-copilot` and
+  # refreshes it through the credential seam itself. The package stays a
+  # dependency of this bundle, so the terminal half still works:
+  # `dotdsh-copilot-auth login|status|logout`. Uncomment the two rows below to
+  # bring `/copilot-login`, `/copilot-status` and `/copilot-logout` back.
+  # - id: copilot-auth
+  #   name: '@dsh-external/dotdsh-copilot-auth'
