@@ -42,6 +42,8 @@
  * @module @dsh-external/dotdsh-lazy-ssh/exec
  */
 
+import { spawn } from "node:child_process";
+
 /** One finished process. */
 export interface RunResult {
   /** Exit code, or `-1` when a signal ended the child instead of an exit. */
@@ -102,8 +104,9 @@ export type Runner = (
  * only thing that ends one.
  *
  * The timeout is enforced here rather than by the caller so that the kill ladder
- * has exactly one implementation: the child is signalled with `SIGTERM`, and the
- * resolved result carries the partial output either way.
+ * has exactly one implementation: the child is signalled with `SIGTERM`, a child
+ * that is still alive five seconds later is sent `SIGKILL`, and the resolved
+ * result carries the partial output either way.
  *
  * @param argv - the executable followed by its arguments, passed verbatim.
  * @param options - directory, deadline, output cap, cancellation and environment.
@@ -114,7 +117,83 @@ export function nodeRunner(
   argv: readonly [string, ...string[]],
   options: RunnerOptions,
 ): Promise<RunResult> {
-  throw new Error(`nodeRunner is not implemented: ${argv[0]} (cwd ${options.cwd})`);
+  return new Promise<RunResult>((resolve, reject) => {
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd: options.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...options.env },
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+
+    const cap = options.maxOutputBytes;
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const stdoutKept = { bytes: 0 };
+    const stderrKept = { bytes: 0 };
+    let truncated = false;
+
+    // Byte-exact, not character-exact: a chunk is cut at the remaining room, and
+    // only what falls past the cap is dropped. The listener stays attached, so
+    // the stream is still drained even after the cap is reached.
+    const collect = (chunks: Buffer[], kept: { bytes: number }, chunk: Buffer): void => {
+      const room = cap - kept.bytes;
+      if (room <= 0) {
+        truncated = true;
+        return;
+      }
+      if (chunk.length <= room) {
+        chunks.push(chunk);
+        kept.bytes += chunk.length;
+        return;
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, room)));
+      kept.bytes = cap;
+      truncated = true;
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      collect(stdoutChunks, stdoutKept, chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      collect(stderrChunks, stderrKept, chunk);
+    });
+
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      // A child that ignores SIGTERM must not be able to hold the call forever.
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 5000);
+    }, options.timeoutMs);
+
+    const clearTimers = (): void => {
+      clearTimeout(deadlineTimer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+    };
+
+    // Covers both a child that could not start (ENOENT and friends) and the
+    // abort Node raises when `options.signal` fires; `close` may still follow,
+    // and the first settlement is the one that counts.
+    child.on("error", (error: Error) => {
+      clearTimers();
+      reject(error);
+    });
+
+    child.on("close", (code: number | null) => {
+      clearTimers();
+      resolve({
+        code: code ?? -1,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        timedOut,
+        truncated,
+      });
+    });
+  });
 }
 
 /**
@@ -136,5 +215,15 @@ export function nodeRunner(
  * @param argv - the executable followed by its arguments, passed verbatim.
  */
 export function spawnDetached(argv: readonly [string, ...string[]]): void {
-  throw new Error(`spawnDetached is not implemented: ${argv[0]}`);
+  try {
+    const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: "ignore" });
+    // A start failure arrives asynchronously on `error`, not as a throw; without
+    // a listener Node would surface it as an uncaught exception, which is not
+    // the silence this path promises.
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // Teardown is best-effort: a release that cannot start is the socket's
+    // business, and a teardown that throws is worse than a socket left behind.
+  }
 }
