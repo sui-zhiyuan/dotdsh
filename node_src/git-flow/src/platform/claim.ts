@@ -7,21 +7,58 @@
  *
  * ## One instance, one lock
  *
- * **The lock is not implemented yet.** A store holds the claim file open for its
- * whole lifetime, and every write goes through that descriptor, but
- * {@link ClaimStore.open} takes no lock and {@link ClaimStore.dispose} releases
- * none. That leaves exactly the hole the lock is for: two processes can interleave
- * a read and a write, so one of them writes a document it read before the other's
- * change landed, and a claim is lost with nothing reporting it. No lock file
- * stands in for it in the meantime.
+ * One store at a time, across processes, and the lock is a file beside the claim
+ * file: **creating `<claimFile>.lock` is taking the lock and deleting it is
+ * releasing it**, and a store holds it for its whole lifetime. Everything a store
+ * does — the read on the way in, every `append` and `remove`, the read a `query`
+ * or a `find` makes — is therefore one critical section, which is what turns "read
+ * the claim, judge it, change it" into a single operation instead of two another
+ * process can interleave. Readers take the lock too: this is one mutex over the
+ * file and not a read-write lock, deliberately, because the decisions above this
+ * module read and then write.
  *
- * TODO: take the exclusive lock in {@link ClaimStore.open} — waiting on the event
- * loop for a peer's lock, up to {@link LOCK_TIMEOUT_MS}, never blocking and never
- * failing on sight — and release it in {@link ClaimStore.dispose}. With the lock
- * in hand, mutating the file through one open descriptor is what makes "read the
- * claim, then change it" a single critical section instead of two operations
- * another process can interleave, and it is why no separate lock file is needed,
- * with its own stale-lock deadlock.
+ * The lock file is **not** a staging file. Nothing is ever renamed onto the claim
+ * file and the lock is not released by moving it into place: it exists while a
+ * store is open, for no other reason, and no reader of the claim file ever looks
+ * at it.
+ *
+ * ## When the holder is gone
+ *
+ * A holder that crashes leaves the lock file behind, and the repository would be
+ * locked out of its own claim file forever. So the lock file's **mtime** is the
+ * whole expiry rule: an existing lock younger than
+ * {@link FlowSettings.lockStaleSeconds} is held, and the caller is refused rather
+ * than made to wait — the model or the human retries; one older than that is a
+ * leftover, and a process takes it over by writing its own owner line over it —
+ * the touch and the record of who holds the lock are the same write.
+ *
+ * That bound is only sound because a critical section is a few filesystem
+ * operations on a small file: microseconds, not seconds. The invariant that keeps
+ * it sound is that **no store is held across a git call** — `core`'s sweep takes
+ * its snapshot and lets the lock go before it removes anything. Renewing the mtime
+ * while the lock is held was considered and rejected: a heartbeat has to run on
+ * the event loop, a long synchronous turn delays it, and the lock then looks
+ * expired while it is still held. That is the failure mode `proper-lockfile` is
+ * known for, and nothing under the bound needs renewal.
+ *
+ * **The gap this leaves, recorded rather than papered over:** two processes can
+ * find the same expired lock and touch it in the same instant, and both then
+ * believe they hold it. Closing it needs a primitive the filesystem does not
+ * offer — `unlink` removes whatever is at the path now, not the file that was
+ * judged — so the alternatives are an election over one file per contender, or
+ * never taking a lock over at all. Both cost more than the window. For it to hurt,
+ * two processes have to reach the same expired lock inside the same microsecond
+ * *and* then interleave two read-modify-writes of the file.
+ *
+ * ## Why the descriptor does not carry it
+ *
+ * Node exposes no `flock`/`fcntl` locking: `fs.constants` holds no `LOCK_*` flag
+ * and a `FileHandle` has no lock method, so an advisory lock cannot ride the
+ * descriptor this store writes through. Node's answer is that a cross-platform
+ * file lock is not a thing it provides — nodejs/node#49256 was closed as
+ * not-planned on libuv's ruling that it is broken differently on every platform —
+ * and this package takes no native dependency. What is left is a separate file
+ * whose existence is the lock, which is what the section above describes.
  *
  * ## Format
  *
@@ -36,8 +73,8 @@
  * version = "0.1.0"
  *
  * [claims.session-ea4ebc37-0e8e-4dbd-9a70-f1f442c58c0c]
- * branch = "feature/git-flow-rewrite"
- * worktreeName = "session-ea4ebc37"
+ * branch = "feat/git-flow-rewrite"
+ * worktreeName = "git_flow_rewrite"
  * createdAt = "2026-09-13T00:34:56.840Z"
  * ```
  *
@@ -51,7 +88,8 @@
  * The file lives under the repository's main working tree and **must be listed in
  * `.gitignore`**. This module does not write one and adds no rule of its own: a
  * claim that reaches a commit carries machine-local absolute paths into the
- * shared history, and `git add --all` will pick it up unless it is ignored.
+ * shared history, and `git add --all` will pick it up unless it is ignored. The
+ * lock file sits beside it in the same directory and is covered by the same rule.
  *
  * ## Layer
  *
@@ -62,18 +100,12 @@
  * @module @dsh-external/dotdsh-git-flow/claim
  */
 
-import { mkdir, open, readFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { mkdir, open, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "smol-toml";
-
-/**
- * The claim file, relative to the repository's main working tree.
- *
- * Hardcoded for now. Its directory must appear in `.gitignore` — this module
- * never stages it, but nothing else knows to exclude it either.
- */
-const CLAIM_FILE = ".dsh.local/git-flow.toml";
+import type { FlowContext } from "./context.js";
 
 /**
  * The format version stamped into every document this module writes.
@@ -110,16 +142,18 @@ const CLAIM_HEADER = `# Machine-local state for the dsh git-flow plugin. It reco
  */
 export const MAIN_WORKTREE = "[MAIN]";
 
+/** Suffix that turns the claim file's path into its lock file's path. */
+const LOCK_SUFFIX = ".lock";
+
 /**
- * How long {@link ClaimStore.open} will wait for a peer's lock before giving up.
+ * How many times {@link acquireLock} retries the create after it found the lock
+ * file gone.
  *
- * Unused for now: it is the bound the lock reaches for once {@link ClaimStore.open}
- * actually takes one. Hardcoded, like every other path and bound in this rewrite.
- * It only has to outlast a peer's claim write, which is a read-modify-write of one
- * small file; anything longer than this is a peer that is not coming back, and
- * waiting for it would be the deadlock this design exists to avoid.
+ * One retry is what happens in practice: the create failed because a peer held the
+ * lock, and the peer released it in the microseconds before the stat below. The
+ * bound is here so that a path that keeps vanishing cannot spin forever.
  */
-const LOCK_TIMEOUT_MS = 2000;
+const LOCK_CREATE_RETRIES = 3;
 
 /** One family's claim, as the claim file records it. */
 export interface Claim {
@@ -161,83 +195,106 @@ interface ClaimDocument {
 }
 
 /**
- * The claim file, held open.
+ * The claim file, held open — and the lock on it, held for the same lifetime.
  *
- * One instance per repository, and one operation at a time through it. The lock
- * that would make "one at a time" true across processes is **not implemented
- * yet** — see the module doc — so today the serialization is only this instance's.
- * A store that outlives its usefulness is worse than no store at all, because the
- * handle — and, once it lands, the lock — lives as long as the instance does, so
- * `dispose` belongs in a `finally`.
+ * One instance per repository, and one operation at a time through it, across
+ * processes: {@link ClaimStore.open} takes the lock and {@link ClaimStore.dispose}
+ * releases it, so a store that outlives its usefulness is worse than no store at
+ * all — there is nothing left to release it. `dispose` belongs in a `finally`,
+ * exactly like the descriptor.
  */
 export class ClaimStore {
-  /** Absolute path of the repository's main working tree; every path this store uses derives from it. */
+  /** Absolute path of the repository's main working tree; the claim file and its lock are found from here. */
   readonly repoRoot: string;
-  /**
-   * The open file every write goes through, and the descriptor the exclusive lock
-   * will ride on once it lands.
-   */
+  /** Absolute path of the claim file itself, resolved from the repository and the `claimFile` setting. */
+  private readonly claimFilePath: string;
+  /** The open file every read and write goes through. */
   private readonly handle: FileHandle;
+  /** The lock file this store owns: created on the way in, removed by {@link ClaimStore.dispose}. */
+  private readonly lockPath: string;
 
   /**
-   * Build a store around an already-open file.
+   * Build a store around an already-open file and an already-taken lock.
    *
    * Private, and it stays that way: {@link ClaimStore.open} is the only way to an
-   * instance, because the handle has to be in hand before any method is called —
-   * and, once the lock exists, the lock has to be as well.
+   * instance, because both the descriptor and the lock have to be in hand before
+   * any method is called.
    */
-  private constructor(repoRoot: string, handle: FileHandle) {
+  private constructor(repoRoot: string, claimFilePath: string, handle: FileHandle, lockPath: string) {
     this.repoRoot = repoRoot;
+    this.claimFilePath = claimFilePath;
     this.handle = handle;
+    this.lockPath = lockPath;
   }
 
   /**
-   * Open the repository's claim file.
+   * Open the repository's claim file: take its lock, then read it.
    *
-   * Creates the file and its directory when they are not there yet, then reads the
-   * file once, so one that cannot be read or parsed fails here rather than at the
-   * first command a session runs.
+   * The lock comes first, because everything this store does afterwards is the
+   * critical section it exists for. Creating the file and its directory when they
+   * are not there yet is part of taking it, and the file is then read once, so a
+   * document that cannot be read or parsed fails here rather than at the first
+   * command a session runs — with the lock already given back.
    *
-   * **It does not take the lock yet** (see the module doc). Once it does, a lock
-   * held by another process is waited for on the event loop, up to
-   * {@link LOCK_TIMEOUT_MS}; once that passes, this throws rather than waiting
-   * forever, and the caller decides whether the family may proceed without a
-   * claim.
+   * Where the file and its lock live, and how old a lock may be before it is taken
+   * over, all come from the context's settings — this module hardcodes none of them.
    *
-   * @param repoRoot - absolute path of the repository's main working tree.
+   * A lock another process holds is **not** waited for. This throws, and whoever is
+   * above it — the model through a tool, the human through a command — runs the
+   * operation again in a moment. The exception is a lock old enough to be a
+   * leftover (see {@link FlowSettings.lockStaleSeconds}), which is taken over here.
+   *
+   * @param context - the settings this plugin resolved, the process seam, and the
+   *   repository's main working tree.
    * @returns an open store, which the caller must {@link ClaimStore.dispose}.
+   * @throws Error when another process holds the lock.
    */
-  static async open(repoRoot: string): Promise<ClaimStore> {
-    const path = claimPath(repoRoot);
-    await mkdir(dirname(path), { recursive: true });
-    const handle = await openClaimFile(path);
-    const store = new ClaimStore(repoRoot, handle);
+  static async open(context: FlowContext): Promise<ClaimStore> {
+    const claimFilePath = claimPathOf(context);
+    const lockPath = `${claimFilePath}${LOCK_SUFFIX}`;
+    await mkdir(dirname(claimFilePath), { recursive: true });
+    await acquireLock(lockPath, context.settings.lockStaleSeconds * 1_000);
     try {
-      await store.readDocument();
+      const handle = await openClaimFile(claimFilePath);
+      const store = new ClaimStore(context.repoRoot, claimFilePath, handle, lockPath);
+      try {
+        await store.readDocument();
+      } catch (error) {
+        // The read is a check on the file, not a use of it: a store that cannot read
+        // its own file has no reason to keep the descriptor open.
+        await handle.close();
+        throw error;
+      }
+      // A file with no content — one this store just created, or an empty one some
+      // earlier run left behind — and a session that only ever asks about its claim
+      // never writes one. So the version is stamped here, where the file comes into
+      // being, rather than waiting for a first claim that may never come.
+      if ((await handle.stat()).size === 0) {
+        await store.writeDocument({ version: CLAIM_VERSION, claims: {} });
+      }
+      return store;
     } catch (error) {
-      // The read is a check on the file, not a use of it: a store that cannot read
-      // its own file has no reason to keep the descriptor open.
-      await handle.close();
+      // The lock is not the caller's to clean up: a store that never came into
+      // being releases it before the error travels on.
+      await releaseLock(lockPath);
       throw error;
     }
-    // A file with no content — one this store just created, or an empty one some
-    // earlier run left behind — and a session that only ever asks about its claim
-    // never writes one. So the version is stamped here, where the file comes into
-    // being, rather than waiting for a first claim that may never come.
-    if ((await handle.stat()).size === 0) {
-      await store.writeDocument({ version: CLAIM_VERSION, claims: {} });
-    }
-    return store;
   }
 
   /**
-   * Close the file — and release the lock, once there is one.
+   * Close the file and release the lock.
    *
    * The destructor of this class: everything else in it is only valid before this
    * runs. Safe to call once; calling it twice is a caller bug.
    */
-  dispose(): Promise<void> {
-    return this.handle.close();
+  async dispose(): Promise<void> {
+    try {
+      await this.handle.close();
+    } finally {
+      // `finally` because a store whose close failed is still a store whose lock has
+      // to go back, and the release itself never throws.
+      await releaseLock(this.lockPath);
+    }
   }
 
   /**
@@ -334,7 +391,7 @@ export class ClaimStore {
    * module reads and writes only the fields it declares.
    */
   private async readDocument(): Promise<ClaimDocument> {
-    const path = claimPath(this.repoRoot);
+    const path = this.claimFilePath;
     const parsed = parse(await readFile(path, "utf8")) as { claims?: unknown };
     const table = parsed.claims;
     if (table === undefined) return { version: CLAIM_VERSION, claims: {} };
@@ -375,13 +432,17 @@ export class ClaimStore {
 }
 
 /**
- * Absolute path of the claim file inside one repository.
+ * Absolute path of the claim file one context names.
  *
- * @param repoRoot - absolute path of the repository's main working tree.
+ * The repository comes from the context and the rest of the path from its
+ * settings, so this module hardcodes no location: a deployment that moves the
+ * claim file moves it for every operation at once.
+ *
+ * @param context - the settings and the repository's main working tree.
  * @returns the file's path, whose directory the caller creates.
  */
-function claimPath(repoRoot: string): string {
-  return join(repoRoot, CLAIM_FILE);
+function claimPathOf(context: FlowContext): string {
+  return join(context.repoRoot, context.settings.claimFile);
 }
 
 /**
@@ -401,5 +462,106 @@ async function openClaimFile(path: string): Promise<FileHandle> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return await open(path, "a+");
+  }
+}
+
+/**
+ * Take the claim file's lock, creating the lock file.
+ *
+ * **Creating the file is taking the lock**, and `wx` is what makes that mean
+ * something: the create succeeds only when the path is free, and the filesystem
+ * decides that atomically, so exactly one process can create it. Nothing is
+ * waited on — a lock that is held is reported, not queued behind.
+ *
+ * The one exception is an expired lock. A lock file whose mtime is older than
+ * `staleMs` cannot belong to a live critical section, so it is a leftover from a
+ * holder that died, and writing this process's own owner line over it is how the
+ * leftover is taken over: that write refreshes the mtime, so the touch and the
+ * record of who holds the lock are the same one. The window this leaves — two
+ * processes touching the same expired lock in the same instant — is in the module
+ * doc, recorded rather than papered over.
+ *
+ * @param lockPath - the lock file's path, whose directory already exists.
+ * @param staleMs - how old the lock may be before it is treated as a leftover,
+ *   from {@link FlowSettings.lockStaleSeconds}.
+ * @throws Error when a live holder has it.
+ */
+async function acquireLock(lockPath: string, staleMs: number): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.close();
+      // The owner line is for whoever finds the file and wonders who holds it:
+      // nothing reads it, not even this module, so a failed write is not worth
+      // failing an acquisition over.
+      await writeFile(lockPath, ownerLine()).catch(() => undefined);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+
+    const facts = await statOrUndefined(lockPath);
+    if (facts === undefined) {
+      // The path is free again: a peer released the lock between the create above
+      // and this stat, so the create is worth another try.
+      if (attempt >= LOCK_CREATE_RETRIES) {
+        throw new Error(`the claim lock at ${lockPath} could not be created: it kept being released underneath`);
+      }
+      continue;
+    }
+
+    const ageMs = Date.now() - facts.mtimeMs;
+    if (ageMs <= staleMs) {
+      throw new Error(
+        `the claim lock at ${lockPath} is held by another process (taken ${Math.round(ageMs / 1000)}s ago). ` +
+          "Nothing was read and nothing was written; run this again in a moment.",
+      );
+    }
+
+    await writeFile(lockPath, ownerLine());
+    return;
+  }
+}
+
+/**
+ * Release the claim file's lock, removing the lock file.
+ *
+ * A failure is swallowed. Callers reach this from a `finally`, where an error
+ * would replace whatever went wrong first, and a lock file left behind is not a
+ * dead end: it goes stale {@link FlowSettings.lockStaleSeconds} later and the next
+ * store takes it over.
+ *
+ * @param lockPath - the lock file's path.
+ */
+async function releaseLock(lockPath: string): Promise<void> {
+  await unlink(lockPath).catch(() => undefined);
+}
+
+/**
+ * The one line a lock file carries.
+ *
+ * Debug only, by design: it is written once, when the lock is taken, and nothing
+ * in this plugin reads it back. Whoever finds a lock file — a human wondering
+ * which session is in the way — is the reader it exists for.
+ */
+function ownerLine(): string {
+  return `pid=${process.pid} at=${new Date().toISOString()}\n`;
+}
+
+/**
+ * `stat` that answers `undefined` instead of throwing when the path is not there.
+ *
+ * A lock file that vanished between two calls is a normal state, not an error:
+ * that is what a peer releasing the lock looks like from here.
+ *
+ * @param path - the path to look at.
+ * @returns its facts, or `undefined` when it does not exist.
+ */
+async function statOrUndefined(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
   }
 }

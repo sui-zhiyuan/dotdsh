@@ -27,7 +27,10 @@
  * ## The rules
  *
  * A write is allowed when it lands inside the tree its own family claimed, and
- * refused otherwise:
+ * refused otherwise. The whole guard can also be switched off — `guard: "off"` in
+ * the row's configuration — which is the escape hatch for a session that has to
+ * write somewhere these rules refuse: with the guard off, the workflow is advisory
+ * and nothing below runs.
  *
  * 1. only the harness's file-mutating tools are its business — everything else is
  *    `next()`, including a call that carries no agent at all, which is a call no
@@ -60,6 +63,7 @@
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { PreToolDecision, ToolExecution } from "@deepseek-ai/dsh-tools";
 import { ensureWorkspace } from "../core/core.js";
+import type { FlowSettings } from "../platform/settings.js";
 import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 import { factsFor, sessionAgentOf } from "./shared.js";
 
@@ -147,12 +151,19 @@ function isInside(parent: string, child: string): boolean {
  *
  * @param execution - the pending call: name, arguments, and calling agent.
  * @param next - the waterfall continuation, which allows the call.
+ * @param settings - the plugin's resolved configuration; `guard: "off"` turns the
+ *   whole listener into a pass-through.
  * @returns the decision.
  */
 async function beforeToolCall(
   execution: ToolExecution,
   next: () => Promise<PreToolDecision>,
+  settings: FlowSettings,
 ): Promise<PreToolDecision> {
+  // Off means off, before anything is looked at: not even the tool name is worth
+  // reading when the answer is always the same.
+  if (settings.guard === "off") return next();
+
   const targetArgument = FILE_WRITERS.get(execution.name);
   if (targetArgument === undefined) return next();
 
@@ -179,10 +190,10 @@ async function beforeToolCall(
 
   const target = resolve(cwd, declaredPath);
 
-  const facts = await factsFor(agent, execution.signal);
-  if (!isInside(facts.repoRoot, target)) return next();
+  const facts = await factsFor(agent, settings, execution.signal);
+  if (!isInside(facts.flow.repoRoot, target)) return next();
 
-  const workspace = await ensureWorkspace(facts.runner, facts.repoRoot, facts.sessionId, execution.signal);
+  const workspace = await ensureWorkspace(facts.flow, facts.sessionId, execution.signal);
   if (workspace === null) {
     return {
       kind: "deny",
@@ -198,7 +209,7 @@ async function beforeToolCall(
   // The redirected path is the target's own position under the repository,
   // re-rooted at the worktree: the model cannot derive where its family was put,
   // so the refusal has to spell the path out.
-  const redirected = join(workspace.workTree, relative(facts.repoRoot, target));
+  const redirected = join(workspace.workTree, relative(facts.flow.repoRoot, target));
   return {
     kind: "deny",
     reason:
@@ -213,10 +224,15 @@ async function beforeToolCall(
  * A single object rather than a list: there is exactly one interception point,
  * and a list of one would only invite the question of what a second would mean.
  * Typed `as const` so `hook` stays the literal the harness's listener overloads
- * resolve against. The wiring module registers it as it stands:
+ * resolve against. The wiring module is the one that holds the settings, so it
+ * closes over them:
  *
  * ```ts
- * ctx.effect(() => ctx.on(GIT_FLOW_INTERCEPTOR.hook, GIT_FLOW_INTERCEPTOR.handle));
+ * ctx.effect(() =>
+ *   ctx.on(GIT_FLOW_INTERCEPTOR.hook, (execution, next) =>
+ *     GIT_FLOW_INTERCEPTOR.handle(execution, next, settings),
+ *   ),
+ * );
  * ```
  */
 export const GIT_FLOW_INTERCEPTOR = {

@@ -188,16 +188,25 @@ asked for one. `/git-cleanup` is bare, because its whole input is "now". The hos
 way (`/compact` bare; `/feedback` and `/goal` with hints), and `test/verify-doors.mjs` pins the
 declarations, since neither a rename nor a dropped field fails anything else.
 
+**The workflow's own values are configuration, and the defaults are what this repository runs.** Eight
+keys — the branch prefix, the integration branch, the worktree root, the claim file, the lock's
+staleness, the sweep's age, the longest subject, and whether the guard runs — arrive as the plugin row's
+`config`, are validated when the plugin mounts rather than at first use, and travel below the boundary
+as one resolved object (`FlowContext`): the harness hands a row's configuration to a plugin once and
+never exposes it again, so everything deeper is given what it needs instead of asking. The two skill
+bodies are rendered from the same object, which is what keeps a model's rules from contradicting the
+deployment they run in.
+
 **Two worktree locations, chosen for two different lifetimes.** A *session's* worktree lives at
-`<repo>/.dsh.local/worktrees/<name>`, inside the repository on purpose: the harness's workspace-write
-sandbox is rooted at the session's workspace, so work that stays under the repository needs no
-re-approval, and `$DSH_HOME` would put it outside that root. The name is the branch subject with `-`
-written as `_` — `feat/foo-bar` becomes `foo_bar` — derived from the branch, so the two can never
-disagree about which feature the tree holds. The *transient* worktree used to merge into an
+`<repo>/<worktreeRoot>/<name>` — `.dsh.local/worktrees` as it ships — inside the repository on purpose:
+the harness's workspace-write sandbox is rooted at the session's workspace, so work that stays under the
+repository needs no re-approval, and `$DSH_HOME` would put it outside that root. The name is the branch
+subject with `-` written as `_` — `feat/foo-bar` becomes `foo_bar` — derived from the branch, so the two
+can never disagree about which feature the tree holds. The *transient* worktree used to merge into an
 integration branch nobody has checked out goes to the OS temporary directory instead: it is created
-only when no working tree has `master` checked out, it exists for seconds, no agent ever edits in
-it, and keeping it out of the repository means a merge that dies midway leaves no linked worktree
-inside the repository's own tree.
+only when no working tree has the integration branch checked out, it exists for seconds, no agent ever
+edits in it, and keeping it out of the repository means a merge that dies midway leaves no linked
+worktree inside the repository's own tree.
 
 **Who counts as another session is a family question, not a session question.** Every decision —
 which branch a family may write on, whether it gets a checkout of its own, what `/git-complete`

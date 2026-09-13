@@ -20,9 +20,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
 import { GitClient, nodeRunner } from "../lib/platform/exec.js";
+import { resolveSettings } from "../lib/platform/settings.js";
 
 let passed = 0;
 const failures = [];
+
+/**
+ * The settings one check runs with: the shipped defaults, with named keys overridden.
+ *
+ * The real {@link resolveSettings} does the work, so a check that overrides nothing
+ * proves the defaults are usable as they ship and a check that overrides something
+ * proves the value it set survives resolution.
+ *
+ * @param overrides - the keys this check wants different from the defaults.
+ * @returns the resolved settings.
+ */
+export function settings(overrides = {}) {
+  return resolveSettings(overrides);
+}
+
+/**
+ * A flow context for one scratch repository.
+ *
+ * This is what every call into `core` and the claim store takes now: the resolved
+ * settings, the real process seam, and the repository's main working tree, named
+ * once instead of arriving as three positional parameters.
+ *
+ * @param root - the repository's main working tree.
+ * @param overrides - settings this check wants different from the defaults.
+ * @returns the context.
+ */
+export function flow(root, overrides = {}) {
+  return { settings: settings(overrides), runner: nodeRunner, repoRoot: root };
+}
 
 /**
  * Run one named check.
@@ -85,7 +115,7 @@ export async function scratchRepo() {
  * @returns the holder's id, for the caller to list as resumable.
  */
 export async function occupyMainTree(root, holder) {
-  const store = await ClaimStore.open(root);
+  const store = await ClaimStore.open(flow(root));
   try {
     await store.append({
       sessionId: holder,
@@ -112,8 +142,11 @@ export async function occupyMainTree(root, holder) {
  * @param message - the commit subject.
  */
 export async function commitFile(git, cwd, name, message) {
-  await git.run(["-C", cwd, "add", name]);
-  await git.run(["-C", cwd, "commit", "-qm", message]);
+  // `text` rather than `run`: a commit that did not happen would leave a check
+  // asserting against a history that is not there, which is exactly the kind of
+  // silent pass a helper should not allow.
+  await git.text(["-C", cwd, "add", name]);
+  await git.text(["-C", cwd, "commit", "-qm", message]);
 }
 
 /**
@@ -124,7 +157,7 @@ export async function commitFile(git, cwd, name, message) {
  *
  * @returns a service whose `spawn` returns a handle shaped like the harness's.
  */
-export function subprocessService() {
+function subprocessService() {
   return {
     spawn(spec) {
       const child = spawn(spec.argv[0], spec.argv.slice(1), {
@@ -167,7 +200,7 @@ export function subprocessService() {
  * @param records - the resident sessions, in the order `list` should report them.
  * @returns a store with `get` and `list`.
  */
-export function sessionsService(records) {
+function sessionsService(records) {
   const byId = new Map(records.map((record) => [record.id, record]));
   return { get: (id) => byId.get(id), list: () => [...byId.values()] };
 }
@@ -191,9 +224,6 @@ export function makeAgent(sessionId, cwd, records = [{ id: sessionId, header: { 
   };
   return { agent, sessions, injected };
 }
-
-/** The waterfall continuation that allows a call. */
-export const allow = () => Promise.resolve({ kind: "allow" });
 
 /** A caller-owned cancellation that never fires. */
 export const signal = new AbortController().signal;

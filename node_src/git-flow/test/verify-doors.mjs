@@ -27,8 +27,10 @@ import { GIT_FLOW_COMMANDS } from "../lib/boundary/commands.js";
 import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
-import { GitClient, nodeRunner } from "../lib/platform/exec.js";
-import { check, commitFile, makeAgent, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
+import { check, commitFile, flow, makeAgent, occupyMainTree, report, scratchRepo, settings, signal } from "./support.mjs";
+
+/** The settings every door here runs with: the shipped defaults. */
+const SETTINGS = settings();
 
 /**
  * Session ids differ per check: `core` memoizes a family's workspace process-wide
@@ -68,7 +70,7 @@ const worktreePath = (root, name) => join(root, ".dsh.local", "worktrees", name)
 
 /** The claim recorded for one session, read back through the store that owns the file. */
 async function storedClaim(root, session) {
-  const store = await ClaimStore.open(root);
+  const store = await ClaimStore.open(flow(root));
   try {
     return await store.query(session);
   } finally {
@@ -114,7 +116,7 @@ await check("git_start in a free repository takes the main tree and injects noth
   try {
     const session = sessionId("tool-main");
     const { agent, injected } = makeAgent(session, repo.root);
-    const text = await tool("git_start").execute({ branchName: "doors-tool" }, execution(agent));
+    const text = await tool("git_start").execute({ branchName: "doors-tool" }, execution(agent), SETTINGS);
 
     assert.equal(typeof text, "string");
     assert.match(text, /feat\/doors-tool/);
@@ -141,7 +143,7 @@ await check("git_start while another resumable family holds the main tree answer
       { id: session, header: { cwd: repo.root } },
     ]);
 
-    const text = await tool("git_start").execute({ branchName: "doors-isolated" }, execution(agent));
+    const text = await tool("git_start").execute({ branchName: "doors-isolated" }, execution(agent), SETTINGS);
     const workTree = worktreePath(repo.root, "doors_isolated");
 
     assert.ok(text.includes(workTree), `answer does not name ${workTree}: ${text}`);
@@ -161,7 +163,7 @@ await check("git_start refuses a name that is not a feature subject and creates 
   try {
     const { agent, injected } = makeAgent(sessionId("tool-bad"), repo.root);
     for (const name of ["bad name", "test/git-flow-guard", "9lives", "under_score", "a".repeat(21)]) {
-      const text = await tool("git_start").execute({ branchName: name }, execution(agent));
+      const text = await tool("git_start").execute({ branchName: name }, execution(agent), SETTINGS);
       const branch = `feat/${name}`;
       assert.equal(typeof text, "string");
       assert.ok(text.includes(branch), `answer does not quote ${branch}: ${text}`);
@@ -181,7 +183,7 @@ await check("a bare /git-start injects one notice naming the skill and opens not
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-bare"), repo.root);
     const commandId = "bare-1";
-    const result = await command("git-start").handler(invocation(agent, "", commandId));
+    const result = await command("git-start").handler(invocation(agent, "", commandId), SETTINGS);
 
     assert.equal(result.kind, "success");
     const message = injected[0];
@@ -214,7 +216,7 @@ await check("a named /git-start opens the branch in the main tree and injects wh
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-named"), repo.root);
     const commandId = "named-1";
-    const result = await command("git-start").handler(invocation(agent, "doors-named", commandId));
+    const result = await command("git-start").handler(invocation(agent, "doors-named", commandId), SETTINGS);
 
     assert.equal(result.kind, "success");
     assert.ok(result.text.includes("feat/doors-named"), result.text);
@@ -235,7 +237,7 @@ await check("an invalid /git-start name is an error and injects nothing", async 
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-bad"), repo.root);
-    const result = await command("git-start").handler(invocation(agent, "test/git-flow-guard", "bad-1"));
+    const result = await command("git-start").handler(invocation(agent, "test/git-flow-guard", "bad-1"), SETTINGS);
 
     assert.equal(result.kind, "error");
     assert.match(result.text, /not a name this plugin opens/);
@@ -253,12 +255,12 @@ await check("/git-complete without a message injects and merges nothing", async 
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-complete"), repo.root);
-    await tool("git_start").execute({ branchName: "doors-nomerge" }, execution(agent));
+    await tool("git_start").execute({ branchName: "doors-nomerge" }, execution(agent), SETTINGS);
     await writeFile(join(repo.root, "note.txt"), "work\n");
     await commitFile(repo.git, repo.root, "note.txt", "feat: note");
 
     const before = await repo.git.text(["rev-parse", "master"]);
-    const result = await command("git-complete").handler(invocation(agent, "", "nomerge-1"));
+    const result = await command("git-complete").handler(invocation(agent, "", "nomerge-1"), SETTINGS);
 
     assert.equal(result.kind, "success");
     assert.ok(noticeOf(injected).includes("git_complete"));
@@ -276,7 +278,7 @@ await check("/git-cleanup injects nothing", async () => {
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-clean"), repo.root);
-    const result = await command("git-cleanup").handler(invocation(agent, "", "clean-1"));
+    const result = await command("git-cleanup").handler(invocation(agent, "", "clean-1"), SETTINGS);
 
     assert.equal(result.kind, "success");
     assert.match(result.text, /Swept/);
@@ -292,7 +294,7 @@ await check("every command answer is a CommandResult", async () => {
   try {
     const { agent } = makeAgent(sessionId("cmd-shape"), repo.root);
     for (const name of ["git-start", "git-complete", "git-cleanup"]) {
-      const result = await command(name).handler(invocation(agent, "", `shape-${name}`));
+      const result = await command(name).handler(invocation(agent, "", `shape-${name}`), SETTINGS);
       assert.ok(
         result.kind === "success" || result.kind === "error",
         `${name} answered kind ${String(result.kind)}`,
@@ -313,7 +315,7 @@ await check("git_cleanup is called with the registry's two arguments, an empty o
   const repo = await scratchRepo();
   try {
     const { agent } = makeAgent(sessionId("cmd-sweep"), repo.root);
-    const text = await tool("git_cleanup").execute({}, { agent, signal });
+    const text = await tool("git_cleanup").execute({}, { agent, signal }, SETTINGS);
 
     assert.equal(typeof text, "string");
     assert.match(text, /Reclaimed/);

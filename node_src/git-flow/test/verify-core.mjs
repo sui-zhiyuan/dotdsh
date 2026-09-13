@@ -17,10 +17,10 @@
  *
  * Boundary: these checks prove what the core decides and the paths it leaves on
  * disk. They do not exercise the boundary layer (commands, tools, the write
- * guard), the claim lock (not implemented yet), or concurrency between
- * processes. Where a check pins a behaviour the module documents as out of
- * contract, its name says `characterized` so the boundary is not mistaken for a
- * promise.
+ * guard), the claim lock — which `verify-claim.mjs` checks, a second process
+ * included — or concurrency between processes beyond it. Where a check pins a
+ * behaviour the module documents as out of contract, its name says `characterized`
+ * so the boundary is not mistaken for a promise.
  *
  * @module @dsh-external/dotdsh-git-flow/test/verify-core
  */
@@ -32,9 +32,9 @@ import { join } from "node:path";
 import { ensureWorkspace, gitClean, gitComplete, gitStart } from "../lib/core/core.js";
 import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
 import { nodeRunner } from "../lib/platform/exec.js";
-import { check, commitFile, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
+import { check, commitFile, flow, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
 
-/** Where a family's worktree lives, and where the claim file is — mirrored from `core.ts`. */
+/** Where a family's worktree lives, and where the claim file is — mirrored from `settings.ts`. */
 const WORKTREE_ROOT = ".dsh.local/worktrees";
 const CLAIM_FILE = ".dsh.local/git-flow.toml";
 
@@ -92,7 +92,7 @@ function branchExists(git, branch) {
 
 /** The claim recorded for one session, read back through the store that owns the file. */
 async function readClaim(root, sessionId) {
-  const store = await ClaimStore.open(root);
+  const store = await ClaimStore.open(flow(root));
   try {
     return await store.query(sessionId);
   } finally {
@@ -108,7 +108,7 @@ async function readClaim(root, sessionId) {
  * reach the sweep with an old record.
  */
 async function backdateClaim(root, sessionId, ageMs = 2 * SWEEP_AGE_MS) {
-  const store = await ClaimStore.open(root);
+  const store = await ClaimStore.open(flow(root));
   try {
     const claim = await store.query(sessionId);
     assert.ok(claim !== undefined, `expected a claim for ${sessionId} to backdate`);
@@ -120,7 +120,7 @@ async function backdateClaim(root, sessionId, ageMs = 2 * SWEEP_AGE_MS) {
 
 /** A private claim record reaching over `gitStart`, for the paths that begin mid-setup. */
 async function writeClaim(root, claim) {
-  const store = await ClaimStore.open(root);
+  const store = await ClaimStore.open(flow(root));
   try {
     await store.append(claim);
   } finally {
@@ -145,7 +145,7 @@ async function parentsOf(git, rev) {
  * @returns the workspace the family works in.
  */
 function startInPlace(root, session, branch) {
-  return gitStart(nodeRunner, root, session, branch, [], signal);
+  return gitStart(flow(root), session, branch, [], signal);
 }
 
 /**
@@ -163,7 +163,7 @@ function startInPlace(root, session, branch) {
  */
 async function startWorktree(root, session, branch, worktreeName) {
   await writeClaim(root, { sessionId: session, branch, worktreeName, createdAt: new Date().toISOString() });
-  const workspace = await ensureWorkspace(nodeRunner, root, session, signal);
+  const workspace = await ensureWorkspace(flow(root), session, signal);
   assert.ok(workspace !== null, `the claim for ${session} did not resolve`);
   return workspace;
 }
@@ -205,7 +205,7 @@ await check("a family that arrives while another resumable family holds the main
 
     const session = "check-isolated";
     const branch = "feat/isolated";
-    const workspace = await gitStart(nodeRunner, root, session, branch, [holder], signal);
+    const workspace = await gitStart(flow(root), session, branch, [holder], signal);
 
     assert.equal(workspace.workTree, join(root, WORKTREE_ROOT, "isolated"));
     assert.ok(await exists(workspace.workTree), "the worktree directory exists");
@@ -226,12 +226,12 @@ await check("two families at once: the second is isolated, and releasing it leav
 
     // The first family is resumable and holds the main tree, so the second goes
     // out — which is the whole reason a worktree exists at all.
-    const isolated = await gitStart(nodeRunner, root, second, secondBranch, [first, second], signal);
+    const isolated = await gitStart(flow(root), second, secondBranch, [first, second], signal);
     assert.equal(isolated.workTree, join(root, WORKTREE_ROOT, "concurrent_b"));
     await writeFile(join(isolated.workTree, "topic.txt"), "topic\n");
     await commitFile(git, isolated.workTree, "topic.txt", "the second family's work");
 
-    const result = await gitComplete(nodeRunner, root, second, "Merge the second family", signal);
+    const result = await gitComplete(flow(root), second, "Merge the second family", signal);
 
     assert.deepEqual(result, { kind: "done", merged: true });
     assert.equal(await branchExists(git, secondBranch), false, "the second family's branch was released");
@@ -240,7 +240,7 @@ await check("two families at once: the second is isolated, and releasing it leav
     // holds — the last of which the memo answers without a single git call.
     assert.ok(await branchExists(git, firstBranch), "the first family's branch survives");
     assert.equal((await readClaim(root, first))?.worktreeName, MAIN_WORKTREE);
-    assert.deepEqual(await ensureWorkspace(nodeRunner, root, first, signal), held);
+    assert.deepEqual(await ensureWorkspace(flow(root), first, signal), held);
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), firstBranch, "the main tree is still the first family's");
   }));
 
@@ -250,7 +250,7 @@ await check("the main tree is free again when its holder can no longer come back
     // leftover the sweep will collect, not a reason to exile the next family.
     await occupyMainTree(root, "check-stale-holder");
     const session = "check-after-stale";
-    const workspace = await gitStart(nodeRunner, root, session, "feat/after-stale", [], signal);
+    const workspace = await gitStart(flow(root), session, "feat/after-stale", [], signal);
 
     assert.equal(workspace.workTree, root);
     assert.equal((await readClaim(root, session))?.worktreeName, MAIN_WORKTREE);
@@ -262,7 +262,7 @@ await check("a second gitStart for the same session throws and creates nothing",
     const first = await startInPlace(root, session, "feat/twice");
     const head = await git.text(["rev-parse", "--abbrev-ref", "HEAD"]);
 
-    await assert.rejects(gitStart(nodeRunner, root, session, "feat/twice-again", [], signal), /already holds a claim/);
+    await assert.rejects(gitStart(flow(root), session, "feat/twice-again", [], signal), /already holds a claim/);
 
     assert.equal(await branchExists(git, "feat/twice-again"), false, "the refused start created no branch");
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), head, "the checkout was not moved");
@@ -275,9 +275,9 @@ await check("gitStart overrides a memoized 'no claim' left by an earlier ensureW
     const session = "check-null-memo";
     // The write guard asks first and memoizes the null; the human's /git-start
     // lands moments later. A memoized "no claim" must not outlive the claim.
-    assert.equal(await ensureWorkspace(nodeRunner, root, session, signal), null);
+    assert.equal(await ensureWorkspace(flow(root), session, signal), null);
 
-    const workspace = await gitStart(nodeRunner, root, session, "feat/null-memo", [], signal);
+    const workspace = await gitStart(flow(root), session, "feat/null-memo", [], signal);
 
     assert.equal(workspace.branch, "feat/null-memo");
     assert.equal(workspace.workTree, root, "the memoized null did not stop the main tree from being taken");
@@ -291,10 +291,10 @@ await check("gitStart overrides a memoized 'no claim' left by an earlier ensureW
 await check("ensureWorkspace is null without a claim, then names the branch and the main tree after a start", () =>
   withRepo(async ({ root }) => {
     const session = "check-resolve-main";
-    assert.equal(await ensureWorkspace(nodeRunner, root, session, signal), null);
+    assert.equal(await ensureWorkspace(flow(root), session, signal), null);
 
     await startInPlace(root, session, "feat/resolve-main");
-    const resolved = await ensureWorkspace(nodeRunner, root, session, signal);
+    const resolved = await ensureWorkspace(flow(root), session, signal);
 
     assert.deepEqual(resolved, { branch: "feat/resolve-main", workTree: root });
   }));
@@ -317,7 +317,7 @@ await check("a resolved family is answered from the memo: the second call runs n
     const first = await startInPlace(root, session, "feat/memo");
 
     const { calls, runner } = countingRunner();
-    const second = await ensureWorkspace(runner, root, session, signal);
+    const second = await ensureWorkspace({ ...flow(root), runner }, session, signal);
 
     assert.deepEqual(second, first);
     assert.deepEqual(calls, [], "the complete memo short-circuits before any git call");
@@ -343,7 +343,7 @@ await check("a half-built family is repaired on retry from its incomplete memo, 
       argv[1] === "worktree" && argv[2] === "add"
         ? Promise.resolve({ code: 1, stdout: "", stderr: "injected worktree failure" })
         : nodeRunner(argv, options);
-    await assert.rejects(ensureWorkspace(failing, root, session, signal), /worktree add/);
+    await assert.rejects(ensureWorkspace({ ...flow(root), runner: failing }, session, signal), /worktree add/);
 
     assert.equal(await branchExists(git, branch), false, "the branch went down with the worktree that makes it");
     assert.equal(await exists(workTree), false, "the worktree was not created");
@@ -352,7 +352,7 @@ await check("a half-built family is repaired on retry from its incomplete memo, 
     // retry is the proof that the incomplete memo, not the file, supplied the paths.
     await writeFile(join(root, CLAIM_FILE), "claims = 5\n");
 
-    const repaired = await ensureWorkspace(nodeRunner, root, session, signal);
+    const repaired = await ensureWorkspace(flow(root), session, signal);
     assert.deepEqual(repaired, { branch, workTree });
     assert.ok(await exists(workTree), "the retry created the missing worktree");
     assert.ok(await branchExists(git, branch), "the retry created the missing branch too");
@@ -369,7 +369,7 @@ await check("characterized: a family torn down outside git-flow keeps its memoiz
     await git.run(["worktree", "remove", workspace.workTree]);
     await git.run(["branch", "-D", workspace.branch]);
 
-    assert.deepEqual(await ensureWorkspace(nodeRunner, root, session, signal), workspace);
+    assert.deepEqual(await ensureWorkspace(flow(root), session, signal), workspace);
     assert.equal(await exists(workspace.workTree), false, "the answered path does not exist");
 
     // The same boundary without a memo, so it is git's registry rather than the
@@ -388,7 +388,7 @@ await check("characterized: a family torn down outside git-flow keeps its memoiz
     });
     await rm(otherTree, { recursive: true, force: true });
 
-    assert.deepEqual(await ensureWorkspace(nodeRunner, root, other, signal), { branch: otherBranch, workTree: otherTree });
+    assert.deepEqual(await ensureWorkspace(flow(root), other, signal), { branch: otherBranch, workTree: otherTree });
     assert.equal(await exists(otherTree), false, "the registered path outlived its directory and was answered as-is");
   }));
 
@@ -410,7 +410,7 @@ await check("gitComplete in place: the merge lands on master and the main tree g
     const masterBefore = await git.text(["rev-parse", "master"]);
     assert.notEqual(branchTip, masterBefore, "the family has a commit master does not");
 
-    const result = await gitComplete(nodeRunner, root, session, message, signal);
+    const result = await gitComplete(flow(root), session, message, signal);
 
     assert.deepEqual(result, { kind: "done", merged: true });
     // No tree held master while the family was in place, so the merge ran in a
@@ -440,7 +440,7 @@ await check("characterized: gitComplete reports switch-back when git refuses to 
     const lock = join(root, ".git", "index.lock");
     await writeFile(lock, "");
 
-    const result = await gitComplete(nodeRunner, root, session, "Merge blocked", signal);
+    const result = await gitComplete(flow(root), session, "Merge blocked", signal);
 
     assert.equal(result.kind, "failed");
     assert.equal(result.step, "switch-back");
@@ -453,7 +453,7 @@ await check("characterized: gitComplete reports switch-back when git refuses to 
     assert.ok((await readClaim(root, session)) !== undefined, "the claim survives so a retry can finish");
 
     await rm(lock);
-    const retry = await gitComplete(nodeRunner, root, session, "Merge blocked", signal);
+    const retry = await gitComplete(flow(root), session, "Merge blocked", signal);
 
     assert.deepEqual(retry, { kind: "done", merged: false }, "the merge is behind it");
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "master");
@@ -471,7 +471,7 @@ await check("gitComplete for a worktree family merges --no-ff in the master tree
     await commitFile(git, workspace.workTree, "topic.txt", "topic work");
     const mainBefore = await git.text(["rev-parse", "HEAD"]);
 
-    const result = await gitComplete(nodeRunner, root, session, message, signal);
+    const result = await gitComplete(flow(root), session, message, signal);
 
     assert.deepEqual(result, { kind: "done", merged: true });
     const mergeCommit = await parentsOf(git, "master");
@@ -494,8 +494,8 @@ await check("gitComplete is re-entrant: a second call reports nothing-to-do", ()
     await writeFile(join(root, "topic.txt"), "topic\n");
     await commitFile(git, root, "topic.txt", "topic work");
 
-    assert.deepEqual(await gitComplete(nodeRunner, root, session, "Merge again", signal), { kind: "done", merged: true });
-    assert.deepEqual(await gitComplete(nodeRunner, root, session, "Merge again", signal), { kind: "nothing-to-do" });
+    assert.deepEqual(await gitComplete(flow(root), session, "Merge again", signal), { kind: "done", merged: true });
+    assert.deepEqual(await gitComplete(flow(root), session, "Merge again", signal), { kind: "nothing-to-do" });
   }));
 
 await check("gitComplete on a family with nothing ahead reports done with merged:false and still cleans up", () =>
@@ -504,7 +504,7 @@ await check("gitComplete on a family with nothing ahead reports done with merged
     const branch = "feat/empty";
     await startInPlace(root, session, branch);
 
-    const result = await gitComplete(nodeRunner, root, session, "nothing to merge", signal);
+    const result = await gitComplete(flow(root), session, "nothing to merge", signal);
 
     assert.deepEqual(result, { kind: "done", merged: false });
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "master", "the main tree went back");
@@ -525,7 +525,7 @@ await check("gitComplete reports not-descendant and writes and deletes nothing w
     await commitFile(git, root, "main.txt", "advance master");
     const masterBefore = await git.text(["rev-parse", "master"]);
 
-    const result = await gitComplete(nodeRunner, root, session, "should never run", signal);
+    const result = await gitComplete(flow(root), session, "should never run", signal);
 
     assert.deepEqual(result, { kind: "not-descendant", branch });
     assert.equal(await git.text(["rev-parse", "master"]), masterBefore, "master did not move");
@@ -545,7 +545,7 @@ await check("a dirty worktree fails gitComplete at remove-worktree after the mer
     // Uncommitted work is exactly what makes a bare `git worktree remove` refuse.
     await writeFile(join(workspace.workTree, "leftover.txt"), "leftover\n");
 
-    const result = await gitComplete(nodeRunner, root, session, "Merge dirty", signal);
+    const result = await gitComplete(flow(root), session, "Merge dirty", signal);
 
     assert.equal(result.kind, "failed");
     assert.equal(result.step, "remove-worktree");
@@ -566,10 +566,10 @@ await check("the completion finishes on a retry once the worktree is clean again
     await writeFile(join(workspace.workTree, "topic.txt"), "topic\n");
     await commitFile(git, workspace.workTree, "topic.txt", "topic work");
     await writeFile(join(workspace.workTree, "leftover.txt"), "leftover\n");
-    assert.equal((await gitComplete(nodeRunner, root, session, "Merge dirty", signal)).step, "remove-worktree");
+    assert.equal((await gitComplete(flow(root), session, "Merge dirty", signal)).step, "remove-worktree");
 
     await rm(join(workspace.workTree, "leftover.txt"));
-    const retry = await gitComplete(nodeRunner, root, session, "Merge dirty", signal);
+    const retry = await gitComplete(flow(root), session, "Merge dirty", signal);
 
     assert.deepEqual(retry, { kind: "done", merged: false }, "the merge is behind it, so nothing is merged again");
     assert.equal(await exists(workspace.workTree), false, "the worktree is gone");
@@ -585,13 +585,13 @@ await check("characterized: a retry that commits the leftover work reports not-d
     await writeFile(join(workspace.workTree, "topic.txt"), "topic\n");
     await commitFile(git, workspace.workTree, "topic.txt", "topic work");
     await writeFile(join(workspace.workTree, "leftover.txt"), "leftover\n");
-    assert.equal((await gitComplete(nodeRunner, root, session, "Merge dirty", signal)).step, "remove-worktree");
+    assert.equal((await gitComplete(flow(root), session, "Merge dirty", signal)).step, "remove-worktree");
 
     // Committing the leftover puts a commit on the branch whose parent is the
     // pre-merge head; master now carries the merge commit, which is not an ancestor
     // of it, so the core refuses to merge again and asks for the replay instead.
     await commitFile(git, workspace.workTree, "leftover.txt", "leftover");
-    const retry = await gitComplete(nodeRunner, root, session, "Merge dirty", signal);
+    const retry = await gitComplete(flow(root), session, "Merge dirty", signal);
 
     assert.equal(retry.kind, "not-descendant");
     assert.ok((await readClaim(root, session)) !== undefined, "the claim survives the refusal");
@@ -610,7 +610,7 @@ await check("when no tree holds master the merge runs in a temporary worktree an
     await git.run(["checkout", "-q", "-b", "side"]);
     const tmpBefore = new Set(await readdir(tmpdir()));
 
-    const result = await gitComplete(nodeRunner, root, session, message, signal);
+    const result = await gitComplete(flow(root), session, message, signal);
 
     assert.deepEqual(result, { kind: "done", merged: true });
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "side", "the main tree was not merged into");
@@ -635,7 +635,7 @@ await check("an in-place family whose tree has moved on is released without movi
     // switch back is skipped precisely because the tree is not on the branch.
     await git.run(["switch", "-q", "-c", "side", "master"]);
 
-    const result = await gitComplete(nodeRunner, root, session, "Merge moved-on", signal);
+    const result = await gitComplete(flow(root), session, "Merge moved-on", signal);
 
     assert.deepEqual(result, { kind: "done", merged: true });
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "side", "the tree was left where it was");
@@ -657,13 +657,13 @@ await check("gitClean sweeps an in-place claim: the main tree goes back to maste
     await commitFile(git, root, "leftover.txt", "work the session never merged");
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "master", "the main tree was put back");
     assert.equal(await branchExists(git, branch), false, "the branch is swept, merged or not");
     assert.equal(await readClaim(root, session), undefined, "the claim is swept");
     // The memo went with the record: a later question reads the file and finds nothing.
-    assert.equal(await ensureWorkspace(nodeRunner, root, session, signal), null, "the memo entry was dropped");
+    assert.equal(await ensureWorkspace(flow(root), session, signal), null, "the memo entry was dropped");
   }));
 
 await check("gitClean sweeps an in-place claim whose tree has moved on, without touching that tree", () =>
@@ -676,7 +676,7 @@ await check("gitClean sweeps an in-place claim whose tree has moved on, without 
     await git.run(["switch", "-q", "-c", "side", "master"]);
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "side", "the tree was left where it was");
     assert.equal(await branchExists(git, branch), false, "the branch is swept");
@@ -689,7 +689,7 @@ await check("gitClean leaves a fresh claim for a non-resumable session alone (th
     const branch = "feat/fresh";
     await startInPlace(root, session, branch);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), branch, "a claim younger than a day is untouched");
     assert.ok(await branchExists(git, branch));
@@ -703,7 +703,7 @@ await check("gitClean leaves an old claim for a resumable session alone (the res
     await startInPlace(root, session, branch);
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [session], signal);
+    await gitClean(flow(root), [session], signal);
 
     assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), branch, "a claim a session can come back for is untouched");
     assert.ok(await branchExists(git, branch));
@@ -718,12 +718,12 @@ await check("gitClean sweeps an old claim for a non-resumable session, dirty wor
     await writeFile(join(workspace.workTree, "leftover.txt"), "leftover\n");
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await exists(workspace.workTree), false, "the worktree is swept");
     assert.equal(await branchExists(git, branch), false, "the branch is swept");
     assert.equal(await readClaim(root, session), undefined, "the claim is swept");
-    assert.equal(await ensureWorkspace(nodeRunner, root, session, signal), null, "the memo entry was dropped");
+    assert.equal(await ensureWorkspace(flow(root), session, signal), null, "the memo entry was dropped");
   }));
 
 await check("gitClean sweeps a claim whose worktree directory is already gone but git still registers", () =>
@@ -734,7 +734,7 @@ await check("gitClean sweeps a claim whose worktree directory is already gone bu
     await rm(workspace.workTree, { recursive: true, force: true });
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await branchExists(git, branch), false, "the branch is swept");
     assert.equal(await readClaim(root, session), undefined, "the claim is swept");
@@ -749,7 +749,7 @@ await check("gitClean sweeps a claim whose branch and worktree are both already 
     await git.run(["branch", "-D", branch]);
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await readClaim(root, session), undefined, "the record is dropped all the same");
   }));
@@ -767,10 +767,66 @@ await check("gitClean deletes a branch master has never seen: it trusts the clai
     assert.equal(await git.ok(["merge-base", "--is-ancestor", branch, "master"]), false, "the branch is unmerged");
     await backdateClaim(root, session);
 
-    await gitClean(nodeRunner, root, [], signal);
+    await gitClean(flow(root), [], signal);
 
     assert.equal(await branchExists(git, branch), false, "the unmerged branch was deleted anyway");
     assert.equal(await readClaim(root, session), undefined, "the claim is swept");
+  }));
+
+await check("the configured prefix and integration branch are the ones the workflow uses", () =>
+  withRepo(async (repo) => {
+    const { git } = repo;
+    // Two of the settings reach git directly: the prefix a family branch carries,
+    // and the branch it is cut from. The integration branch is `trunk` here and the
+    // main tree deliberately stands on another branch that has moved further, so
+    // "cut from the configured integration branch" and "cut from HEAD" are
+    // different answers and the check can tell them apart.
+    await git.text(["branch", "-m", "trunk"]);
+    await writeFile(join(repo.root, "trunk.txt"), "trunk\n");
+    await commitFile(git, repo.root, "trunk.txt", "on trunk");
+    await git.text(["switch", "-c", "side"]);
+    await writeFile(join(repo.root, "side.txt"), "side\n");
+    await commitFile(git, repo.root, "side.txt", "on side");
+
+    const context = flow(repo.root, { branchPrefix: "feature/", integrationBranch: "trunk" });
+    const workspace = await gitStart(context, "session-configured", "feature/configured", [], signal);
+    assert.equal(workspace.branch, "feature/configured");
+    assert.equal(workspace.workTree, repo.root);
+    assert.equal(await git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "feature/configured");
+    assert.equal(
+      await git.text(["rev-parse", "feature/configured"]),
+      await git.text(["rev-parse", "trunk"]),
+      "the branch is cut from the configured integration branch",
+    );
+    assert.notEqual(
+      await git.text(["rev-parse", "feature/configured"]),
+      await git.text(["rev-parse", "side"]),
+      "not from whatever the main tree happened to have checked out",
+    );
+
+    // The same context, with another family in the main tree: the worktree's name
+    // is the subject, which only holds if `feature/` was the prefix stripped.
+    await occupyMainTree(repo.root, "session-holder");
+    const isolated = await gitStart(context, "session-isolated", "feature/isolated", ["session-holder"], signal);
+    assert.equal(isolated.workTree, join(repo.root, WORKTREE_ROOT, "isolated"));
+  }));
+
+await check("the sweep age the settings name is the gate the sweep applies", () =>
+  withRepo(async (repo) => {
+    const session = "session-aged-out";
+    await gitStart(flow(repo.root), session, "feat/aged-out", [], signal);
+    // Two days old, which is the default's business and not a thirty-day gate's.
+    await backdateClaim(repo.root, session);
+
+    await gitClean(flow(repo.root, { sweepAgeHours: 24 * 30 }), [], signal);
+    assert.notEqual(
+      await readClaim(repo.root, session),
+      undefined,
+      "a thirty-day gate leaves a two-day-old claim alone",
+    );
+
+    await gitClean(flow(repo.root), [], signal);
+    assert.equal(await readClaim(repo.root, session), undefined, "the default day-long gate collects it");
   }));
 
 report();

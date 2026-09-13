@@ -36,10 +36,14 @@
   # `git-master` skills, and the pre-write guard on the harness's
   # `tools/pre-execute` waterfall.
   #
-  # No `config`: the plugin registers no schema and reads no row configuration.
-  # What the previous implementation made tunable is hardcoded now — `feat/` as the
-  # branch prefix, `master` as the integration branch, `.dsh.local/` for the claim
-  # file and the worktrees — so a `config` here would be a block of keys nothing
-  # reads.
+  # Configuration is optional: every key has a default, and the plugin validates what
+  # it is given when it mounts — a `branchPrefix` git would refuse, or a
+  # `worktreeRoot` that escapes the repository, fails this row rather than the first
+  # operation that trips over it. The keys are `branchPrefix` (`feat/`),
+  # `integrationBranch` (`master`), `worktreeRoot` (`.dsh.local/worktrees`),
+  # `claimFile` (`.dsh.local/git-flow.toml`), `lockStaleSeconds` (10),
+  # `sweepAgeHours` (24), `branchSubjectMaxLength` (20) and `guard` (`on`, or `off`
+  # to turn the pre-write guard into a pass-through), and a deployment in another
+  # repository overrides them here or in its own profile layer. See the README.
   - id: git-flow
     name: '@dsh-external/dotdsh-git-flow'

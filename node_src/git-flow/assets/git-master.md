@@ -191,21 +191,22 @@ future self.
 ## Examples
 
 ```
-feat(git-flow): add the pre-write branch guard
+feat(git-flow): guard the write instead of trusting the model to open a branch first
 
-A session that edits files while the integration branch is checked out
-would commit onto it directly. The guard runs before dispatch and starts a
-feature branch first, so the invariant holds without relying on the model
+A session that edits files with no feature branch would commit onto
+whatever the main checkout happens to have checked out. The guard now
+refuses such a write before it happens and names the skill and the tool
+call the model needs, so the invariant holds without relying on the model
 to remember it.
 ```
 
 ```
-fix(ignore): verify the rule with check-ignore instead of trusting the write
+fix(flow): give a family a worktree only while another one holds the main tree
 
-A `.gitignore` line is a claim, not a fact: a later `!` rule or a parent
-directory's rule can override it, and the failure is silent — the worktree
-is simply staged as an embedded repository. The guard now re-asks git and
-refuses to create the worktree when the answer is no.
+Two sessions in one checkout collide, but exiling every session to a
+worktree made the common single-session case pay for it. The claim file
+records which tree a family holds, so the main tree stays in use and only a
+family that arrives while it is spoken for moves out.
 ```
 
 ```
@@ -219,7 +220,8 @@ falling back to a temporary worktree when no tree has it.
 ```
 perf(exec)!: drop the shell from every git invocation
 
-BREAKING CHANGE: `runGit(command)` is replaced by `gitClient({ argv })`.
-Callers that relied on shell expansion — redirection, `&&`, globbing — must
-pass explicit arguments; none were found in this repository.
+BREAKING CHANGE: `runGit(command)` is replaced by `GitClient` over a runner
+that takes an argv array. Callers that relied on shell expansion —
+redirection, `&&`, globbing — must pass explicit arguments; none were found
+in this repository.
 ```

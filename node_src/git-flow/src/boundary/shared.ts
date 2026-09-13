@@ -40,9 +40,10 @@
  * @module @dsh-external/dotdsh-git-flow/shared
  */
 
-import { BRANCH_PREFIX } from "../core/core.js";
 import { GitClient } from "../platform/exec.js";
 import type { Runner } from "../platform/exec.js";
+import type { FlowContext } from "../platform/context.js";
+import type { FlowSettings } from "../platform/settings.js";
 
 /** One resident session, as much of it as these helpers read. */
 export interface SessionRecord {
@@ -109,10 +110,8 @@ export interface SessionAgent {
 
 /** Everything an entry point needs before it can call `core`. */
 export interface EntryFacts {
-  /** The process seam every git call goes through. */
-  readonly runner: Runner;
-  /** Absolute path of the repository's **main** working tree. */
-  readonly repoRoot: string;
+  /** What the call runs with: the resolved settings, the process seam and the repository. */
+  readonly flow: FlowContext;
   /** Root of the calling session's delegation chain: the family's key. */
   readonly sessionId: string;
 }
@@ -376,14 +375,21 @@ async function mainWorktree(git: GitClient, signal?: AbortSignal): Promise<strin
  *   has to pass one down.
  *
  * The sweep scope is not one of them: it belongs to the cleanup doors alone, and
- * they ask {@link resumableSessionIds} for it themselves.
+ * they ask {@link resumableSessionIds} for it themselves. The settings are not
+ * gathered either — they were resolved once, when the plugin mounted, and arrive as
+ * a parameter.
  *
  * @param agent - the calling agent, asked for its session and the two services.
+ * @param settings - the plugin's resolved configuration, carried into the context.
  * @param signal - cancellation owned by the caller — a command invocation, a tool
  *   execution, an interception — passed to the git child this resolution starts.
  * @returns everything the caller needs before calling `core`.
  */
-export function factsFor(agent: SessionAgent, signal?: AbortSignal): Promise<EntryFacts> {
+export function factsFor(
+  agent: SessionAgent,
+  settings: FlowSettings,
+  signal?: AbortSignal,
+): Promise<EntryFacts> {
   const cwd = agent.session.header.cwd;
   if (cwd === undefined || cwd === "") {
     throw new Error("this session has no working directory, so there is no repository to use");
@@ -392,7 +398,10 @@ export function factsFor(agent: SessionAgent, signal?: AbortSignal): Promise<Ent
   const sessionId = familyRoot(agent.session.id, agent.getSessions());
   const runner = agent.getRunner();
 
-  return mainWorktree(new GitClient(runner, cwd), signal).then((repoRoot) => ({ runner, repoRoot, sessionId }));
+  return mainWorktree(new GitClient(runner, cwd), signal).then((repoRoot) => ({
+    flow: { settings, runner, repoRoot },
+    sessionId,
+  }));
 }
 
 /**
@@ -404,21 +413,12 @@ export function factsFor(agent: SessionAgent, signal?: AbortSignal): Promise<Ent
  * recognize a branch as this plugin's.
  *
  * @param name - the raw name, with or without a prefix.
+ * @param settings - the settings, for the prefix this deployment configured.
  * @returns the name to create.
  */
-export function withBranchPrefix(name: string): string {
-  return name.startsWith(BRANCH_PREFIX) ? name : `${BRANCH_PREFIX}${name}`;
+export function withBranchPrefix(name: string, settings: FlowSettings): string {
+  return name.startsWith(settings.branchPrefix) ? name : `${settings.branchPrefix}${name}`;
 }
-
-/**
- * The longest a feature branch's subject may be — the part after `feat/`.
- *
- * Twenty is a working number rather than a natural limit: it keeps the branch
- * readable in `git log --oneline --graph` and in the worktree's own directory
- * name, and short enough that a model asked to name a feature names the feature
- * rather than the whole task.
- */
-const BRANCH_SUBJECT_MAX_LENGTH = 20;
 
 /**
  * What a feature branch's subject may be made of: a letter first, then letters,
@@ -427,8 +427,8 @@ const BRANCH_SUBJECT_MAX_LENGTH = 20;
  * Deliberately narrow. A subject is an identifier, not a path: `test/foo` is a
  * namespace of the caller's own, and prefixing it would open `feat/test/foo` —
  * a name nobody asked for, in a worktree one directory deeper than the layout
- * expects. That is why this is checked here instead of trusting `feat/` to be
- * the only thing a caller might bring.
+ * expects. That is why this is checked here instead of trusting the configured
+ * prefix to be the only thing a caller might bring.
  */
 const BRANCH_SUBJECT_PATTERN = /^[A-Za-z][A-Za-z0-9-]*$/;
 
@@ -436,24 +436,24 @@ const BRANCH_SUBJECT_PATTERN = /^[A-Za-z][A-Za-z0-9-]*$/;
  * Whether this is a branch name this plugin may open.
  *
  * Two rules, and the first is the one that decides. The **subject** — what
- * follows `feat/` — is checked here: letters, digits and dashes, starting with a
- * letter, twenty characters at most. That is a policy rather than a syntax rule,
- * and it is what refuses a name carrying a namespace of its own instead of
- * prefixing it into `feat/test/…`.
+ * follows the configured prefix — is checked here: letters, digits and dashes,
+ * starting with a letter, as many characters as the settings allow. That is a
+ * policy rather than a syntax rule, and it is what refuses a name carrying a
+ * namespace of its own instead of prefixing it into `<prefix>/test/…`.
  *
  * Only then does git get a say. `check-ref-format --branch` is git's own
  * validator, so anything git would refuse is refused here rather than at the
  * moment a branch is created, and the caller can say so while it still has the
  * human's or the model's attention.
  *
- * @param runner - the process seam.
- * @param repoRoot - absolute path of the repository's main working tree.
+ * @param context - the settings, the process seam, and the repository's main tree.
  * @param name - the branch name to check, already prefixed.
  * @returns whether this plugin opens a branch by this name.
  */
-export async function isValidBranchName(runner: Runner, repoRoot: string, name: string): Promise<boolean> {
-  const subject = name.startsWith(BRANCH_PREFIX) ? name.slice(BRANCH_PREFIX.length) : name;
-  if (subject.length > BRANCH_SUBJECT_MAX_LENGTH) return false;
+export async function isValidBranchName(context: FlowContext, name: string): Promise<boolean> {
+  const prefix = context.settings.branchPrefix;
+  const subject = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  if (subject.length > context.settings.branchSubjectMaxLength) return false;
   if (!BRANCH_SUBJECT_PATTERN.test(subject)) return false;
-  return new GitClient(runner, repoRoot).ok(["check-ref-format", "--branch", name]);
+  return new GitClient(context.runner, context.repoRoot).ok(["check-ref-format", "--branch", name]);
 }
