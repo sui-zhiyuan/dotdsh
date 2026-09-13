@@ -49,8 +49,12 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
+import { defineTool, type ParameterSchemaSpec } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
-import type { SshConfig } from "./platform/ssh.js";
+import { SshPool } from "./core/pool.js";
+import { sshTools } from "./boundary/tools.js";
+import { nodeRunner } from "./platform/exec.js";
+import { ensureControlDir, SshTransport, type SshConfig } from "./platform/ssh.js";
 
 /** The plugin name, following dsh's convention: the package name minus scope and prefix. */
 export const name = "lazy-ssh";
@@ -114,7 +118,28 @@ export const Config: z<Config> = z.object({
  * @throws Error naming the key whose value cannot work.
  */
 export function resolveSshConfig(config: Config): SshConfig {
-  throw new Error(`resolveSshConfig is not implemented: ${config.controlDir}`);
+  // A duration or a byte count that is not a positive number is a config
+  // mistake, and the row that mounts with one should be the thing that fails.
+  const positive = (key: string, value: number, integral: boolean): void => {
+    const ok = Number.isFinite(value) && value > 0 && (!integral || Number.isInteger(value));
+    if (!ok) throw new Error(`${key} must be a positive ${integral ? "integer" : "number"}; got ${value}`);
+  };
+
+  positive("idleTimeoutMs", config.idleTimeoutMs, false);
+  positive("commandTimeoutMs", config.commandTimeoutMs, false);
+  positive("connectTimeoutSec", config.connectTimeoutSec, true);
+  positive("maxOutputBytes", config.maxOutputBytes, true);
+  if (config.sshBinary.trim() === "") throw new Error("sshBinary must name an executable");
+  if (config.controlDir.trim() === "") throw new Error("controlDir must name a directory");
+
+  return {
+    sshBinary: config.sshBinary,
+    controlDir: config.controlDir,
+    connectTimeoutSec: config.connectTimeoutSec,
+    idleTimeoutMs: config.idleTimeoutMs,
+    batchMode: config.batchMode,
+    sshOptions: [...config.sshOptions],
+  };
 }
 
 /**
@@ -124,5 +149,53 @@ export function resolveSshConfig(config: Config): SshConfig {
  * @param config - the row's configuration, validated by {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  throw new Error("lazy-ssh apply is not implemented");
+  const ssh = resolveSshConfig(config);
+  // Fail at the row, where a human sees it, rather than at the first call that
+  // needs a socket to exist.
+  ensureControlDir(ssh.controlDir);
+
+  const pool = new SshPool(new SshTransport(nodeRunner, ssh), {
+    idleTimeoutMs: ssh.idleTimeoutMs,
+    commandTimeoutMs: config.commandTimeoutMs,
+    maxOutputBytes: config.maxOutputBytes,
+  });
+
+  for (const tool of sshTools(pool)) {
+    ctx.effect(() =>
+      ctx.tools.register(
+        defineTool({
+          ...tool.descriptor,
+          // `ToolSchema` carries the arguments as a bare `Record`, because the LLM
+          // layer only ever projects them to JSON Schema. Only here, where they are
+          // handed to the registry that compiles and enforces them, is their real
+          // author-facing shape known.
+          parameters: tool.descriptor.parameters as ParameterSchemaSpec,
+          // The declaration `ToolSchema` cannot carry: this tool answers with one
+          // text block, which is what the model reads.
+          output: {
+            schema: { type: "string" },
+            render: (_args, value) => [{ type: "text", text: value }],
+          },
+          // `sshTools` is a `SshTool<never>[]` so entries with different argument
+          // objects share one list, and its elements expose no argument type to
+          // recover; the registry has already validated the call against the very
+          // descriptor spread above.
+          execute: (args, execution) => tool.execute(args as never, execution),
+        }),
+      ),
+    );
+  }
+
+  // Two teardown paths, and neither of them runs under `SIGKILL`: the disposer
+  // that cordis awaits on unload, and a `process.on("exit")` hook for a shutdown
+  // that got no further than `process.exit`. `ssh.ts` states what is left when
+  // both are skipped.
+  ctx.effect(() => {
+    const onExit = (): void => pool.abort();
+    process.on("exit", onExit);
+    return () => {
+      process.off("exit", onExit);
+      return pool.dispose();
+    };
+  });
 }

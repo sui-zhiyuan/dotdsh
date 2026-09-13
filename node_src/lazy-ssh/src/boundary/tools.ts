@@ -127,7 +127,25 @@ const SSH_RUN_TOOL: ToolSchema = {
  * @returns the text the model reads.
  */
 function renderResult(result: SshResult): string {
-  throw new Error(`renderResult is not implemented: ${result.destination}`);
+  // The header is one line, so the outcome is readable before the output is; the
+  // stream sections are omitted rather than printed empty, and a call that said
+  // nothing at all says so once.
+  const notes = [
+    ...(result.timedOut ? ["timed out"] : []),
+    ...(result.truncated ? ["output truncated"] : []),
+  ];
+  const parts = [
+    `ssh ${result.destination}: exit ${result.exitCode} (${result.connection} connection, ${result.durationMs} ms)` +
+      (notes.length === 0 ? "" : `, ${notes.join(", ")}`),
+  ];
+
+  const stdout = result.stdout.replace(/\n$/, "");
+  const stderr = result.stderr.replace(/\n$/, "");
+  if (stdout !== "") parts.push("--- stdout ---", stdout);
+  if (stderr !== "") parts.push("--- stderr ---", stderr);
+  if (stdout === "" && stderr === "") parts.push("(no output)");
+
+  return parts.join("\n");
 }
 
 /**
@@ -141,5 +159,23 @@ function renderResult(result: SshResult): string {
  * @returns the tools to register, in the order they should be listed.
  */
 export function sshTools(pool: SshPool): readonly SshTool<never>[] {
-  throw new Error("sshTools is not implemented");
+  const sshRun: SshTool<SshRunArguments> = {
+    descriptor: SSH_RUN_TOOL,
+    execute(args, execution) {
+      // The call's own deadline and cancellation both travel through the pool: a
+      // cancelled turn must stop waiting on the ssh child, and a command that
+      // outlives its deadline must be reported as timed out rather than as a
+      // server that never answered.
+      return pool
+        .run({
+          destination: args.server,
+          command: args.command,
+          ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }),
+          signal: execution.signal,
+        })
+        .then(renderResult);
+    },
+  };
+
+  return [sshRun];
 }
