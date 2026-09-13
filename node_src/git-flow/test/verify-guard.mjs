@@ -8,6 +8,12 @@
  * listener on `tools/pre-execute`, nor that the arguments a real dispatch freezes
  * are the ones asserted here.
  *
+ * Both shapes a claim can have are checked, because the guard's answer depends on
+ * exactly one thing: whether the declared path is inside the tree the claim names.
+ * A family in the main tree has the whole repository; a family that had to move
+ * out is held to its worktree, and a main-tree path is refused with the path to
+ * use instead.
+ *
  * @module @dsh-external/dotdsh-git-flow/test/verify-guard
  */
 
@@ -18,7 +24,7 @@ import { join, resolve } from "node:path";
 import { GIT_FLOW_INTERCEPTOR } from "../lib/boundary/guard.js";
 import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
-import { check, makeAgent, report, scratchRepo, signal } from "./support.mjs";
+import { check, makeAgent, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
 
 /**
  * Every check takes a session id nobody else used.
@@ -58,6 +64,25 @@ function startTool() {
   const entry = GIT_FLOW_TOOLS.find((candidate) => candidate.descriptor.name === "git_start");
   assert.ok(entry !== undefined, "GIT_FLOW_TOOLS exports no git_start tool");
   return entry;
+}
+
+/**
+ * The records one agent needs to be isolated: another session in the main tree.
+ *
+ * The guard reads whichever claim `core` resolved, so a check that wants the
+ * worktree shape has to start the way a real second family would — with a session
+ * that can still come back already holding the main tree.
+ *
+ * @param root - the scratch repository's root.
+ * @param holder - the session id to record as holding the main tree.
+ * @param session - the session the agent runs.
+ * @returns the agent's session records.
+ */
+function withHolder(root, holder, session) {
+  return [
+    { id: holder, header: {} },
+    { id: session, header: { cwd: root } },
+  ];
 }
 
 await check("a tool that cannot write a file passes through", async () => {
@@ -197,10 +222,37 @@ await check("a write into the repository with no claim is refused, naming the sk
   }
 });
 
+await check("in place, the claim is the repository: every path inside it is allowed", async () => {
+  const repo = await scratchRepo();
+  try {
+    const session = sessionId("in-place");
+    const { agent } = makeAgent(session, repo.root);
+    await startTool().execute({ branchName: "guard-in-place" }, { agent, signal });
+    assert.equal(
+      await repo.git.text(["rev-parse", "--abbrev-ref", "HEAD"]),
+      "feat/guard-in-place",
+      "the claim did not take the main tree",
+    );
+
+    // The isolation exists for the family that had to move out. This one holds the
+    // repository itself, so there is no path inside it to redirect.
+    for (const file of [join(repo.root, "note.txt"), join(repo.root, "src", "deep.txt"), join(repo.root, "README.md")]) {
+      const { decision, passed } = await decide({ name: "write", arguments: { file_path: file }, agent, signal });
+      assert.equal(passed, true, `${file} was not allowed through`);
+      assert.equal(decision.kind, "allow");
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
 await check("inside a claimed worktree a write is allowed, and a main-tree write is redirected", async () => {
   const repo = await scratchRepo();
   try {
-    const { agent } = makeAgent(sessionId("claimed"), repo.root);
+    const session = sessionId("claimed");
+    const holder = sessionId("holder");
+    await occupyMainTree(repo.root, holder);
+    const { agent } = makeAgent(session, repo.root, withHolder(repo.root, holder, session));
     await startTool().execute({ branchName: "guard-claim" }, { agent, signal });
     const workTree = worktreePath(repo.root, "guard_claim");
     assert.equal(existsSync(workTree), true, "the claim was not materialized into a worktree");
@@ -247,12 +299,10 @@ await check("the guard never answers ask", async () => {
   try {
     const { agent } = makeAgent(sessionId("ask-claimed"), repo.root);
     await startTool().execute({ branchName: "ask-spread" }, { agent, signal });
-    const workTree = worktreePath(repo.root, "ask_spread");
     const stranger = makeAgent(sessionId("ask-stranger"), repo.root).agent;
 
     const calls = [
       { name: "write", arguments: { file_path: join(repo.root, "a.txt") }, agent: stranger, signal },
-      { name: "write", arguments: { file_path: join(workTree, "a.txt") }, agent, signal },
       { name: "write", arguments: { file_path: join(repo.root, "a.txt") }, agent, signal },
       { name: "bash", arguments: { command: "rm -rf /" }, agent, signal },
       {

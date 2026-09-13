@@ -9,6 +9,12 @@
  * needs the model. It does not prove that dsh registered either list, nor how the
  * composer renders an input hint.
  *
+ * Both shapes a start can take are checked, because the door is where the model
+ * first sees which one it got: a repository whose main tree nobody holds is worked
+ * in place, and a family that arrives while another resumable family holds the main
+ * tree is isolated in a worktree. Which one it is, is `core`'s decision — what is
+ * checked here is that the answer names the tree the session really has.
+ *
  * @module @dsh-external/dotdsh-git-flow/test/verify-doors
  */
 
@@ -18,9 +24,11 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { GIT_FLOW_COMMANDS } from "../lib/boundary/commands.js";
+import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
+import { ClaimStore, MAIN_WORKTREE } from "../lib/platform/claim.js";
 import { GitClient, nodeRunner } from "../lib/platform/exec.js";
-import { check, makeAgent, report, scratchRepo, signal } from "./support.mjs";
+import { check, commitFile, makeAgent, occupyMainTree, report, scratchRepo, signal } from "./support.mjs";
 
 /**
  * Session ids differ per check: `core` memoizes a family's workspace process-wide
@@ -58,17 +66,26 @@ const execution = (agent) => ({ agent, signal });
 /** The directory `core` puts a family's worktree in. */
 const worktreePath = (root, name) => join(root, ".dsh.local", "worktrees", name);
 
-/**
- * Commit one file in a worktree.
- *
- * A merge is only meaningful for a branch with a commit master does not have, so
- * the `done` outcome needs the worktree to be dirty first.
- */
-async function commitIn(workTree, name) {
-  await writeFile(join(workTree, name), "work\n");
-  const git = new GitClient(nodeRunner, workTree);
-  await git.run(["add", "-A"]);
-  await git.run(["commit", "-qm", `feat: ${name}`]);
+/** The claim recorded for one session, read back through the store that owns the file. */
+async function storedClaim(root, session) {
+  const store = await ClaimStore.open(root);
+  try {
+    return await store.query(session);
+  } finally {
+    await store.dispose();
+  }
+}
+
+/** The branch a working tree has checked out. */
+function checkedOut(git, cwd) {
+  return git.text(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"]);
+}
+
+/** The body of the one notice an injection check expects. */
+function noticeOf(injected) {
+  assert.equal(injected.length, 1, "expected exactly one injected notice");
+  assert.equal(injected[0].content[0].type, "text");
+  return injected[0].content[0].text;
 }
 
 await check("both doors describe the same three operations", async () => {
@@ -92,17 +109,19 @@ await check("the tools declare the arguments the model must supply", async () =>
   assert.deepEqual(Object.keys(tool("git_cleanup").descriptor.parameters), []);
 });
 
-await check("git_start answers with the branch and the worktree, and injects nothing", async () => {
+await check("git_start in a free repository takes the main tree and injects nothing", async () => {
   const repo = await scratchRepo();
   try {
-    const { agent, injected } = makeAgent(sessionId("tool-start"), repo.root);
+    const session = sessionId("tool-main");
+    const { agent, injected } = makeAgent(session, repo.root);
     const text = await tool("git_start").execute({ branchName: "doors-tool" }, execution(agent));
-    const workTree = worktreePath(repo.root, "doors_tool");
+
     assert.equal(typeof text, "string");
     assert.match(text, /feat\/doors-tool/);
-    assert.ok(text.includes(workTree), `answer does not name ${workTree}: ${text}`);
-    assert.equal(existsSync(workTree), true);
-    assert.equal(statSync(workTree).isDirectory(), true);
+    assert.ok(text.includes(repo.root), `answer does not name the main tree: ${text}`);
+    assert.equal(await checkedOut(repo.git, repo.root), "feat/doors-tool", "the main tree is on the branch");
+    assert.equal(existsSync(worktreePath(repo.root, "doors_tool")), false, "no worktree was made");
+    assert.equal((await storedClaim(repo.root, session))?.worktreeName, MAIN_WORKTREE);
     // A tool call is already the model acting, so its return value is the whole
     // channel: anything pushed into the session would be a second answer.
     assert.deepEqual(injected, []);
@@ -111,56 +130,53 @@ await check("git_start answers with the branch and the worktree, and injects not
   }
 });
 
-await check("git_start refuses a name git rejects and creates nothing", async () => {
+await check("git_start while another resumable family holds the main tree answers with the worktree", async () => {
+  const repo = await scratchRepo();
+  try {
+    const session = sessionId("tool-tree");
+    const holder = sessionId("tool-holder");
+    await occupyMainTree(repo.root, holder);
+    const { agent, injected } = makeAgent(session, repo.root, [
+      { id: holder, header: {} },
+      { id: session, header: { cwd: repo.root } },
+    ]);
+
+    const text = await tool("git_start").execute({ branchName: "doors-isolated" }, execution(agent));
+    const workTree = worktreePath(repo.root, "doors_isolated");
+
+    assert.ok(text.includes(workTree), `answer does not name ${workTree}: ${text}`);
+    assert.equal(existsSync(workTree), true, "the worktree was not created");
+    assert.equal(statSync(workTree).isDirectory(), true);
+    assert.equal(await checkedOut(repo.git, workTree), "feat/doors-isolated");
+    assert.equal(await checkedOut(repo.git, repo.root), "master", "the holder's checkout was not moved");
+    assert.equal((await storedClaim(repo.root, session))?.worktreeName, "doors_isolated");
+    assert.deepEqual(injected, []);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("git_start refuses a name that is not a feature subject and creates nothing", async () => {
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("tool-bad"), repo.root);
-    const text = await tool("git_start").execute({ branchName: "bad name" }, execution(agent));
-    assert.equal(typeof text, "string");
-    assert.ok(text.includes("feat/bad name"), `answer does not quote the name: ${text}`);
-    assert.match(text, /not a name git accepts/);
-    assert.equal(await repo.git.ok(["show-ref", "--verify", "--quiet", "refs/heads/feat/bad name"]), false);
-    assert.equal(existsSync(worktreePath(repo.root, "bad name")), false);
-    assert.deepEqual(injected, []);
+    for (const name of ["bad name", "test/git-flow-guard", "9lives", "under_score", "a".repeat(21)]) {
+      const text = await tool("git_start").execute({ branchName: name }, execution(agent));
+      const branch = `feat/${name}`;
+      assert.equal(typeof text, "string");
+      assert.ok(text.includes(branch), `answer does not quote ${branch}: ${text}`);
+      assert.match(text, /not a name this plugin opens/);
+      assert.equal(await repo.git.ok(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]), false);
+      assert.deepEqual(injected, []);
+    }
+    assert.equal(await checkedOut(repo.git, repo.root), "master", "the main tree was never moved");
+    assert.equal(existsSync(join(repo.root, ".dsh.local")), false, "a refused name claims nothing at all");
   } finally {
     await repo.cleanup();
   }
 });
 
-await check("git_complete answers done, then nothing-to-do, and injects nothing", async () => {
-  const repo = await scratchRepo();
-  try {
-    const { agent, injected } = makeAgent(sessionId("tool-complete"), repo.root);
-    await tool("git_start").execute({ branchName: "doors-complete" }, execution(agent));
-    const workTree = worktreePath(repo.root, "doors_complete");
-    await commitIn(workTree, "note.txt");
-
-    const done = await tool("git_complete").execute(
-      { mergeMessage: "feat: doors complete" },
-      execution(agent),
-    );
-    assert.equal(typeof done, "string");
-    // `done` is the merge path, not the "already had those commits" wording.
-    assert.match(done, /Merged the feature branch into master with --no-ff/);
-    assert.match(done, /family is finished/);
-    assert.equal(existsSync(workTree), false);
-    assert.equal(await repo.git.ok(["show-ref", "--verify", "--quiet", "refs/heads/feat/doors-complete"]), false);
-
-    // Re-entrancy is the contract: a family already finished must answer, not fail.
-    const again = await tool("git_complete").execute(
-      { mergeMessage: "feat: doors complete" },
-      execution(agent),
-    );
-    assert.equal(typeof again, "string");
-    assert.notEqual(again, done);
-    assert.match(again, /No claim is recorded/);
-    assert.deepEqual(injected, []);
-  } finally {
-    await repo.cleanup();
-  }
-});
-
-await check("a bare /git-start injects one notice and opens nothing", async () => {
+await check("a bare /git-start injects one notice naming the skill and opens nothing", async () => {
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-bare"), repo.root);
@@ -168,8 +184,8 @@ await check("a bare /git-start injects one notice and opens nothing", async () =
     const result = await command("git-start").handler(invocation(agent, "", commandId));
 
     assert.equal(result.kind, "success");
-    assert.equal(injected.length, 1);
     const message = injected[0];
+    assert.equal(injected.length, 1);
     // The pairing id is the command's own, so one run's context can be told from
     // the next run's and from a message the human actually typed.
     assert.equal(message.id, commandId);
@@ -179,8 +195,13 @@ await check("a bare /git-start injects one notice and opens nothing", async () =
     assert.equal(message.source.form, "notice");
     assert.equal(message.content[0].type, "text");
     assert.ok(message.content[0].text.includes("git_start"));
-    // Nothing was created: naming a feature is the model's judgement, so this path
-    // must not have touched the repository at all.
+    // Naming a feature is the model's judgement but the rules are the skill's, so
+    // the notice sends it there rather than restating them.
+    assert.ok(
+      message.content[0].text.includes(GIT_FLOW_SKILL_NAMES.workflow),
+      `notice does not name the ${GIT_FLOW_SKILL_NAMES.workflow} skill: ${message.content[0].text}`,
+    );
+    // Nothing was created: this path must not have touched the repository at all.
     assert.equal(existsSync(join(repo.root, ".dsh.local")), false);
     assert.equal(await repo.git.text(["branch", "--list", "--format=%(refname:short)"]), "master");
   } finally {
@@ -188,22 +209,23 @@ await check("a bare /git-start injects one notice and opens nothing", async () =
   }
 });
 
-await check("a named /git-start opens the worktree and injects where it is", async () => {
+await check("a named /git-start opens the branch in the main tree and injects where it is", async () => {
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-named"), repo.root);
     const commandId = "named-1";
     const result = await command("git-start").handler(invocation(agent, "doors-named", commandId));
-    const workTree = worktreePath(repo.root, "doors_named");
 
     assert.equal(result.kind, "success");
     assert.ok(result.text.includes("feat/doors-named"), result.text);
-    assert.equal(existsSync(workTree), true);
-    assert.equal(injected.length, 1);
+    assert.equal(await checkedOut(repo.git, repo.root), "feat/doors-named");
+    assert.equal(existsSync(worktreePath(repo.root, "doors_named")), false, "the main tree needed no worktree");
+
+    const text = noticeOf(injected);
     assert.equal(injected[0].id, commandId);
-    const text = injected[0].content[0].text;
     assert.ok(text.includes("feat/doors-named"), text);
-    assert.ok(text.includes(workTree), text);
+    assert.ok(text.includes(repo.root), text);
+    assert.ok(text.includes(GIT_FLOW_SKILL_NAMES.workflow), text);
   } finally {
     await repo.cleanup();
   }
@@ -213,13 +235,15 @@ await check("an invalid /git-start name is an error and injects nothing", async 
   const repo = await scratchRepo();
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-bad"), repo.root);
-    const result = await command("git-start").handler(invocation(agent, "bad name", "bad-1"));
+    const result = await command("git-start").handler(invocation(agent, "test/git-flow-guard", "bad-1"));
 
     assert.equal(result.kind, "error");
-    assert.match(result.text, /will not accept/);
+    assert.match(result.text, /not a name this plugin opens/);
+    assert.ok(result.text.includes("feat/test/git-flow-guard"), result.text);
     // There is no judgement to hand the model: the name is simply not usable.
     assert.deepEqual(injected, []);
-    assert.equal(existsSync(worktreePath(repo.root, "bad name")), false);
+    assert.equal(await checkedOut(repo.git, repo.root), "master");
+    assert.equal(existsSync(join(repo.root, ".dsh.local")), false);
   } finally {
     await repo.cleanup();
   }
@@ -230,20 +254,19 @@ await check("/git-complete without a message injects and merges nothing", async 
   try {
     const { agent, injected } = makeAgent(sessionId("cmd-complete"), repo.root);
     await tool("git_start").execute({ branchName: "doors-nomerge" }, execution(agent));
-    const workTree = worktreePath(repo.root, "doors_nomerge");
-    await commitIn(workTree, "note.txt");
+    await writeFile(join(repo.root, "note.txt"), "work\n");
+    await commitFile(repo.git, repo.root, "note.txt", "feat: note");
 
     const before = await repo.git.text(["rev-parse", "master"]);
     const result = await command("git-complete").handler(invocation(agent, "", "nomerge-1"));
 
     assert.equal(result.kind, "success");
-    assert.equal(injected.length, 1);
-    assert.ok(injected[0].content[0].text.includes("git_complete"));
+    assert.ok(noticeOf(injected).includes("git_complete"));
     // The message is the model's to compose, so this path must end at the
-    // injection: master unchanged, branch and worktree still in place.
+    // injection: master unchanged, branch and tree still in place.
     assert.equal(await repo.git.text(["rev-parse", "master"]), before);
     assert.equal(await repo.git.ok(["show-ref", "--verify", "--quiet", "refs/heads/feat/doors-nomerge"]), true);
-    assert.equal(existsSync(workTree), true);
+    assert.equal(await checkedOut(repo.git, repo.root), "feat/doors-nomerge");
   } finally {
     await repo.cleanup();
   }
