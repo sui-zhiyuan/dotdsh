@@ -81,7 +81,7 @@ const GIT_MASTER_SKILL: BundledSkill = {
   name: "git-master",
   description: "How to work with git here: the commit-message convention this repository follows",
   whenToUse: "whenever you are about to run a git command or write a commit message",
-  body: new URL("../../assets/git-commit.md", import.meta.url),
+  body: new URL("../../assets/git-master.md", import.meta.url),
 };
 
 /** Every skill this package bundles. */
