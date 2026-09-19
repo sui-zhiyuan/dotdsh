@@ -51,7 +51,7 @@ What is left is one command with three steps and no state: build, link, remind.
 | A failed run is fixed and re-run, never rolled back | Every step is idempotent — `pnpm -r build` and `dsh plugin add` both converge — so rollback and transactions would buy nothing |
 | Browser-side tweaks share one dual-face package (`node_src/ui-tweaks`) | Small behaviour changes are cheap to write and expensive to fragment: a package per tweak multiplies rows, manifests and lockfile importers for twenty lines of code. One package owns a `tweaks` registry, each entry a reversible `install()`. The shape is dsh's own: a `dsh.client` declaration plus a browser half at `exports["./client"]`, exactly like the `dsh-client-ui-*` packages |
 | The git workflow is one node-only package (`node_src/git-flow`) using existing seams, not a new service | It needs no browser half and no service of its own: the command registry, the tool registry, a skill provider and the `tools/pre-execute` waterfall are all extension points dsh already ships, and each is registered on the seam the harness's own packages use. What it does own is the git logic behind one injectable process seam (`Runner`) and the session registry it reads for the family key and the sweep scope, both kept structural so the committed checks can drive the whole claim/branch/worktree/merge/cleanup lifecycle against a scratch repository with no harness present |
-| The pre-write guard refuses a write; it never redirects one, and it never opens the branch itself | `PreToolDecision` has exactly `allow`/`deny`/`ask` and `exec.arguments` is deep-frozen before any listener runs, so a gate cannot rewrite a path. The denial text therefore carries the correction — the name of the `git-flow` skill and the `git_start` call — and opening a branch stays a decision the model makes where a human can be asked |
+| The guard refuses a write and asks about a completion; it never redirects a write, and it never opens the branch itself | `PreToolDecision` has exactly `allow`/`deny`/`ask` and `exec.arguments` is deep-frozen before any listener runs, so a gate cannot rewrite a path. The denial text therefore carries the correction — the name of the `git-flow` skill and the `git_start` call — and opening a branch stays a decision the model makes where a human can be asked. The one `ask` is the merge, the decision no model may make for the human who owns the branch |
 | Lazy ssh (`node_src/lazy-ssh`) reuses OpenSSH's multiplexing instead of holding a connection of its own | A backend that kept one authenticated socket per host would have to frame commands over it — delimiters, exit codes, stderr separation, cancellation, a command that closes the pipe — and each of those is a way to attribute one command's output to another. `ControlMaster`/`ControlPath` already share the transport while every call keeps its own process, streams and exit status, so the package owns only what OpenSSH leaves to the caller: the lifetime (an idle timeout refreshed by each call, then `ssh -O exit`) and the teardown. The alternative was measured rather than dismissed — a keeper `sh` per server reading a pipe dsh holds guarantees cleanup after a `SIGKILL` — and is recorded as deferred next to the boundary it would close, because buying it means owning the master ourselves (`-M -N`, readiness, restart detection) and one more process per call |
 
 ## The browser half
@@ -139,6 +139,26 @@ names the `git-flow` skill and the `git_start` call instead, so the name is chos
 be asked and a branch is never opened on a guess. The seam choice is the same fact seen from the
 other side: `ctx.tools.guard` is the synchronous alternative, and deciding this requires asking git a
 question.
+
+**The one `ask` at that seam is a completion, not a write.** `allow`/`deny`/`ask` is all the seam offers,
+and the write rules use two of the three: the reader of a refusal is the model. The third is what
+finishing a family needs, and what makes it need it is the asymmetry the workflow exists to keep — a
+merge removes the worktree and deletes the branch, so what it settles is not whether the work is *done*
+(the model knows that) but whether it is *accepted* (only the human does). An earlier version shipped
+`git_complete` as an ordinary tool beside `git_start`, and a model reads such a pair as its own beginning
+and its own end: it finished a feature the moment its edits stopped, and the human's review happened
+after the merge, when the only place left to fix anything was a new branch. Prompting against that would
+have been the same mistake the guard exists to avoid — trusting the model to remember an invariant
+instead of holding it — so the call is now resolved through the approval service: one approval, that one
+call, and a fail-closed `unavailable` (no composed answerer, or a call carrying no agent) leaves the
+branch alone. The reason carries the three facts the human is deciding — the branch, the integration
+branch, the merge message the model composed — because a prompt that names none of them can only be
+rubber-stamped. Two smaller choices follow from the same reasoning: a `git_complete` for a family with no
+claim passes through, since `core` answers `nothing-to-do` for it and a prompt about nothing teaches its
+reader to approve without reading; and `guard: "off"` turns this off together with the write rules,
+because `off` means the workflow is advisory, not that one of its rules is. The human's `/git-complete`
+is untouched: a command is dispatched by the command registry rather than by the tool waterfall, so the
+approval stands on the model's door alone.
 
 **Git runs from `ctx.subprocess` with an exact argv, not from `ctx.shell` with a command string.**
 `ctx.shell` is the higher-level seam and can apply a sandbox confine, which makes it the obvious

@@ -20,14 +20,16 @@
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
-| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a pre-write guard that refuses an edit landing outside the tree the session's family claimed, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
+| `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a guard that refuses an edit landing outside the tree the session's family claimed and puts a model's `git_complete` to the human for approval, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
 | `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |
 | `@dsh-external/dotdsh-copilot-auth` | `copilot-auth` | Human-initiated GitHub Copilot sign-in: the one piece of that subscription dsh does not ship. `/copilot-login` runs the device-code flow, answers with the verification URL and code, then stores the grant in the background; `/copilot-status` reports the stored grant, its expiry, the account's model list and whether the `github-copilot` route is registered at all; `/copilot-logout` removes it. The same sign-in runs from a terminal as `dotdsh-copilot-auth login`, writing through dsh's own credential provider so the format, the `0600` mode and the cross-process lock are dsh's. It registers no route (the stock `llm-pi-ai` adapter serves `github-copilot` from `settings.yaml`) and no tool, and it validates every grant it writes or reads — official `proxy-ep` endpoint only, `enterpriseUrl` refused |
 
 ## The git-flow workflow
 
 Everything the workflow does is reachable twice: as a slash command for a human, and as a tool for the
-model.
+model. One call is deliberately not symmetric, and it is the one that matters: `git_complete` puts the
+merge to the human for approval before it runs, so the model can propose finishing a feature but cannot
+accept its own work.
 
 ```
 /git-start [<name>]    open a feature branch for this session
@@ -47,6 +49,15 @@ most `branchSubjectMaxLength` characters (20 by default). The configured prefix 
 added by the plugin, not by the caller: `git-flow-guard` opens `feat/git-flow-guard`, and a name that
 brings its own namespace, like `test/git-flow-guard`, is refused rather than doubled into
 `feat/test/git-flow-guard`.
+
+**Finishing is the human's call.** A merge is the point of no return — it removes the worktree and
+deletes the branch, so an issue found afterwards is fixed on a new branch — and *the work is done* is the
+model's judgement while *the work is accepted* is the human's. The `git_complete` tool therefore does not
+merge on its own initiative: the guard puts the call to the approval seam, and the reason the human reads
+names the branch, the integration branch and the merge message the model composed. Approving allows that
+one call; rejecting it, cancelling it, or running in a deployment with no approval channel to answer
+leaves the branch, its worktree and its commits exactly as they were. `/git-complete` — the human's own
+door — is not gated, because a command does not dispatch through `tools/pre-execute`.
 
 **Finishing.** `/git-complete` merges with `--no-ff` so the branch point stays visible in history. When
 the integration branch has moved past the branch point, merging would bury the replay inside the merge
@@ -69,8 +80,11 @@ inside the tree that claim names — the repository's main checkout for the fami
 worktree for a family that had to move out.
 
 The guard reads the path a tool *declares*, which is the first of its limits: a write reached through a
-shell command is not seen. It also ignores a call that carries no agent, and it never answers `ask` —
-its reader is the model, never a human.
+shell command is not seen. It also ignores a call that carries no agent. And it never answers `ask`
+about a *write* — the reader of a write refusal is the model, never a human — which leaves exactly one
+question for a human: a `git_complete` call by a family that holds a claim is put to the approval seam,
+and a call for a family with no claim passes through instead, because `core` answers `nothing-to-do` for
+it and a prompt about nothing is how a prompt teaches its reader to approve without reading.
 
 ### Parallel sessions and trees
 
@@ -129,7 +143,7 @@ first operation that trips over it. The defaults are what this repository runs:
 | `lockStaleSeconds` | `10` | how old the claim lock may be before another process takes it over |
 | `sweepAgeHours` | `24` | how old a claim must be before `/git-cleanup` collects it |
 | `branchSubjectMaxLength` | `20` | the longest a feature name may be, after the prefix |
-| `guard` | `on` | `off` turns the pre-write guard into a pass-through |
+| `guard` | `on` | `off` makes the workflow advisory: the write rules stop being checked and a completion is no longer put to the human |
 
 The two skills are rendered from those same settings, so a model reads the rules this deployment
 actually applies rather than the defaults baked into an asset. Two things the plugin deliberately does

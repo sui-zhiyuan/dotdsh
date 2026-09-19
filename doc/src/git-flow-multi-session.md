@@ -374,7 +374,10 @@ Two things stay as they are, deliberately:
   releases the tree, deletes the branch and drops the claim. It declares an `input` hint now, unlike
   the previous implementation, because the merge message is the model's to compose. A branch that is
   not a descendant of `master` is reported `not-descendant` with the `git rebase --onto` command to
-  run, and the caller replays it by hand: `core` never rebases.
+  run, and the caller replays it by hand: `core` never rebases. What the command does *not* share with
+  the tool door is the question of who may finish: a model's `git_complete` is put to the human for
+  approval first — the model proposes a finish, the human accepts one — while this command is not
+  gated, because a command is dispatched by the command registry rather than by the tool waterfall.
 - **`/git-cleanup`** — the counterpart to a session that was closed without finishing. It sweeps a
   claim only when its session cannot be resumed **and** the claim is older than a day, then releases
   the tree, deletes the branch with `-D` whether or not it is merged, and drops the claim last. That
