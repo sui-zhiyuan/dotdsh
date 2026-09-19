@@ -103,7 +103,7 @@ const SKILLS: readonly BundledSkill[] = [WORKFLOW_SKILL, GIT_MASTER_SKILL];
  * The names of the bundled skills.
  *
  * Exported because a refusal has to send the model to the right one: when the
- * pre-write guard turns a call down, the message it returns names
+ * guard turns a write down, the message it returns names
  * {@link GIT_FLOW_SKILL_NAMES.workflow}, and a name written twice would be a name
  * that can drift.
  */

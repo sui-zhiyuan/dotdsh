@@ -280,7 +280,7 @@ async function gitCompleteHandler(
   if (message === "") {
     injectContext(
       invocation,
-      "You ran `/git-complete` without a merge message. Compose the subject from what this session did, then call the `git_complete` tool with it. This command words no message by itself, so the tool call is what merges the branch.",
+      "You ran `/git-complete` without a merge message. Compose the subject from what this session did, then call the `git_complete` tool with it: that call is put to the human for approval, and it merges the branch only if they allow it. If no approval channel can answer — this deployment composes none, or nobody is there — tell the human the subject you composed and ask them to run `/git-complete <merge-message>` with it. This command words no message by itself, so the tool call is what merges the branch.",
     );
     return {
       kind: "success",

@@ -90,7 +90,7 @@ export interface Config {
   sweepAgeHours: number;
   /** The longest a feature branch's subject may be, after the prefix. */
   branchSubjectMaxLength: number;
-  /** Whether the pre-write guard runs. */
+  /** Whether the pre-dispatch guard runs. */
   guard: "on" | "off";
 }
 
@@ -119,9 +119,10 @@ export const Config: z<Config> = z.object({
  *
  * 1. every command definition in {@link GIT_FLOW_COMMANDS};
  * 2. every tool definition in {@link GIT_FLOW_TOOLS};
- * 3. the single interception in {@link GIT_FLOW_INTERCEPTOR} — the pre-write
- *    guard listens on the harness's `tools/pre-execute` waterfall, so it is
- *    removed by the same disposer discipline as everything else;
+ * 3. the single interception in {@link GIT_FLOW_INTERCEPTOR} — the guard listens
+ *    on the harness's `tools/pre-execute` waterfall, so the write rules and the
+ *    completion gate are removed by the same disposer discipline as everything
+ *    else;
  * 4. the skill provider, which serves both of the package's skills and reads a
  *    body from its asset only when a model actually loads one.
  *

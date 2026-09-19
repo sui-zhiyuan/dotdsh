@@ -1,5 +1,6 @@
 /**
- * The pre-write guard: one hook, one question — may this session change that file?
+ * The pre-dispatch guard: one hook, two questions — may this session change that
+ * file, and may the model finish this family?
  *
  * `tools/pre-execute` is a waterfall that runs before a call is dispatched and
  * may return `allow`, `deny` or `ask`, which is what makes the answer
@@ -16,26 +17,40 @@
  *
  * ## What it decides, and what it refuses to decide
  *
- * It answers `allow` or `deny`, and never `ask`: the guard is not where a human
- * is consulted. It also never *starts* anything on its own initiative. A session
- * that may not write is told so, in the terms the model needs — "call `git_start`
- * with a branch name, then repeat the change" — and the model decides what to do
- * about it. Naming a feature and opening a branch are the model's calls, made
- * where a human can be asked; a guard that made them itself would be deciding
- * with no one watching.
+ * The **write** question is answered `allow` or `deny`, and its reader is the
+ * model: a session that may not write is told so, in the terms it needs — "call
+ * `git_start` with a branch name, then repeat the change" — and the model decides
+ * what to do about it. It never *starts* anything on its own initiative: naming a
+ * feature and opening a branch are the model's calls, made where a human can be
+ * asked, and a guard that made them itself would be deciding with no one watching.
+ *
+ * The **completion** question is the one place this plugin consults a human,
+ * because it is the one decision the model cannot make. `git_complete` merges with
+ * `--no-ff`, removes the family's worktree and deletes its branch, so what it
+ * settles is not whether the work is *done* — the model knows that — but whether it
+ * is *accepted*, which only the human knows. The call is therefore answered `ask`,
+ * through the harness's approval seam: a single approval lets that one call
+ * through, and a rejection, a cancellation or a deployment with no approval channel
+ * leaves the branch exactly as it was. The model can still *propose* the merge — it
+ * composes the message, which is the judgement it is best at, and the reason the
+ * human reads carries it — but it cannot close a family the human has not accepted.
+ * A call for a family that holds no claim passes through instead: `core.gitComplete`
+ * answers `nothing-to-do` for it, and asking a human to approve a no-op is how a
+ * prompt teaches its reader to approve without reading.
  *
  * ## The rules
  *
  * A write is allowed when it lands inside the tree its own family claimed, and
- * refused otherwise. The whole guard can also be switched off — `guard: "off"` in
- * the row's configuration — which is the escape hatch for a session that has to
- * write somewhere these rules refuse: with the guard off, the workflow is advisory
- * and nothing below runs.
+ * refused otherwise; a completion is asked about. The whole guard can also be
+ * switched off — `guard: "off"` in the row's configuration — which is the escape
+ * hatch for a session that has to write somewhere these rules refuse: with the
+ * guard off the workflow is advisory, neither question is answered here, and the
+ * model may finish a family unasked.
  *
- * 1. only the harness's file-mutating tools are its business — everything else is
- *    `next()`, including a call that carries no agent at all, which is a call no
- *    session asked for and therefore nothing this plugin can have an opinion
- *    about;
+ * 1. only the harness's file-mutating tools, and the one completion tool, are its
+ *    business — everything else is `next()`, including a call that carries no agent
+ *    at all, which is a call no session asked for and therefore nothing this plugin
+ *    can have an opinion about;
  * 2. a call that declares no target is `next()`: there is nothing to check;
  * 3. a target outside the repository is `next()`: this plugin has no opinion
  *    about files it does not own;
@@ -44,7 +59,16 @@
  * 5. a family with a claim writes inside its worktree and nowhere else. A write
  *    aimed at the main tree is refused with the path to use instead, because that
  *    is the one place the model cannot derive: it does not know where the family
- *    was put.
+ *    was put;
+ * 6. a `git_complete` call by a family that holds a claim is `ask`, and its reason
+ *    names the family's branch, the integration branch and the merge message — the
+ *    three facts the human is being asked about. A call for a family with no claim,
+ *    or one that carries no agent, is `next()`: there is nothing to finish, or
+ *    nobody the question belongs to.
+ *
+ * Rule 6 runs before the file-writer lookup rather than after it, and both halves
+ * of that matter: a rule 6 that ran for every call would be a rule that asks a
+ * human about writes, and a rule 1 that ran first would wave a completion through.
  *
  * The Bash tool is deliberately absent. Its arguments name a command, not a
  * path, so it can neither be checked for containment nor told apart from
@@ -91,6 +115,37 @@ const FILE_WRITERS: ReadonlyMap<string, string> = new Map([
 const READ_ONLY_SUBCOMMAND = "view";
 
 /**
+ * The one call that finishes a family, and the one call this guard asks a human
+ * about.
+ *
+ * A name rather than an import: `tools.ts` declares this tool, and the guard reads
+ * the harness's tool names the same way {@link FILE_WRITERS} does — as strings, so
+ * the two modules stay independent of each other's descriptors.
+ */
+const COMPLETION_TOOL = "git_complete";
+
+/** The argument a completion call carries its merge message in. */
+const MERGE_MESSAGE_ARGUMENT = "mergeMessage";
+
+/**
+ * The merge message a completion call supplies, when it supplies a usable one.
+ *
+ * Read the way the declared path is read: from the frozen arguments, without
+ * trusting their shape. The message is the model's own words and travels into the
+ * reason a human reads, which is why it is trimmed and why an empty one is
+ * treated as absent rather than shown as a blank line.
+ *
+ * @param execution - the pending completion call.
+ * @returns the message, or `undefined` when the call carries none.
+ */
+function mergeMessageOf(execution: ToolExecution): string | undefined {
+  const args: unknown = execution.arguments;
+  const declared = typeof args === "object" && args !== null ? (args as Record<string, unknown>) : undefined;
+  const message = declared?.[MERGE_MESSAGE_ARGUMENT];
+  return typeof message === "string" && message.trim() !== "" ? message.trim() : undefined;
+}
+
+/**
  * Whether `child` is `parent` or sits inside it.
  *
  * Both are absolute and already resolved; the comparison is `path.relative` so
@@ -104,6 +159,63 @@ const READ_ONLY_SUBCOMMAND = "view";
 function isInside(parent: string, child: string): boolean {
   const offset = relative(parent, child);
   return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
+}
+
+/**
+ * Ask a human before a family is finished, or let the call through when there is
+ * nothing to finish.
+ *
+ * Three facts decide the answer, and the filters come first because this runs
+ * before a tool call like every other rule here:
+ *
+ * - a call that carries **no agent** is not a session's call, so it is `next()` —
+ *   the answer the write rules give it too, and one the harness's own ask
+ *   resolution would refuse anyway. So is a session with **no working directory**:
+ *   there is no repository in which to resolve a branch;
+ * - a family that holds **no claim** has nothing to finish. `core.gitComplete`
+ *   reports `nothing-to-do` for that call, and a no-op is not worth a human's
+ *   attention: a prompt that asks about nothing is a prompt that teaches its
+ *   reader to approve without reading;
+ * - otherwise the call is `ask`, and the reason carries the three facts the human
+ *   is deciding — the family's branch, the integration branch, and the merge
+ *   message the model composed.
+ *
+ * The reason is read by the **human**, not by the model: the approval seam keeps
+ * the two apart, and the model learns the outcome from the harness ("the user
+ * rejected tool …") rather than from this text. So it is written for someone who
+ * has not read the conversation — what will happen, to which branch, and what
+ * rejecting it costs (nothing: the branch, its worktree and its commits stay).
+ *
+ * @param execution - the pending completion call.
+ * @param next - the waterfall continuation, used for the two pass-through cases.
+ * @param settings - the plugin's resolved configuration.
+ * @returns `ask` for a family that has something to finish; `next()` otherwise.
+ */
+async function askBeforeComplete(
+  execution: ToolExecution,
+  next: () => Promise<PreToolDecision>,
+  settings: FlowSettings,
+): Promise<PreToolDecision> {
+  const rawAgent: unknown = execution.agent;
+  if (rawAgent === undefined) return next();
+
+  const agent = sessionAgentOf(rawAgent);
+  const cwd = agent.session.header.cwd;
+  if (cwd === undefined) return next();
+
+  const facts = await factsFor(agent, settings, execution.signal);
+  const workspace = await ensureWorkspace(facts.flow, facts.sessionId, execution.signal);
+  if (workspace === null) return next();
+
+  const message = mergeMessageOf(execution);
+  return {
+    kind: "ask",
+    reason:
+      `Finish \`${workspace.branch}\`? Approving merges it into \`${settings.integrationBranch}\` with --no-ff, ` +
+      "removes its worktree and deletes the branch — an issue found after that needs a new branch. " +
+      "Reject to leave the branch, its worktree and its commits exactly as they are." +
+      (message === undefined ? "" : `\nMerge message: ${message}`),
+  };
 }
 
 /**
@@ -125,8 +237,8 @@ function isInside(parent: string, child: string): boolean {
  * and again after it settles, so a turn cancelled while the guard is working is
  * handled either way.
  *
- * The two refusals are the whole of the guard's output, and both are addressed to
- * the model rather than to a human. Both also name the workflow skill
+ * The two refusals are the whole of the guard's answer to a *write*, and both are
+ * addressed to the model rather than to a human. Both also name the workflow skill
  * ({@link GIT_FLOW_SKILL_NAMES.workflow}), because a model that has just been
  * refused is a model that has not read the rules yet — and a refusal is the one
  * moment the rules can be handed to it exactly when they are needed. The name
@@ -149,6 +261,9 @@ function isInside(parent: string, child: string): boolean {
  *   > `git-flow` skill, and write to `<worktree>/<relative>` instead of
  *   > `<target>`.
  *
+ * A completion is the other question, and the only answer here that is not the
+ * model's: see {@link askBeforeComplete}.
+ *
  * @param execution - the pending call: name, arguments, and calling agent.
  * @param next - the waterfall continuation, which allows the call.
  * @param settings - the plugin's resolved configuration; `guard: "off"` turns the
@@ -163,6 +278,11 @@ async function beforeToolCall(
   // Off means off, before anything is looked at: not even the tool name is worth
   // reading when the answer is always the same.
   if (settings.guard === "off") return next();
+
+  // Checked before the lookup below, which knows nothing about it and would wave
+  // it through: finishing a family is not a write, but it is the call a human has
+  // to answer for.
+  if (execution.name === COMPLETION_TOOL) return askBeforeComplete(execution, next, settings);
 
   const targetArgument = FILE_WRITERS.get(execution.name);
   if (targetArgument === undefined) return next();

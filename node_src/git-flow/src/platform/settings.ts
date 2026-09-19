@@ -95,11 +95,12 @@ export interface FlowSettings {
    */
   readonly branchSubjectMaxLength: number;
   /**
-   * Whether the pre-write guard runs: `on`.
+   * Whether the pre-dispatch guard runs: `on`.
    *
    * `off` is the escape hatch for a session that has to write somewhere the guard
    * would refuse — the guard is the plugin's only enforcement, and turning it off
-   * turns the workflow advisory.
+   * turns the workflow advisory: the write rules stop being checked, and a
+   * completion is no longer put to the human before it merges.
    */
   readonly guard: "on" | "off";
 }
