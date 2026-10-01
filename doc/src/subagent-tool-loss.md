@@ -39,7 +39,7 @@ Two independent switches are easy to conflate:
 | switch | where | what it controls |
 |---|---|---|
 | `modelSelectionSettings: true` | the preset row | which **install path** the row takes (see below) — implicated in this defect |
-| `subagent-model-selection.enabled` | `$DSH_HOME/settings.yaml` | whether the tool exposes `provider`/`model`/`reasoning_effort` and registers `list_subagent_models` |
+| `subagent-model-selection.enabled` | that row's config — `$DSH_HOME/settings.yaml` when this was investigated, the profile's `cordis.patch.yml` since dsh 0.2.0-rc.2 (which imports the old document once and renames it) | whether the tool exposes `provider`/`model`/`reasoning_effort` and registers `list_subagent_models` |
 
 The settings switch is off by default and is sampled when a session's agent is composed, so it
 never applies to an existing session. With it off, a healthy `subagent` has exactly three
@@ -148,7 +148,8 @@ either.
 - **Do not depend on the switch path.** Set the default preset so a session is composed from the
   wanted preset at creation:
   ```yaml
-  # $DSH_HOME/settings.yaml — read when a session is created
+  # $DSH_HOME/settings.yaml under 0.1.x — imported once into the active
+  # profile's cordis.patch.yml (as the agent-presets row's config) by 0.2.0-rc.2
   agent-presets:
     default: <preset id>
   ```

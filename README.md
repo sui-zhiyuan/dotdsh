@@ -11,7 +11,7 @@
 | `node_src/<id>/` | One plugin package per directory. Single-face: TypeScript `src/` built to gitignored `lib/` (`hello-world`). Dual-face (also declares `dsh.client`): the same node half plus a committed, hand-authored browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | The `@dsh-external/dotdsh` bundle: its `cordis.patch.yml` holds every plugin row, and its `dependencies` (`workspace:*`) name every plugin package |
 | `py_src/dev-apply/` | uv workspace member: the `dev_apply` CLI (`uv run python -m dev_apply`) |
-| `dsh_home/` | `settings.yaml` reference template (one-time manual copy) |
+| `dsh_home/` | `settings.yaml` reference template (one-time manual copy; dsh 0.2.0-rc.2 imports it into the active profile's patch once and renames it — see the settings note under *ui-tweaks*) |
 | `doc/src/` | mdbook documentation |
 
 ## Plugins
@@ -19,10 +19,10 @@
 | Package | Row id | What it does |
 |---|---|---|
 | `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
-| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings namespace (`$DSH_HOME/settings.yaml`): `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
+| `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings form — the Settings page, or a `config:` block on this row in the profile's own patch: `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a guard that refuses an edit landing outside the tree the session's family claimed and puts a model's `git_complete` to the human for approval, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
 | `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |
-| `@dsh-external/dotdsh-copilot-auth` | `copilot-auth` | Human-initiated GitHub Copilot sign-in: the one piece of that subscription dsh does not ship. `/copilot-login` runs the device-code flow, answers with the verification URL and code, then stores the grant in the background; `/copilot-status` reports the stored grant, its expiry, the account's model list and whether the `github-copilot` route is registered at all; `/copilot-logout` removes it. The same sign-in runs from a terminal as `dotdsh-copilot-auth login`, writing through dsh's own credential provider so the format, the `0600` mode and the cross-process lock are dsh's. It registers no route (the stock `llm-pi-ai` adapter serves `github-copilot` from `settings.yaml`) and no tool, and it validates every grant it writes or reads — official `proxy-ep` endpoint only, `enterpriseUrl` refused |
+| `@dsh-external/dotdsh-copilot-auth` | `copilot-auth` | Human-initiated GitHub Copilot sign-in: the one piece of that subscription dsh does not ship. `/copilot-login` runs the device-code flow, answers with the verification URL and code, then stores the grant in the background; `/copilot-status` reports the stored grant, its expiry, the account's model list and whether the `github-copilot` route is registered at all; `/copilot-logout` removes it. The same sign-in runs from a terminal as `dotdsh-copilot-auth login`, writing through dsh's own credential provider so the format, the `0600` mode and the cross-process lock are dsh's. It registers no route (the stock `llm-pi-ai` adapter serves `github-copilot` from that row's config in the profile's patch; 0.1.x read the same section from `$DSH_HOME/settings.yaml`) and no tool, and it validates every grant it writes or reads — official `proxy-ep` endpoint only, `enterpriseUrl` refused |
 
 ## The git-flow workflow
 
@@ -155,16 +155,20 @@ not do:
   and the `git-master` skill says how to write the message; a commit per *tool call* would be noise.
 
 The ui-tweaks settings, by contrast, are configured per machine rather than in this repository. Their
-namespace is the one a browser half can actually read — a client bundle never sees its row's `config` —
-and the settings file provider watches its document, so an edit applies without a restart:
+form is the row's own schema — a client bundle never sees its row's `config`, and the settings domain
+publishes the entry under its Loader id for exactly that reason — and the user layer is the profile's
+own patch, which dsh reloads live, so an edit applies on the next page load or click:
 
 ```yaml
-ui-tweaks:
-  composerEnterNewline: true      # bare Enter breaks the line; Ctrl/Cmd+Enter sends
-  statusWording: true             # random DeepSeek meme in the running-turn status line
-  statusPhrases: ["自定义一句"]    # extra phrasing appended to the shipped bank
-  openInVscode: true              # Ctrl/Cmd+click a file opens it in the editor below
-  editorCommand: code             # ONE bare PATH name or ONE absolute executable; no arguments
+# $DSH_HOME/profiles/<name>/cordis.patch.yml — yours; the Settings page writes
+# here too, and nothing in this repository touches it.
+- id: ui-tweaks
+  config:
+    composerEnterNewline: true      # bare Enter breaks the line; Ctrl/Cmd+Enter sends
+    statusWording: true             # random DeepSeek meme in the running-turn status line
+    statusPhrases: ["自定义一句"]    # extra phrasing appended to the shipped bank
+    openInVscode: true              # Ctrl/Cmd+click a file opens it in the editor below
+    editorCommand: code             # ONE bare PATH name or ONE absolute executable; no arguments
 ```
 
 `openInVscode`/`editorCommand` are the two switches the PAGE does not read: opening an editor needs a
@@ -172,10 +176,12 @@ process, so the package's node half serves two routes under `/ui-tweaks/open-in-
 asks them. The host reads both fields per request, so an edit applies to the next click.
 
 Unset fields fall back to this package's schema defaults (all three values above except the empty
-extension list), and a row `config` in the bundle patch would sit below them as the composition
-`base` layer. One caveat worth knowing: a section the schema rejects leaves the namespace
-unregistered for that whole boot — the tweaks then quietly run on their defaults, and dsh reports
-it only through its logger — so fix the document and restart.
+extension list), and a row `config` in this bundle's patch would sit below them as the layer
+underneath. Two things worth knowing about the write path: only `.volatile()` fields are exposed at
+all — which is why every field of this row is marked that way — and a value the schema rejects never
+reaches the plugin: the Settings page refuses the write, and a hand-edited patch fails this row
+loudly at boot (`1 entry did not activate`, with the field named) instead of leaving a switch that
+looks set but does nothing.
 
 ## Lazy ssh
 
