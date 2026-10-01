@@ -10,10 +10,6 @@
 # cordis.patch.yml is applied after this layer, so it can override or disable any
 # row below, and it is the only layer that hot-reloads while dsh runs.
 - insert:
-  - id: hello-world
-    name: '@dsh-external/dotdsh-hello-world'
-    config:
-      greeting: Hello from dotdsh
   # Dual-face plugin: this row mounts the package's node half, while its browser
   # half reaches the Web client through the package's `dsh.client` declaration +
   # `exports["./client"]` (whose `inject` edge names the settings client module,

@@ -28,13 +28,13 @@ TMP=$(mktemp -d); mkdir -p "$TMP/profiles/web"
 printf '{"name":"web-profile","dsh":{"profile":{"bundles":[],"patchReload":"live"}}}' > "$TMP/profiles/web/package.json"
 STUB=$(mktemp -d)/dsh-stub; printf '#!/bin/sh\necho "[stub dsh] $*"\n' > "$STUB"; chmod +x "$STUB"
 DSH_HOME="$TMP" uv run python -m dev_apply --no-build --dsh "$STUB"
-# [stub dsh] plugin --profile web add link:<repo>/node_src/dotdsh link:<repo>/node_src/hello-world
+# [stub dsh] plugin --profile web add link:<repo>/node_src/copilot-auth link:<repo>/node_src/dotdsh link:<repo>/node_src/git-flow link:<repo>/node_src/lazy-ssh link:<repo>/node_src/ui-tweaks
 rm -rf "$TMP"
 ```
 
 Running the same temporary `DSH_HOME` with the real `dsh` proves the plugin side too: pnpm writes the profile manifest, dsh adds the bundle to `dsh.profile.bundles`, and `dsh --profile web --dump-config` then shows the row annotated `# == @dsh-external/dotdsh`.
 
-To boot that temporary home for real, copy the real profile's bundle list into it (`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@dsh-external/dotdsh`) — a profile whose `bundles` holds only the dotdsh bundle composes *just* these rows, so a host plugin like `hello-world` stays `pending (waiting for service: tools)` and the boot fails with `1 entry did not activate`. Then serve it on a free port and read the boot graph instead of the UI:
+To boot that temporary home for real, copy the real profile's bundle list into it (`@deepseek-ai/dsh-base`, `@deepseek-ai/dsh-web-app`, `@dsh-external/dotdsh`) — a profile whose `bundles` holds only the dotdsh bundle composes *just* these rows, so a host plugin like `git-flow` stays `pending (waiting for service: tools)` and the boot fails with `1 entry did not activate`. Then serve it on a free port and read the boot graph instead of the UI:
 
 ```sh
 DSH_HOME="$TMP" dsh --profile web --no-open --port 3099 > "$TMP/web.log" 2>&1 &   # prints ?token=…
@@ -84,7 +84,7 @@ mdbook build                             # build the docs
 - **Hot-reload boundary**: bundle layers — including `node_src/dotdsh/cordis.patch.yml` — are read **once at boot**. Only `$DSH_HOME/profiles/<name>/cordis.patch.yml` and `$DSH_HOME/cordis.patch.yml` hot-reload while dsh runs. So both a plugin-code change (`src/*.ts` → rebuilt `lib/`) and a row change need a dsh restart; only user-layer overrides apply live.
 - **`dsh plugin --profile <n> <pnpm args>`**: initializes the profile on first use, forwards the arguments to pnpm in the profile directory, then reconciles `dsh.profile.bundles` (a dependency whose manifest declares `dsh.bundle` joins the layer list; a bundle-less one only warns). `dev_apply` uses `add`.
 - **Local plugin installs (this repo's approach)**: `dev_apply` runs one `dsh plugin --profile <n> add link:<absolute path> …` covering every `node_src/*` package, so **pnpm writes the profile manifest** and dsh adds the bundle to the layer list. A `link:` install never materializes the linked package's own dependencies in the profile, which is why every plugin package is linked individually — the rows name packages that Node must resolve **from the profile directory**.
-- **Plugin shape**: `export { name, inject, Config, apply }`; tools register via `ctx.tools.register(defineTool({...}))` from `@deepseek-ai/dsh-tools`; `Config` uses `@deepseek-ai/schemastery`. `name` follows dsh's own convention: the package name minus scope and prefix (`@dsh-external/dotdsh-hello-world` → `hello-world`).
+- **Plugin shape**: `export { name, inject, Config, apply }`; tools register via `ctx.tools.register(defineTool({...}))` from `@deepseek-ai/dsh-tools`; `Config` uses `@deepseek-ai/schemastery`. `name` follows dsh's own convention: the package name minus scope and prefix (`@dsh-external/dotdsh-lazy-ssh` → `lazy-ssh`).
 
 ## Adding a plugin
 

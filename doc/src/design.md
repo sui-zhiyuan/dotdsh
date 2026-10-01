@@ -341,7 +341,7 @@ to be committed.
   (pnpm 12.3.4 writes no empty importer and refuses to invent one). That is why the bundle
   declares its plugin packages and every plugin package declares its harness peers.
 - **Installing only the bundle is the consumer shape, and it needs published packages.** A
-  `file:` install of `node_src/dotdsh` fails with "`@dsh-external/dotdsh-hello-world@workspace:*`
+  `file:` install of `node_src/dotdsh` fails with "`@dsh-external/dotdsh-lazy-ssh@workspace:*`
   is in the dependencies but no package named … is present in the workspace"; a tarball from
   `pnpm pack` (which rewrites `workspace:*` to `0.1.0`) fails with a registry 404, and pnpm
   refuses `bundledDependencies` under its default linker, so nothing can embed the plugin
