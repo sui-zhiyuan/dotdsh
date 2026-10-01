@@ -344,10 +344,9 @@ window.__ModuleLoader__.load({
      * domain, so a page composed without it keeps its defaults and every tweak
      * instead of parking the whole set.
      *
-     * `configForms` is the dsh 0.2.0-rc.2 client transport (`settingsScope` is
-     * gone): `get(entryId)` answers the form for one Host entry, and that entry
-     * id is the patch row's `id` — the same string the node half's volatile
-     * `Config` is exposed under, which is why `SETTINGS_NAMESPACE` still names it.
+     * `configForms.get(entryId)` answers the form for one Host entry, and that
+     * entry id is the patch row's `id` — the same string the node half's volatile
+     * `Config` is exposed under, which is why `SETTINGS_NAMESPACE` names it.
      * The snapshot carries the RESOLVED section, and the subscription lives on the
      * child fiber `ctx.inject` hands the callback — so unloading the row releases
      * both the subscription and the adopted values' source.

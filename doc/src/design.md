@@ -77,10 +77,10 @@ Three consequences shape `node_src/ui-tweaks`:
    is turned off per profile in that profile's own `cordis.patch.yml`
    (`- {id: ui-tweaks, disabled: true}`).
 3. **The entry's settings form is the channel that does reach a page.** Every browser preference
-   the Web app ships travels this way: since dsh 0.2.0-rc.2 the Loader entry's own `Config` schema
-   *is* the form — no plugin registers a namespace any more — and the settings domain exposes it
-   under the row's `id` provided the fields are marked `.volatile()`, handing the plugin one live
-   reference per field. ui-chat, ui-conversation and ui-theme all follow that shape, and ui-tweaks
+   the Web app ships travels this way: the Loader entry's own `Config` schema *is* the form, and the
+   settings domain exposes it under the row's `id` provided the fields are marked `.volatile()`,
+   handing the plugin one live reference per field. ui-chat, ui-conversation and ui-theme all follow
+   that shape, and ui-tweaks
    follows it, so its switches are per machine and live rather than baked into the repository: the
    node half reads `config.<field>.get()`, the row's `config` in the bundle patch is the layer
    underneath, and the user layer is the profile's own `cordis.patch.yml`, which dsh reloads — so an

@@ -7,24 +7,20 @@
 // plugin wiring can all describe their required configuration in terms of
 // {@link Config} without depending on each other.
 //
-// ## How a plugin has settings since dsh 0.2.0-rc.2
+// ## Where a plugin's settings come from
 //
-// A plugin no longer REGISTERS a namespace with the settings service:
-// `ctx.settings.register(ns, schema, {base})` and `ctx.settings.get(ns)` are gone.
-// The Loader entry's own `Config` schema is the form now, and only fields marked
-// `.volatile()` are exposed as editable — a row whose schema has no volatile
-// field has no settings page at all. The service passes the plugin a LIVE
-// reference per volatile field (`config.<field>.get()`), and that reference is
-// what replaces the old per-request `get(ns)` read: it always answers the
-// resolved value, schema default under the row's own `config` under the user
-// layer, and it is updated in place when the user layer changes.
+// The Loader entry's own `Config` schema IS the form: only fields marked
+// `.volatile()` are exposed as editable, so a row whose schema has no volatile
+// field has no settings page at all. The settings domain hands `apply` a LIVE
+// reference per volatile field (`config.<field>.get()`), which always answers the
+// resolved value — schema default under the row's own `config` under the user
+// layer — and is updated in place when the user layer changes.
 //
 // The form's namespace is the Loader entry id — the patch row's `id` — which is
-// why {@link SETTINGS_NAMESPACE} still spells `ui-tweaks`: the browser half asks
-// the client settings transport for the same entry id (`configForms.get(...)`).
-// The user layer now lives in the profile patch (`$DSH_HOME/profiles/<name>/
-// cordis.patch.yml`, written by the settings UI), not in `$DSH_HOME/settings.yaml`,
-// which dsh 0.2.0-rc.2 imports into the profile once and renames.
+// why {@link SETTINGS_NAMESPACE} spells `ui-tweaks`: the browser half asks the
+// client settings transport for the same entry id (`configForms.get(...)`). The
+// user layer lives in the profile patch (`$DSH_HOME/profiles/<name>/
+// cordis.patch.yml`, written by the settings UI).
 
 import type { Volatile } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";

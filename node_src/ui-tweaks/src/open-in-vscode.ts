@@ -245,15 +245,13 @@ function failureStatusOf(reason: EditorLaunchFailure): number {
  * The two fields these routes act on, read FRESH PER REQUEST off the live
  * references this row's `apply` received.
  *
- * `config.<field>.get()` is the dsh 0.2.0-rc.2 replacement for the old
- * per-request `ctx.get("settings")?.get(ns)`: the settings domain keeps the
- * reference stable for the life of the row and updates the value inside it when
- * the user layer changes, so a settings edit takes effect on the next request
- * with no dsh restart and no re-registration of these routes. Each reference
- * answers the resolved value — schema default under this row's `config` under the
- * user layer — so there is no fallback to compose here, and no provider to be
- * absent: a composition with no settings domain hands the plugin references that
- * answer the schema defaults.
+ * The settings domain keeps each reference stable for the life of the row and
+ * updates the value inside it when the user layer changes, so a settings edit
+ * takes effect on the next request with no dsh restart and no re-registration of
+ * these routes. Each reference answers the resolved value — schema default under
+ * this row's `config` under the user layer — so there is no fallback to compose
+ * here, and no provider to be absent: a composition with no settings domain hands
+ * the plugin references that answer the schema defaults.
  * @param config - this row's config: one live reference per field.
  * @returns the resolved fields the launcher consumes.
  */

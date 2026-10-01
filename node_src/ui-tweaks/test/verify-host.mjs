@@ -7,12 +7,11 @@
 // alone, so a rename on one side would leave the page silently on its defaults,
 // with no error anywhere.
 //
-// Since dsh 0.2.0-rc.2 there is no registration call to inspect: the row's own
-// `Config` schema is the settings form, exposed by the settings domain ONLY for
-// fields marked `.volatile()`, and the domain hands `apply` one live reference
-// per field. So what this file pins is the exposure rule (every field volatile),
-// the namespace/entry-id agreement, and the fact that `apply` mounts with no
-// settings service in the composition at all.
+// The row's own `Config` schema is the settings form, exposed by the settings
+// domain ONLY for fields marked `.volatile()`, and the domain hands `apply` one
+// live reference per field. So what this file pins is the exposure rule (every
+// field volatile), the entry-id agreement, and the fact that `apply` mounts with
+// no settings service in the composition at all.
 //
 // It loads the BUILT lib/*.js (the `test` script builds first) and checks three
 // things:
@@ -174,7 +173,7 @@ try {
 check("the row mounts with no settings service in the composition", mounted);
 check(
   "apply asks for no settings service (the form is the entry's own schema)",
-  injected.every((deps) => !deps.includes("settings") && !deps.includes("settingsScope")),
+  injected.every((deps) => !deps.includes("settings")),
   JSON.stringify(injected),
 );
 check(

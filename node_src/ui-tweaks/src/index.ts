@@ -73,10 +73,11 @@ export type {
  *
  * There is nothing else to wire: the settings form is this entry's own `Config`
  * schema, which the settings domain reads straight off the Loader entry because
- * every field is `.volatile()` (see `settings.ts`). No registration call, no
- * optional settings dependency, and nothing here to fail when a user layer does
- * not fit the schema — a value the schema rejects never reaches the plugin, and
- * the field falls back to the layer below it.
+ * every field is `.volatile()` (see `settings.ts`). Nothing here has to cope with
+ * a user layer that does not fit it either — a value the schema rejects never
+ * reaches the plugin: the Settings page refuses the write, and a hand-edited patch
+ * fails this row at boot with the field named rather than leaving a switch that
+ * looks set.
  *
  * @param ctx - host context carrying `webServer` and `connection`.
  * @param config - this row's config: one live reference per field.
