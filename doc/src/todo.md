@@ -99,6 +99,16 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   to call it. The naming question is answered by making the name required input rather than derived:
   a model that cannot name the feature asks the human, and the guard's refusal names the skill and
   the call
+- [x] Make the model's merge a question rather than a decision. `git_complete` shipped as an ordinary
+  tool beside `git_start`, and a model read the pair as its own beginning and its own end: it finished a
+  feature as soon as its edits stopped, so the human's acceptance review happened *after* the merge and
+  every issue it found needed a new branch. The guard now answers `ask` for that one call — resolved
+  through the approval seam (one `allowed-once`, fail-closed with no composed answerer or no agent), with
+  the branch, the integration branch and the composed merge message in the reason — while a family with
+  no claim passes through, because `core` answers `nothing-to-do` for it and a prompt about nothing
+  teaches its reader to approve without reading. `/git-complete` is not gated: a command is dispatched by
+  the command registry, not by the tool waterfall. Rationale in
+  [Design decisions](./design.md)
 - [ ] Decide whether stacked feature branches should be replayed. `/git-complete` never rebases: a
   branch whose branch point has fallen behind `master` is reported `not-descendant` with the
   `git rebase --onto` command to run, and the caller replays it. A branch cut *from* another feature

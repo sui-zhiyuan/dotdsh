@@ -1,12 +1,14 @@
 /**
- * Committed checks for the pre-write guard (`lib/boundary/guard.js`).
+ * Committed checks for the pre-dispatch guard (`lib/boundary/guard.js`).
  *
  * Boundary: this drives the exported interceptor directly, with fabricated
  * executions and a continuation that records whether it ran, against a real
- * scratch repository and a real git. It proves the five rules the module header
- * states and that no input produces `ask`; it does not prove that dsh calls the
- * listener on `tools/pre-execute`, nor that the arguments a real dispatch freezes
- * are the ones asserted here.
+ * scratch repository and a real git. It proves the six rules the module header
+ * states — including the one call that is put to a human — and that no *write* ever
+ * produces `ask`; it does not prove that dsh calls the listener on
+ * `tools/pre-execute`, nor that the arguments a real dispatch freezes are the ones
+ * asserted here, nor that a deployment composes the approval seam the `ask` is
+ * resolved through.
  *
  * Both shapes a claim can have are checked, because the guard's answer depends on
  * exactly one thing: whether the declared path is inside the tree the claim names.
@@ -47,15 +49,17 @@ const sessionId = (label) => `guard-${++sequence}-${label}`;
  * happens to return here.
  *
  * @param execution - the fabricated pending call.
+ * @param active - the settings to run with; the shipped defaults unless a check is
+ *   about a configured one.
  * @returns the decision and the pass-through flag.
  */
-async function decide(execution) {
+async function decide(execution, active = SETTINGS) {
   let passed = false;
   const next = () => {
     passed = true;
     return Promise.resolve({ kind: "allow" });
   };
-  const decision = await GIT_FLOW_INTERCEPTOR.handle(execution, next, SETTINGS);
+  const decision = await GIT_FLOW_INTERCEPTOR.handle(execution, next, active);
   return { decision, passed };
 }
 
@@ -294,10 +298,10 @@ await check("inside a claimed worktree a write is allowed, and a main-tree write
   }
 });
 
-await check("the guard never answers ask", async () => {
-  // One repository, two families and a spread of inputs: the reader of a refusal
-  // is the model, never a human, so an `ask` anywhere would be a proof that the
-  // guard tried to consult one.
+await check("no write is ever put to a human", async () => {
+  // One repository, two families and a spread of write-shaped inputs: the reader
+  // of a write refusal is the model, never a human, so an `ask` anywhere here
+  // would be proof that the guard tried to consult one about a file.
   const repo = await scratchRepo();
   try {
     const { agent } = makeAgent(sessionId("ask-claimed"), repo.root);
@@ -329,6 +333,94 @@ await check("the guard never answers ask", async () => {
   }
 });
 
+await check("finishing a claimed family is asked about, and never reaches the continuation unasked", async () => {
+  // The one call a human decides. Everything else about it is core's: what is
+  // checked here is that the model's own `git_complete` cannot dispatch itself.
+  const repo = await scratchRepo();
+  try {
+    const session = sessionId("ask-complete");
+    const { agent } = makeAgent(session, repo.root);
+    await startTool().execute({ branchName: "ask-complete" }, { agent, signal }, SETTINGS);
+
+    const { decision, passed } = await decide({
+      name: "git_complete",
+      arguments: { mergeMessage: "feat(guard): ask the human before merging" },
+      agent,
+      signal,
+    });
+    assert.equal(passed, false, "a completion must not pass through unasked");
+    assert.equal(decision.kind, "ask");
+    assert.equal(typeof decision.reason, "string");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("the completion ask names the branch, the integration branch and the merge message", async () => {
+  // The reason is the whole of what the human is shown, and it is written for
+  // someone who has not read the conversation: without the branch and the message
+  // it is a prompt that can only be rubber-stamped.
+  const repo = await scratchRepo();
+  try {
+    const session = sessionId("ask-reason");
+    const { agent } = makeAgent(session, repo.root);
+    await startTool().execute({ branchName: "ask-reason" }, { agent, signal }, SETTINGS);
+    const message = "feat(guard): put the merge to the human";
+
+    const { decision } = await decide({
+      name: "git_complete",
+      arguments: { mergeMessage: message },
+      agent,
+      signal,
+    });
+    assert.equal(decision.kind, "ask");
+    for (const expected of ["feat/ask-reason", SETTINGS.integrationBranch, message]) {
+      assert.ok(
+        decision.reason.includes(expected),
+        `the ask does not name ${expected}: ${decision.reason}`,
+      );
+    }
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a completion by a family with no claim passes through", async () => {
+  // `core.gitComplete` answers `nothing-to-do` for this call, so asking a human
+  // would only teach them that the prompt arrives when nothing is at stake.
+  const repo = await scratchRepo();
+  try {
+    const { agent } = makeAgent(sessionId("ask-no-claim"), repo.root);
+    const { decision, passed } = await decide({
+      name: "git_complete",
+      arguments: { mergeMessage: "chore: nothing to finish" },
+      agent,
+      signal,
+    });
+    assert.equal(passed, true);
+    assert.equal(decision.kind, "allow");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a completion that carries no agent passes through", async () => {
+  // The same answer the write rules give an orphan call: nothing this plugin can
+  // have an opinion about, and nobody the question belongs to.
+  const repo = await scratchRepo();
+  try {
+    const { decision, passed } = await decide({
+      name: "git_complete",
+      arguments: { mergeMessage: "chore: nobody asked" },
+      signal,
+    });
+    assert.equal(passed, true);
+    assert.equal(decision.kind, "allow");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
 await check("guard: off turns every rule into a pass-through", async () => {
   const repo = await scratchRepo();
   try {
@@ -350,6 +442,28 @@ await check("guard: off turns every rule into a pass-through", async () => {
     assert.equal(decision.kind, "allow");
     // Nothing was created for it either: a session with no claim still has none.
     assert.equal(existsSync(join(repo.root, ".dsh.local")), false);
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("guard: off finishes a claimed family without asking anyone", async () => {
+  // The other half of "advisory": with the guard off, a completion is not put to
+  // the human either. The claim is opened with the guard on — `off` is not about
+  // starting — so the completion below is a call that really has something to
+  // finish and is still waved through.
+  const repo = await scratchRepo();
+  try {
+    const session = sessionId("off-complete");
+    const { agent } = makeAgent(session, repo.root);
+    await startTool().execute({ branchName: "off-complete" }, { agent, signal }, SETTINGS);
+
+    const { decision, passed } = await decide(
+      { name: "git_complete", arguments: { mergeMessage: "feat: advisory" }, agent, signal },
+      settings({ guard: "off" }),
+    );
+    assert.equal(passed, true, "a guard that is off must not hold a completion");
+    assert.equal(decision.kind, "allow");
   } finally {
     await repo.cleanup();
   }

@@ -111,14 +111,17 @@ const GIT_COMPLETE_TOOL: ToolSchema = {
   description:
     "Merge this session's feature branch into the integration branch with --no-ff, remove its worktree and delete the branch. " +
     "The merge message is required, because the merge commit is the only record of what the feature did. " +
-    "Safe to call again: a family that is already finished reports that there is nothing to do. " +
+    "Calling this asks the human to approve the merge: it runs only if they allow that one call, and a rejection, a cancellation or a deployment with no approval channel leaves the branch, its worktree and its commits exactly as they are. " +
+    "A rejection is the human's decision, not a failure to retry — they may have chosen to verify the work first, and they can run `/git-complete` themselves instead. " +
+    "Safe to call again after a technical failure: a family that is already finished reports that there is nothing to do. " +
     "A call that reports the branch is not a descendant of the integration branch means it must be replayed onto it first; " +
     "a call that reports a failed step returns that step, its git command and git's own output.",
   parameters: {
     mergeMessage: {
       type: "string",
       required: true,
-      description: "Commit subject for the merge, in the repository's own commit-message style.",
+      description:
+        "Commit subject for the merge, in the repository's own commit-message style. The human sees it before they approve.",
     },
   },
 };
@@ -194,6 +197,11 @@ async function gitStartTool(
  *
  * Required argument: `mergeMessage`. `core.gitComplete` is re-entrant, so this is
  * safe to call again after any answer, including a failing one.
+ *
+ * What reaches this handler is a call a human has already allowed once, because
+ * the guard puts every completion to them before dispatch and the registry drops
+ * the call when they refuse. The refusal never arrives here, so nothing below has
+ * to re-ask: the outcomes it handles are the merge's own.
  *
  * Every outcome is a value, and every one of them is text for the model:
  *

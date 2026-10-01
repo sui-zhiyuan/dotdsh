@@ -40,15 +40,30 @@
 - **Commit after each completed step**, not once at the end: a step is a change
   that stands on its own, and a commit is the checkpoint that makes a wrong step
   cheap to undo. The `git-master` skill is where the message convention lives.
-- `/git-complete` or the `git_complete` tool merges with `--no-ff` and releases the
-  tree: a worktree of the session's own is removed, and the main checkout is put
-  back on `{{integrationBranch}}`. It needs a merge message, so write one that says
-  what the feature did.
+
+## Handing the work over for acceptance
+
+- Finished is not the same as **accepted**, and the merge is the point of no
+  return: it deletes the branch, so anything wrong afterwards is fixed on a new
+  branch. That is why the human, not you, decides when it happens.
+- `git_complete` merges with `--no-ff`, removes the family's worktree and deletes
+  its branch — and it asks the human to approve that one call. The reason they see
+  carries the branch and the merge message you wrote. If they reject it, or nobody
+  is there to answer, nothing is merged: the branch, the worktree and every commit
+  are still there. A rejection is their decision, not a failure — **do not call it
+  again on your own initiative.**
+- So when the work is ready, stop and report: the branch, what changed, and what
+  the human should verify. They can run `/git-complete [<merge-message>]`
+  themselves, or let you call the tool and approve it; either way the merge message
+  says what the feature did, and one is required. If the ask cannot reach anyone —
+  nobody is there to answer, or this deployment composes no approval channel — hand
+  the human the subject you composed and let them run the command.
 - If `{{integrationBranch}}` has moved past your branch point, the merge is refused
   and nothing is written: the answer reports `not-descendant`, and the branch has to
   be replayed onto `{{integrationBranch}}` yourself before calling again —
   `git rebase --onto {{integrationBranch}} $(git merge-base {{integrationBranch}} <branch>) <branch>`.
-- Do not merge, rebase or delete branches by hand, do not move the main checkout
-  yourself, and never force-push: these commands exist so that these steps are the
-  same every time, and a branch moved by hand is what makes a release report
-  `not-descendant` or stop on `switch-back`.
+- Do not merge, rebase or delete branches by hand — the replay a refused merge asks
+  for is the one exception — do not move the main checkout yourself, and never
+  force-push: these commands exist so that these steps are the same every time, and
+  a branch moved by hand is what makes a release report `not-descendant` or stop on
+  `switch-back`.

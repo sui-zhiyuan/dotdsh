@@ -3,11 +3,11 @@
  * is built on.
  *
  * Everything above this module is presentation. A slash command renders what one
- * of these returns; the pre-write guard asks {@link ensureWorkspace} where the
- * calling session is allowed to write. Neither decides anything itself — the
- * branch, the worktree and the claim file are all settled here, which is what
- * lets the decisions be driven against a scratch repository with no harness
- * present.
+ * of these returns; the guard asks {@link ensureWorkspace} where the calling
+ * session is allowed to write, and which family a completion would finish. Neither
+ * decides anything itself — the branch, the worktree and the claim file are all
+ * settled here, which is what lets the decisions be driven against a scratch
+ * repository with no harness present.
  *
  * ## The claim
  *
