@@ -172,10 +172,13 @@ window.__ModuleLoader__.load({
      * 「已深度思考（用时 X 秒）」, 价格屠夫, 顿悟时刻. Chinese only — see
      * {@link isChineseLocale} — so the English UI keeps its shipped copy.
      *
-     * The endings deliberately vary («…中...», «…了...», «…呢...», and plain
+     * The endings deliberately vary («正在…中», «…了», «…呢», and plain
      * statements): a bank whose every entry ends the same way reads like a
      * template instead of a joke, so a new phrase is written the way it would be
-     * said rather than bent to fit «…中...».
+     * said rather than bent to fit one shape. No entry trails off in an ellipsis
+     * either: the running line's longer template already ends in one, so a "…"
+     * written into the phrase would put a second set of dots in the middle of the
+     * same short sentence.
      *
      * This is the SHIPPED half of the bank: the settings section's
      * `statusPhrases` list is appended to it at draw time, so a per-machine
@@ -184,28 +187,28 @@ window.__ModuleLoader__.load({
      * @type {readonly string[]}
      */
     const STATUS_PHRASES = Object.freeze([
-      "蓝色大肥鱼猛猛干饭中...",
-      "小鲸鱼正在摸鱼...",
-      "吃白饭的大肥鱼思考中...",
-      "大肥鱼丢下活去干饭了...",
-      "正在烧主人的 token 中...",
-      "已深度求索（用时很久）...",
-      "有点饿了，中午吃啥呢...",
-      "顺着网线去你家蹭米饭了...",
-      "价格屠夫正在算账中...",
-      "服务器繁忙，鲸鱼在干饭中...",
-      "顿悟时刻加载中...",
-      "偷吃 token 中...",
-      "鲸鱼娘在深海里赶工中...",
-      "小鲸鱼悄悄加载算力中...",
-      "蓝鲸正在偷偷努力中...",
-      "大肥鱼正在啃提示词...",
-      "蓝鲸娘正在啃米饭...",
-      "傲娇鲸鱼娘营业中...",
-      "正在海沟里游第一万米...",
-      "深海蓝鲸正在吐泡泡...",
-      "等编译的间隙，偷偷写个小游戏玩玩...",
-      "活干完了，偷偷玩会儿自己写的小游戏...",
+      "蓝色大肥鱼猛猛干饭中",
+      "小鲸鱼正在摸鱼",
+      "吃白饭的大肥鱼思考中",
+      "大肥鱼丢下活去干饭了",
+      "正在烧主人的 token 中",
+      "已深度求索（用时很久）",
+      "有点饿了，中午吃啥呢",
+      "顺着网线去你家蹭米饭了",
+      "价格屠夫正在算账中",
+      "服务器繁忙，鲸鱼在干饭中",
+      "顿悟时刻加载中",
+      "偷吃 token 中",
+      "鲸鱼娘在深海里赶工中",
+      "小鲸鱼悄悄加载算力中",
+      "蓝鲸正在偷偷努力中",
+      "大肥鱼正在啃提示词",
+      "蓝鲸娘正在啃米饭",
+      "傲娇鲸鱼娘营业中",
+      "正在海沟里游第一万米",
+      "深海蓝鲸正在吐泡泡",
+      "等编译的间隙，偷偷写个小游戏玩玩",
+      "活干完了，偷偷玩会儿自己写的小游戏",
     ]);
 
     /**
