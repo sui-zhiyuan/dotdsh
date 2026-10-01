@@ -1,33 +1,48 @@
-// The ui-tweaks settings contract: the schema the node half registers with the
-// settings service, and the shape both halves validate the resolved section
-// against.
+// The ui-tweaks settings contract: the row schema whose volatile fields the
+// settings domain exposes as the `ui-tweaks` form, and the plain value shape the
+// route layer reads out of it.
 //
-// Layer: pure data. It imports nothing but the schema library, so the route
-// layer, the launcher and the plugin wiring can all describe their required
-// configuration in terms of {@link Config} without depending on each other.
+// Layer: pure data. It imports the schema library and the cordis `Volatile`
+// reference type and nothing else, so the route layer, the launcher and the
+// plugin wiring can all describe their required configuration in terms of
+// {@link Config} without depending on each other.
+//
+// ## Where a plugin's settings come from
+//
+// The Loader entry's own `Config` schema IS the form: only fields marked
+// `.volatile()` are exposed as editable, so a row whose schema has no volatile
+// field has no settings page at all. The settings domain hands `apply` a LIVE
+// reference per volatile field (`config.<field>.get()`), which always answers the
+// resolved value — schema default under the row's own `config` under the user
+// layer — and is updated in place when the user layer changes.
+//
+// The form's namespace is the Loader entry id — the patch row's `id` — which is
+// why {@link SETTINGS_NAMESPACE} spells `ui-tweaks`: the browser half asks the
+// client settings transport for the same entry id (`configForms.get(...)`). The
+// user layer lives in the profile patch (`$DSH_HOME/profiles/<name>/
+// cordis.patch.yml`, written by the settings UI).
 
+import type { Volatile } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 
 /**
- * Settings namespace both halves of this package share. The node half registers
- * it (src/index.ts) and the browser half binds a scope over it
- * (client/index.js); it is the only channel a row's config has to a page.
+ * Settings namespace both halves of this package share: the Loader entry id of
+ * the `ui-tweaks` row (`node_src/dotdsh/cordis.patch.yml`). The node half's
+ * volatile `Config` is exposed under it and the browser half reads it through
+ * `configForms.get(...)`; it is the only channel a row's config has to a page.
  */
 export const SETTINGS_NAMESPACE = "ui-tweaks";
 
 /**
- * Configuration of the tweak set: one switch per tweak, plus the extra wording
- * and the editor command.
+ * The resolved values the tweak set acts on: what a volatile reference's `get()`
+ * answers, and the shape the browser half validates an accepted section against.
  *
- * The browser half mirrors the PAGE-OWNED field names — and their defaults — in
- * its own settings seed (`client/index.js`), because a page cannot read its row's
- * config: the boot graph carries no config, so the settings namespace is the one
- * channel. `openInVscode` and `editorCommand` are deliberately NOT mirrored: they
- * are enforced by the host routes, which are the only side that can act on them,
- * so a page copy could only disagree with the authority. `test/verify-host.mjs`
- * pins which fields each side reads.
+ * `openInVscode` and `editorCommand` are deliberately not mirrored by the page's
+ * own settings seed: they are enforced by the host routes, which are the only
+ * side that can act on them, so a page copy could only disagree with the
+ * authority. `test/verify-host.mjs` pins which fields each side reads.
  */
-export interface Config {
+export interface SettingsValues {
   /**
    * Bare Enter breaks the line in the composer and Ctrl/Cmd+Enter sends. `false`
    * keeps dsh's shipped composer keymap, where plain Enter sends.
@@ -35,8 +50,11 @@ export interface Config {
   composerEnterNewline: boolean;
   /**
    * While a turn runs, the Chinese chat status line shows a randomly drawn
-   * phrase instead of the shipped "深度求索中...". The shipped bank is Chinese,
-   * so an English UI keeps its own copy either way.
+   * phrase instead of the shipped "深度求索中...". A running line that appends the
+   * elapsed time keeps that part ("…，用时 3 秒 ···"), so only the wording ahead of
+   * it changes and the timer, the shimmer and the whale tail stay as dsh ships
+   * them. The shipped bank is Chinese, so an English UI keeps its own copy either
+   * way.
    */
   statusWording: boolean;
   /**
@@ -60,16 +78,37 @@ export interface Config {
 }
 
 /**
- * Schemastery configuration for the ui-tweaks row: schema defaults, then the
- * row's `config` as the settings `base` layer, then the user layer in
- * `$DSH_HOME/settings.yaml`. Its serialized form is also the wire envelope the
- * browser scope validates the resolved section against, which is why the browser
- * half's seed mirrors the three page-owned defaults below (see the note above).
+ * Configuration this row's `apply` receives: one live reference per field.
+ *
+ * The references are stable for the life of the row — the settings domain
+ * updates them in place rather than re-applying the plugin — so a handler that
+ * needs the current value calls `get()` where it needs it (per request, per
+ * click) instead of capturing a value at registration time.
  */
-export const Config: z<Config> = z.object({
-  composerEnterNewline: z.boolean().default(true),
-  statusWording: z.boolean().default(true),
-  statusPhrases: z.array(z.string()).default([]),
-  openInVscode: z.boolean().default(true),
-  editorCommand: z.string().default("code"),
+export interface Config {
+  composerEnterNewline: Volatile<boolean>;
+  statusWording: Volatile<boolean>;
+  statusPhrases: Volatile<string[]>;
+  openInVscode: Volatile<boolean>;
+  editorCommand: Volatile<string>;
+}
+
+/**
+ * Schemastery configuration for the ui-tweaks row: schema defaults, then the
+ * row's own `config` in the bundle patch (which `dev_apply` links and the
+ * deployment may override in its profile layer), then the user layer the
+ * settings UI writes into the profile patch.
+ *
+ * Every field is `.volatile()`, which is what puts it on the settings form and
+ * what makes the value the plugin reads follow an edit without a restart. Its
+ * serialized form is also the wire envelope the browser half's section is
+ * validated against, which is why the browser half's seed mirrors the three
+ * page-owned defaults below (see the note on {@link SettingsValues}).
+ */
+export const Config = z.object({
+  composerEnterNewline: z.boolean().default(true).volatile(),
+  statusWording: z.boolean().default(true).volatile(),
+  statusPhrases: z.array(z.string()).default([]).volatile(),
+  openInVscode: z.boolean().default(true).volatile(),
+  editorCommand: z.string().default("code").volatile(),
 });

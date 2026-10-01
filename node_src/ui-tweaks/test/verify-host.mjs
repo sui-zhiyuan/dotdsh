@@ -1,17 +1,23 @@
 // The committed check for the ui-tweaks node half. Run: pnpm test
 //
 // This half looks small, but it is one end of a wire contract with no compiler
-// across it: the namespace it registers and the field names its schema declares
-// are what the browser half (client/index.js, which cannot import from here)
-// binds its settings scope to. `tsc` types this half alone, so a rename on one
-// side would leave the page silently on its defaults, with no error anywhere.
+// across it: the entry id its settings form lives under and the field names its
+// schema declares are what the browser half (client/index.js, which cannot
+// import from here) reads through the settings transport. `tsc` types this half
+// alone, so a rename on one side would leave the page silently on its defaults,
+// with no error anywhere.
+//
+// The row's own `Config` schema is the settings form, exposed by the settings
+// domain ONLY for fields marked `.volatile()`, and the domain hands `apply` one
+// live reference per field. So what this file pins is the exposure rule (every
+// field volatile), the entry-id agreement, and the fact that `apply` mounts with
+// no settings service in the composition at all.
 //
 // It loads the BUILT lib/*.js (the `test` script builds first) and checks three
 // things:
-//   - the registration call itself, under a fake Host context: the namespace,
-//     the `base` layer carrying the row's config, the schema defaults, the
-//     serialized wire schema, the no-provider degrade and the rejected-
-//     registration warning;
+//   - the schema and the plugin shape: the defaults, the refusal, the serialized
+//     wire envelope, the volatile marking on every field, and `apply` mounting
+//     without a settings domain;
 //   - the launcher (`editor-launch.ts`) against REAL resources: a scratch
 //     directory tree and a real executable script that records its own argv, so
 //     the resolve/contain/spawn decisions are exercised with the filesystem and
@@ -20,13 +26,13 @@
 //     `webServer` (capturing registrations), a fake `connection` (whose
 //     rejection is controlled) and fake request/response objects.
 //
-// What a green run does NOT mean: there is no dsh here, so nothing proves that a
-// settings provider accepts the name, that the document's user layer resolves
-// over `base`, that a page ever adopts a section, or that dsh's real web server
-// dispatches to these handlers. The last region compares this half's fields with
-// the browser half's source text, which is a name-agreement check rather than a
-// behavioural one; what the page then DOES with an adopted section is
-// client/index.js's own check. "disabled never probes PATH" is asserted by the
+// What a green run does NOT mean: there is no dsh here, so nothing proves that
+// the settings domain exposes this entry, that a real user layer resolves over
+// the row config, that a page ever adopts a section, or that dsh's real web
+// server dispatches to these handlers. The last region compares this half's
+// fields with the browser half's source text, which is a name-agreement check
+// rather than a behavioural one; what the page then DOES with an adopted section
+// is client/index.js's own check. "disabled never probes PATH" is asserted by the
 // answer's ordering (a command that cannot resolve still reports `disabled`,
 // never `not-installed`), not by observing the `stat` — this script has no way
 // to instrument the host's PATH lookup without replacing the filesystem.
@@ -69,20 +75,36 @@ check(
 //#endregion
 
 //#region the section this row composes, and the wire schema behind it
+// `Config(raw)` answers what the Loader hands `apply`: one volatile reference per
+// field, whose `get()` is the resolved value. The tests below read through it the
+// way the plugin does.
+const valuesOf = (resolved) =>
+  Object.fromEntries(Object.entries(resolved).map(([field, ref]) => [field, ref.get()]));
 const defaults = host.Config({});
+const defaultValues = valuesOf(defaults);
+check(
+  "every field is a volatile reference, which is the only reason the settings domain exposes the entry",
+  Object.values(defaults).every((ref) => typeof ref?.get === "function"),
+  Object.entries(defaults).map(([field, ref]) => `${field}:${typeof ref?.get}`).join(", "),
+);
+check(
+  "the schema marks every field volatile (a plain field would be invisible and uneditable)",
+  Object.values(host.Config.dict).every((field) => field.meta?.volatile === true),
+  Object.entries(host.Config.dict).map(([field, schema]) => `${field}:${schema.meta?.volatile === true}`).join(", "),
+);
 check(
   "an empty row config resolves the documented defaults",
-  defaults.composerEnterNewline === true && defaults.statusWording === true &&
-    Array.isArray(defaults.statusPhrases) && defaults.statusPhrases.length === 0 &&
-    defaults.openInVscode === true && defaults.editorCommand === "code",
-  JSON.stringify(defaults),
+  defaultValues.composerEnterNewline === true && defaultValues.statusWording === true &&
+    Array.isArray(defaultValues.statusPhrases) && defaultValues.statusPhrases.length === 0 &&
+    defaultValues.openInVscode === true && defaultValues.editorCommand === "code",
+  JSON.stringify(defaultValues),
 );
-const configured = host.Config({ composerEnterNewline: false, statusPhrases: ["自定义一句"] });
+const configuredValues = valuesOf(host.Config({ composerEnterNewline: false, statusPhrases: ["自定义一句"] }));
 check(
   "the schema resolves a partial row config",
-  configured.composerEnterNewline === false && configured.statusWording === true &&
-    configured.statusPhrases[0] === "自定义一句",
-  JSON.stringify(configured),
+  configuredValues.composerEnterNewline === false && configuredValues.statusWording === true &&
+    configuredValues.statusPhrases[0] === "自定义一句",
+  JSON.stringify(configuredValues),
 );
 let rejected = false;
 try {
@@ -91,9 +113,9 @@ try {
   rejected = true;
 }
 check("the schema refuses a mistyped field", rejected);
-// The descriptor hands this serialization to the page, whose scope rehydrates it
-// and validates the resolved section against it: a schema that cannot serialize
-// would leave the browser half on its defaults with no error on either side.
+// The descriptor hands this serialization to the page, whose transport validates
+// the resolved section against it: a schema that cannot serialize would leave the
+// browser half on its defaults with no error on either side.
 let wire = null;
 try {
   wire = JSON.stringify(host.Config.toJSON());
@@ -103,26 +125,30 @@ try {
 check("the schema serializes to the wire envelope", typeof wire === "string" && wire.length > 0, String(wire));
 check(
   "the wire envelope carries every field",
-  wire !== null && [...Object.keys(defaults)].every((field) => wire.includes(`"${field}"`)),
+  wire !== null && Object.keys(defaultValues).every((field) => wire.includes(`"${field}"`)),
   String(wire),
 );
 //#endregion
 
-//#region registration against a fake Host settings service
-const registrations = [];
+//#region the settings form is the row's own schema, and needs no service
 const injected = [];
 const routeRegistrations = [];
-/** A Host context whose optional settings service records what the row registers. */
-const makeCtx = (withSettings) => ({
+/**
+ * A Host context with NO settings service: the row has to mount anyway, because
+ * the form is read off the Loader entry by the settings domain, not registered
+ * into it by this plugin.
+ */
+const makeCtx = () => ({
   inject: (deps, callback) => {
     injected.push(deps);
-    if (withSettings) callback({ settings: { register: (...args) => registrations.push(args) } });
+    // The only optional collaborator left is the session store; a composition
+    // without it still serves both routes (a launch is then checked by existence
+    // alone), which is what returning nothing here models.
   },
-  // `apply` now also registers the two routes through `ctx.effect`, whose
-  // callback builds them from `ctx.webServer`; the fake effect runs it at once
-  // and keeps the returned disposer, exactly as cordis does.
+  // `apply` registers the two routes through `ctx.effect`, whose callback builds
+  // them from `ctx.webServer`; the fake effect runs it at once and keeps the
+  // returned disposer, exactly as cordis does.
   effect: (callback) => callback(),
-  get: () => undefined,
   sessions: { get: () => undefined },
   connection: { requestRejection: () => undefined },
   webServer: {
@@ -136,80 +162,50 @@ const makeCtx = (withSettings) => ({
   },
 });
 
-const ctx = makeCtx(true);
-const rowConfig = host.Config({ statusWording: false });
-host.apply(ctx, rowConfig);
-check("waits for the settings service through ctx.inject", JSON.stringify(injected[0]) === JSON.stringify(["settings"]), JSON.stringify(injected));
-check("registers exactly one namespace", registrations.length === 1, `${registrations.length} registration(s)`);
+const ctx = makeCtx();
+let mounted = true;
+try {
+  host.apply(ctx, host.Config({ statusWording: false }));
+} catch (error) {
+  mounted = false;
+  check("the row mounts with no settings service in the composition", false, error.message);
+}
+check("the row mounts with no settings service in the composition", mounted);
 check(
-  "registers the exported namespace",
-  registrations[0]?.[0] === host.SETTINGS_NAMESPACE,
-  String(registrations[0]?.[0]),
-);
-check("registers the exported schema", registrations[0]?.[1] === host.Config);
-check(
-  "passes the row config as the composition base layer",
-  registrations[0]?.[2]?.base === rowConfig,
-  JSON.stringify(registrations[0]?.[2]?.base ?? null),
+  "apply asks for no settings service (the form is the entry's own schema)",
+  injected.every((deps) => !deps.includes("settings")),
+  JSON.stringify(injected),
 );
 check(
-  "apply also registers both open-in-editor routes under ctx.effect",
+  "apply registers both open-in-editor routes under ctx.effect",
   routeRegistrations.length === 2 &&
     routeRegistrations.every((spec) => spec.kind === "exact") &&
     routeRegistrations.some((spec) => spec.path === routesApi.OPEN_IN_EDITOR_STATUS_ROUTE) &&
     routeRegistrations.some((spec) => spec.path === routesApi.OPEN_IN_EDITOR_LAUNCH_ROUTE),
   routeRegistrations.map((spec) => `${spec.kind} ${spec.path}`).join(", "),
 );
-
-// A composition with no settings provider must still mount: the browser half
-// then runs on its own defaults, which is why nothing here may throw.
-const bareCtx = makeCtx(false);
-let degraded = true;
-try {
-  host.apply(bareCtx, host.Config({}));
-} catch (error) {
-  degraded = false;
-  check("a composition without a settings provider still mounts", false, error.message);
-}
-check("a composition without a settings provider still mounts", degraded);
-check("nothing is registered without a provider", registrations.length === 1);
-
-// A stored section the schema rejects rejects the registration itself, and dsh
-// does not surface that anywhere: the row mounts, the page keeps its defaults,
-// and a typo in settings.yaml looks like the switches doing nothing. The row
-// therefore has to say it — and must still mount.
-const warnings = [];
-const rejectingCtx = {
-  inject: (deps, callback) => {
-    callback({
-      settings: {
-        register: () => {
-          throw new Error('invalid section at $.statusPhrases: expected array but got "not-a-list"');
-        },
-      },
-      logger: { warn: (message) => warnings.push(message) },
-    });
-  },
-  effect: (callback) => callback(),
-  get: () => undefined,
-  sessions: { get: () => undefined },
-  connection: { requestRejection: () => undefined },
-  webServer: { register: () => () => {} },
-};
-let survived = true;
-try {
-  host.apply(rejectingCtx, host.Config({}));
-} catch (error) {
-  survived = false;
-  check("a rejected registration does not take the row down", false, error.message);
-}
-check("a rejected registration does not take the row down", survived);
-check("a rejected registration warns with the reason", warnings.length === 1 && warnings[0].includes("expected array"), warnings.join(" | ") || "(no warning)");
 check(
-  "the warning names the namespace and the fallback",
-  warnings.length === 1 && warnings[0].includes(host.SETTINGS_NAMESPACE) && warnings[0].includes("defaults"),
-  warnings.join(" | ") || "(no warning)",
+  "the settings entry id is the plugin name (the Loader row id is the namespace)",
+  host.SETTINGS_NAMESPACE === host.name,
+  `${host.SETTINGS_NAMESPACE} vs ${host.name}`,
 );
+// The id is not a free choice: the bundle patch mounts this package under exactly
+// that row id, and the settings domain keys the form by it. Checked against the
+// sibling patch when this repository is present (a published copy of the package
+// has no sibling), because a row renamed without the namespace would silently
+// leave the page and the routes on the defaults again.
+const bundlePatch = join(pkgDir, "..", "dotdsh", "cordis.patch.yml");
+if (existsSync(bundlePatch)) {
+  const patchText = readFileSync(bundlePatch, "utf8");
+  const row = new RegExp(
+    `- id: ${host.SETTINGS_NAMESPACE}\\s*\\n\\s*name: '@dsh-external/dotdsh-ui-tweaks'`,
+  ).test(patchText);
+  check(
+    "the bundle patch mounts this package under the id the settings form uses",
+    row,
+    `row ${host.SETTINGS_NAMESPACE} -> @dsh-external/dotdsh-ui-tweaks`,
+  );
+}
 //#endregion
 
 //#region cross-half name agreement
@@ -543,16 +539,37 @@ function makeResponse() {
   };
 }
 
-const routeConfig = (overrides = {}) => ({
-  composerEnterNewline: true,
-  statusWording: true,
-  statusPhrases: [],
-  openInVscode: true,
-  editorCommand: successEditor,
-  ...overrides,
-});
+/**
+ * One row config as `apply` receives it: one live reference per field over a box
+ * the test can act on, exactly as the settings domain updates a real reference in
+ * place (`Volatile.get()` is the only read the plugin has). `routeConfig` builds
+ * one nobody mutates; `mutableRouteConfig` hands the box back so a test can play
+ * the settings domain.
+ */
+function mutableRouteConfig(overrides = {}) {
+  const box = {
+    composerEnterNewline: true,
+    statusWording: true,
+    statusPhrases: [],
+    openInVscode: true,
+    editorCommand: successEditor,
+    ...overrides,
+  };
+  const ref = (field) => ({ get: () => box[field] });
+  return {
+    box,
+    config: {
+      composerEnterNewline: ref("composerEnterNewline"),
+      statusWording: ref("statusWording"),
+      statusPhrases: ref("statusPhrases"),
+      openInVscode: ref("openInVscode"),
+      editorCommand: ref("editorCommand"),
+    },
+  };
+}
+const routeConfig = (overrides = {}) => mutableRouteConfig(overrides).config;
 
-function routeFixture({ config, settings, sessions, rejection } = {}) {
+function routeFixture({ config, sessions, rejection } = {}) {
   const registered = [];
   const webServer = {
     register(spec) {
@@ -575,12 +592,13 @@ function routeFixture({ config, settings, sessions, rejection } = {}) {
   // (`cannot get property "sessions" without inject`), which is how the launch
   // route once failed every request with an empty 400 while the availability
   // probe stayed green. Modelling `inject` here is what lets this check see that
-  // class of mistake at all.
+  // class of mistake at all. There is deliberately no `get(name)` on this context
+  // either: the routes read their two fields off the live references now, and a
+  // service lookup creeping back in would throw here rather than pass unnoticed.
   const store = sessions ?? { get: () => undefined };
   const ctx = {
     webServer,
     connection,
-    get: (name) => (name === "settings" ? settings : undefined),
     effect: (callback) => callback(),
     inject: (deps, callback) => {
       if (deps.includes("sessions")) callback({ sessions: store });
@@ -744,20 +762,20 @@ check(
 );
 check("the 405 answer carries no JSON body", status405.body === undefined && launch405.body === undefined);
 
-// 17. The two fields are read FRESH PER REQUEST from the settings provider, so
-//     a settings.yaml edit takes effect on the next request; and the row config
-//     answers when there is no provider at all.
-const providerBox = { value: { openInVscode: true, editorCommand: successEditor } };
-const provider = { get: (ns) => (ns === host.SETTINGS_NAMESPACE ? providerBox.value : undefined) };
-const freshFixture = routeFixture({ config: routeConfig({ openInVscode: false, editorCommand: missingEditor }), settings: provider });
+// 17. The two fields are read FRESH PER REQUEST off the live references, so a
+//     settings edit takes effect on the next request with no restart and no
+//     route re-registration; and a config built straight from the exported
+//     schema (a composition with no settings domain) answers its defaults.
+const fresh = mutableRouteConfig({ openInVscode: true, editorCommand: successEditor });
+const freshFixture = routeFixture({ config: fresh.config });
 const freshFirst = makeResponse();
 await freshFixture.statusHandler(makeRequest({ method: "GET" }), freshFirst);
 check(
-  "the registered section wins over the row config on the first request",
+  "the first request reads the live reference",
   JSON.parse(freshFirst.body).available === true && JSON.parse(freshFirst.body).executable === successEditor,
   String(freshFirst.body),
 );
-providerBox.value = { openInVscode: false };
+fresh.box.openInVscode = false;
 const freshSecond = makeResponse();
 await freshFixture.statusHandler(makeRequest({ method: "GET" }), freshSecond);
 check(
@@ -765,51 +783,50 @@ check(
   JSON.parse(freshSecond.body).available === false && JSON.parse(freshSecond.body).reason === "disabled",
   String(freshSecond.body),
 );
-providerBox.value = { openInVscode: true, editorCommand: missingEditor };
+fresh.box.openInVscode = true;
+fresh.box.editorCommand = missingEditor;
 const freshThird = makeResponse();
 await freshFixture.statusHandler(makeRequest({ method: "GET" }), freshThird);
 check(
-  "the third request observes the new command, with the row config still filling absent fields",
+  "the third request observes the new command",
   JSON.parse(freshThird.body).available === false && JSON.parse(freshThird.body).reason === "not-installed",
   String(freshThird.body),
 );
 // The launch route shares `editorSettingsOf`, but a check of its own keeps the
 // freshness a property of BOTH routes rather than of the status handler alone.
-const launchProviderBox = { value: { openInVscode: false } };
-const launchProvider = { get: (ns) => (ns === host.SETTINGS_NAMESPACE ? launchProviderBox.value : undefined) };
-const freshLaunchFixture = routeFixture({
-  config: routeConfig({ openInVscode: false, editorCommand: missingEditor }),
-  settings: launchProvider,
-  sessions: liveSessions,
-});
+const freshLaunch = mutableRouteConfig({ openInVscode: false, editorCommand: missingEditor });
+const freshLaunchFixture = routeFixture({ config: freshLaunch.config, sessions: liveSessions });
 const freshLaunchFirst = await callLaunch(freshLaunchFixture, { sessionId: "session-live", path: "inside.txt" });
 check(
-  "the launch route reads the section fresh (first request: disabled)",
+  "the launch route reads the live reference (first request: disabled)",
   freshLaunchFirst.statusCode === 503 && JSON.parse(freshLaunchFirst.body).reason === "disabled",
   `${freshLaunchFirst.statusCode} ${String(freshLaunchFirst.body)}`,
 );
-launchProviderBox.value = { openInVscode: true, editorCommand: successEditor };
+freshLaunch.box.openInVscode = true;
+freshLaunch.box.editorCommand = successEditor;
 const freshLaunchSecond = await callLaunch(freshLaunchFixture, { sessionId: "session-live", path: "inside.txt" });
 check(
-  "the launch route reads the section fresh (second request: launched)",
+  "the launch route reads the live reference (second request: launched)",
   freshLaunchSecond.statusCode === 200 && JSON.parse(freshLaunchSecond.body).ok === true && JSON.parse(freshLaunchSecond.body).file === insideReal,
   `${freshLaunchSecond.statusCode} ${String(freshLaunchSecond.body)}`,
 );
-const noProviderOff = routeFixture({ config: routeConfig({ openInVscode: false }) });
-const noProviderOffRes = makeResponse();
-await noProviderOff.statusHandler(makeRequest({ method: "GET" }), noProviderOffRes);
+// No settings domain: the references the Loader builds from the schema defaults
+// are the whole config, and both fields answer them.
+const schemaDefaultsFixture = routeFixture({ config: host.Config({ editorCommand: successEditor }) });
+const schemaDefaultsRes = makeResponse();
+await schemaDefaultsFixture.statusHandler(makeRequest({ method: "GET" }), schemaDefaultsRes);
 check(
-  "without a settings provider the row config answers (off)",
-  JSON.parse(noProviderOffRes.body).available === false && JSON.parse(noProviderOffRes.body).reason === "disabled",
-  String(noProviderOffRes.body),
+  "a config built from the schema defaults answers without a settings domain",
+  JSON.parse(schemaDefaultsRes.body).available === true && JSON.parse(schemaDefaultsRes.body).executable === successEditor,
+  String(schemaDefaultsRes.body),
 );
-const noProviderOn = routeFixture({ config: routeConfig({ editorCommand: successEditor }) });
-const noProviderOnRes = makeResponse();
-await noProviderOn.statusHandler(makeRequest({ method: "GET" }), noProviderOnRes);
+const schemaOffFixture = routeFixture({ config: host.Config({ openInVscode: false }) });
+const schemaOffRes = makeResponse();
+await schemaOffFixture.statusHandler(makeRequest({ method: "GET" }), schemaOffRes);
 check(
-  "without a settings provider the row config answers (available)",
-  JSON.parse(noProviderOnRes.body).available === true && JSON.parse(noProviderOnRes.body).executable === successEditor,
-  String(noProviderOnRes.body),
+  "the same shape answers an off switch",
+  JSON.parse(schemaOffRes.body).available === false && JSON.parse(schemaOffRes.body).reason === "disabled",
+  String(schemaOffRes.body),
 );
 
 // 18. workspaceRootOf reads the live session's cwd and nothing for an unknown

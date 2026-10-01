@@ -24,8 +24,7 @@ import type {} from "@deepseek-ai/dsh-host-webserver";
 import type { SessionId } from "@deepseek-ai/dsh-session";
 import type { EditorLaunchFailure, EditorLaunchResult } from "./editor-launch.js";
 import { launchInEditor, resolveEditorCommand } from "./editor-launch.js";
-import type { Config } from "./settings.js";
-import { SETTINGS_NAMESPACE } from "./settings.js";
+import type { Config, SettingsValues } from "./settings.js";
 
 export type { SessionId };
 
@@ -243,29 +242,23 @@ function failureStatusOf(reason: EditorLaunchFailure): number {
 }
 
 /**
- * The two fields these routes act on, resolved FRESH from the live settings
- * provider on every request.
+ * The two fields these routes act on, read FRESH PER REQUEST off the live
+ * references this row's `apply` received.
  *
- * The namespace is registered once, by `index.ts`, with this row's `config` as
- * the composition `base` layer; registering it again would throw and unregister
- * the namespace the browser half reads, so this layer takes the registered
- * namespace's resolved value (`SettingsProvider.get(ns)`) instead of a scope of
- * its own. That value is schema defaults -> base -> user layer, re-resolved by
- * the provider whenever the settings document changes, which is what makes an
- * edit to `$DSH_HOME/settings.yaml` reach the NEXT request without a dsh
- * restart. The namespace is absent in a composition with no settings provider
- * (and unregistered when a stored document fails the schema), so each field
- * falls back to the row config, which the Loader already resolved through the
- * schema.
- * @param ctx - host context carrying the optional settings service.
- * @param config - this row's config, the settings `base` layer and the fallback.
+ * The settings domain keeps each reference stable for the life of the row and
+ * updates the value inside it when the user layer changes, so a settings edit
+ * takes effect on the next request with no dsh restart and no re-registration of
+ * these routes. Each reference answers the resolved value — schema default under
+ * this row's `config` under the user layer — so there is no fallback to compose
+ * here, and no provider to be absent: a composition with no settings domain hands
+ * the plugin references that answer the schema defaults.
+ * @param config - this row's config: one live reference per field.
  * @returns the resolved fields the launcher consumes.
  */
-function editorSettingsOf(ctx: Context, config: Config): Pick<Config, "openInVscode" | "editorCommand"> {
-  const resolved = ctx.get("settings")?.get(SETTINGS_NAMESPACE) as Partial<Config> | undefined;
+function editorSettingsOf(config: Config): Pick<SettingsValues, "openInVscode" | "editorCommand"> {
   return {
-    openInVscode: resolved?.openInVscode ?? config.openInVscode,
-    editorCommand: resolved?.editorCommand ?? config.editorCommand,
+    openInVscode: config.openInVscode.get(),
+    editorCommand: config.editorCommand.get(),
   };
 }
 
@@ -307,24 +300,16 @@ export function workspaceRootOf(
  * Register both open-in-editor routes on the composition's web server.
  *
  * Configuration: the two fields these routes act on (`openInVscode`,
- * `editorCommand`) are read FRESH PER REQUEST from the live settings provider —
- * `ctx.get("settings")?.get(SETTINGS_NAMESPACE)` — with the row's `config` as the
- * per-field fallback. That is the host half of the same namespace the browser
- * half binds a scope over; the browser's `settingsScope`/`getSnapshot()` has no
- * host equivalent, and `SettingsProvider.get(ns)` is its documented read
- * ("schema defaults, then `base`, then the user layer", `undefined` while the
- * namespace is unregistered). Reading the composed service per request is what
- * makes `$DSH_HOME/settings.yaml` the LIVE user layer: turning the switch off or
- * pointing `editorCommand` at another editor takes effect on the next request,
- * with no dsh restart. The provider is optional exactly as it is for the browser
- * half — without one (or when a stored section failed to register, which
- * `index.ts` catches and logs) the row config answers.
- *
- * Registering the namespace here would be wrong rather than merely redundant:
- * `index.ts` already registers it, `register` fails loud on a duplicate, and a
- * `SettingsScope` is handed only to the registrant with no public way to recover
- * an existing one — so a second registration would either throw or be thrown at,
- * and the loser would leave the browser half on its defaults.
+ * `editorCommand`) are read FRESH PER REQUEST off the live references this row's
+ * `apply` received (`config.<field>.get()`). That is the host half of the same
+ * settings form the browser half reads through `configForms.get(...)`; both name
+ * the Loader entry id `ui-tweaks`, and both see schema default under this row's
+ * `config` under the user layer. Reading the reference per request is what makes
+ * the user layer LIVE: turning the switch off or pointing `editorCommand` at
+ * another editor takes effect on the next request, with no dsh restart and
+ * without re-registering these routes. There is no provider to be absent either:
+ * a composition with no settings domain hands the plugin references that answer
+ * the schema defaults.
  *
  * Transport contract, both routes:
  * - `connection.requestRejection(req)` first; a rejection is answered with its
@@ -393,7 +378,7 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
       sendMethodNotAllowed(res, "GET");
       return;
     }
-    const { openInVscode, editorCommand } = editorSettingsOf(ctx, config);
+    const { openInVscode, editorCommand } = editorSettingsOf(config);
     // The switch answers first: a machine with the feature off must not pay a
     // PATH probe per page load, and "disabled" is the more useful diagnosis.
     if (!openInVscode) {
@@ -459,7 +444,7 @@ export function openInEditorRoutes(ctx: Context, config: Config): () => void {
     const workspaceRoot = sessions === undefined ? undefined : workspaceRootOf(sessions, fields.sessionId as SessionId);
     let result: EditorLaunchResult;
     try {
-      result = await launchInEditor(workspaceRoot, fields.path, fields.line, editorSettingsOf(ctx, config));
+      result = await launchInEditor(workspaceRoot, fields.path, fields.line, editorSettingsOf(config));
     } catch (error) {
       // The launcher reports its own failures as values; a rejection here is
       // unexpected, so it is folded into the same failure contract rather than

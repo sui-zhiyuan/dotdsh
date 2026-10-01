@@ -68,27 +68,30 @@ Three consequences shape `node_src/ui-tweaks`:
    (`window.__ModuleLoader__.load({id, factory})`, `id` = the package name), so the file cannot
    live under gitignored `lib/`, and dsh fails the boot when it is missing. It needs no bundler
    because it is plain JavaScript with no imports and no JSX — which is also why the package
-   declares no `dsh.client.inject`.
+   `require`s no module value; the one edge it does declare, `dsh.client.inject`, names the settings
+   client package so that row's factory (and its `configForms` service) exists before this one
+   composes.
 2. **No row config reaches the browser.** The boot graph carries
    `id`/`url`/`rev`/`inject`/`external`/`immediately` and nothing else, so the browser half cannot
    read its row's `config`. Mounting the package is what enables the tweak set, and the whole set
    is turned off per profile in that profile's own `cordis.patch.yml`
    (`- {id: ui-tweaks, disabled: true}`).
-3. **A settings namespace is the channel that does reach a page.** Every browser preference the
-   Web app ships travels this way: the package's node half registers a namespace with a schemastery
-   schema, and its browser half reads the resolved section through `ctx.settingsScope` — ui-chat,
-   ui-conversation and ui-theme all do exactly this. ui-tweaks follows it, so its three switches
-   are per machine and live rather than baked into the repository:
-   `ctx.inject(["settings"], …)` in the node half registers `ui-tweaks` with the row's config as
-   the composition `base` layer, `$DSH_HOME/settings.yaml` is the user layer over it, and the file
-   provider's watcher republishes an edit without a restart. Both halves therefore carry the same
-   three defaults — the node half's schema declares them and the browser half seeds its `settings`
-   object with them — which is what a page runs on until the first accepted section arrives, and
-   forever in a composition with no settings provider. Two deliberate choices follow from the
-   tweak set being independent of the settings domain: the browser half reaches the scope through
-   `ctx.inject(["settingsScope"], …)` rather than declaring it in `exports.inject`, so an absent
-   settings transport cannot park the tweak set; and each tweak keeps running while switched off,
-   forwarding to the shipped behaviour instead of being uninstalled and re-installed on a toggle.
+3. **The entry's settings form is the channel that does reach a page.** Every browser preference
+   the Web app ships travels this way: the Loader entry's own `Config` schema *is* the form, and the
+   settings domain exposes it under the row's `id` provided the fields are marked `.volatile()`,
+   handing the plugin one live reference per field. ui-chat, ui-conversation and ui-theme all follow
+   that shape, and ui-tweaks
+   follows it, so its switches are per machine and live rather than baked into the repository: the
+   node half reads `config.<field>.get()`, the row's `config` in the bundle patch is the layer
+   underneath, and the user layer is the profile's own `cordis.patch.yml`, which dsh reloads — so an
+   edit reaches the page and the routes without a restart. Both halves still carry the same defaults
+   — the node half's schema declares them and the browser half seeds its `settings` object with them
+   — which is what a page runs on until the first accepted section arrives. Two deliberate choices
+   follow from the tweak set being independent of the settings domain: the browser half reaches the
+   transport through `ctx.inject(["configForms"], …)` rather than declaring it in `exports.inject`,
+   so an absent settings domain cannot park the tweak set; and each tweak keeps running while
+   switched off, forwarding to the shipped behaviour instead of being uninstalled and re-installed on
+   a toggle.
 
 The first tweak also records how far a plugin can go without a harness extension point: the
 composer's Enter gesture is a hardcoded Lexical command registered at CRITICAL priority by
@@ -321,9 +324,11 @@ to be committed.
   build-script gate).
 - **Bundle layers are read at boot.** Only the profile and home `cordis.patch.yml` layers
   hot-reload, so a plugin-code change, a row change, and adding or removing a package all
-  need a dsh restart. A config experiment that must be live belongs in the user layer — or, for a
-  browser-facing switch, in `$DSH_HOME/settings.yaml`, which the settings file provider watches:
-  the `ui-tweaks` switches are that path's worked example.
+  need a dsh restart. A config experiment that must be live belongs in the user layer — for a
+  browser-facing switch that means a `config:` block on its row in the profile's patch, which the
+  settings transport also writes: the `ui-tweaks` switches are that path's worked example.
+  (`$DSH_HOME/settings.yaml` is the 0.1.x document; a 0.2.0-rc.2 boot imports it into the active
+  profile once and renames it `settings.yaml.imported`.)
 - **Repository files never contain absolute paths.** Machine-local paths — the `link:` specs
   in the profile manifest, an HMR `root` — live in `$DSH_HOME` layers only, and `dev_apply`
   computes them at run time. `workspace:*` is how the repository refers to its own packages.

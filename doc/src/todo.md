@@ -65,13 +65,22 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   `statusPhrases` is appended to it; the same namespace carries the two switches
   (`composerEnterNewline`, `statusWording`). A page-local source (a query parameter,
   `localStorage`) was the alternative and is still the fallback if a switch must work on a page
-  with no settings transport
+  with no settings transport.
+  **Superseded by dsh 0.2.0-rc.2** (kept as the record of why the channel was chosen): there is no
+  namespace registration any more. The row's own `Config` schema is the settings form — exposed only
+  because every field is `.volatile()` — the node half reads live references (`config.<field>.get()`)
+  and the browser half reads the same entry id through `configForms.get("ui-tweaks")`; the user layer
+  moved from `$DSH_HOME/settings.yaml` to the profile's own `cordis.patch.yml`
 - [x] Give a node half a committed test too. `verify-host.mjs` (also run by `pnpm test`) pins what
   `tsc` cannot: the namespace and schema that the browser half binds and reads by name, the `base`
   layer carrying the row's config, the serialized wire schema, and the no-provider degrade. The
   namespace and field-name agreement it checks against `client/index.js` is a name-level check —
   what the page does with an adopted section stays the browser half's own check, and whether dsh
-  resolves and persists a section is settled by loading the page once
+  resolves and persists a section is settled by loading the page once.
+  **Superseded by dsh 0.2.0-rc.2**: with no registration call left to inspect, the check now pins the
+  volatile-exposure rule (a plain field would be invisible and uneditable), the entry-id/plugin-name
+  agreement and the row id in the bundle patch, that `apply` mounts with no settings service at all,
+  and that both routes read their two fields off the live references per request
 - [x] Build the git workflow as one node-only plugin (`node_src/git-flow`): the `/git-start`,
   `/git-complete` and `/git-cleanup` commands with the matching `git_start`, `git_complete` and
   `git_cleanup` tools, the `tools/pre-execute` write guard, a claim file that records which tree each
@@ -132,7 +141,9 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 
 - [x] `dsh_home/settings.yaml` mirrors the setup this repository is developed against
   (commented examples only; nothing syncs it, and copying it to `$DSH_HOME` stays a one-time
-  manual step)
+  manual step). A 0.2.0-rc.2 boot imports it into the active profile's patch and renames it
+  `settings.yaml.imported`, so it now seeds a fresh machine once instead of staying live; the
+  reference file's header says which sections are remapped on the way in
 - [ ] Optional: enable module HMR for the plugin packages by overriding the `hmr` row in the
   **profile user layer** (`{id: hmr, disabled: false, config: {root: ['<repo>/node_src']}}`),
   so a rebuilt `lib/` reloads without a restart. Needs one restart to take effect, and a

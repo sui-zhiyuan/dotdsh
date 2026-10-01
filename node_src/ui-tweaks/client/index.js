@@ -6,8 +6,10 @@
 // this package's name, because the Web shell creates one cordis entry per
 // boot-graph id and resolves that entry through this registration. The factory
 // body is the module, `require` walks the client module graph (this tweak set
-// requires nothing, so the package declares no `dsh.client.inject`), and the
-// returned `exports` object is the cordis plugin the shell activates.
+// requires no module value, but it does declare the settings client module in
+// `dsh.client.inject` so that row composes — and its `configForms` service
+// exists — before this one activates), and the returned `exports` object is the
+// cordis plugin the shell activates.
 //
 // Why this file is hand-authored instead of bundled: it is plain JavaScript with
 // no imports and no JSX, so it needs no bundler — and unlike `lib/` (tsc output
@@ -18,19 +20,20 @@
 // restart: the client bundle is read once at boot.
 //
 // Three injection surfaces are in play, and they are easy to confuse: the
-// package's `dsh.client.inject` names the client MODULES this bundle `require`s
-// (still empty), `exports.inject` below is the CORDIS plugin's own HARD service
-// dependency (the wording tweak reads the locale service), and the
-// `ctx.inject(["settingsScope"], …)` inside `apply` is an OPTIONAL one — a page
+// package's `dsh.client.inject` names the client PACKAGE ROWS whose factories
+// must arrive first (the settings client, which provides `configForms`),
+// `exports.inject` below is the CORDIS plugin's own HARD service dependency (the
+// wording tweak reads the locale service), and the
+// `ctx.inject(["configForms"], …)` inside `apply` is an OPTIONAL one — a page
 // composed without the settings transport keeps every tweak on its defaults
 // instead of parking the whole set.
 //
-// Configuration reaches this half through a settings namespace and never through
-// the row: the node half registers `ui-tweaks` with the row's config as the
-// composition base layer (src/index.ts), this half binds a scope over that
-// namespace, and $DSH_HOME/settings.yaml is the user layer on top of it. Until
-// the first accepted section arrives — and forever without a settings provider —
-// the `settings` object below carries the schema's own defaults.
+// Configuration reaches this half through the settings form and never through the
+// row: the node half's `Config` schema is volatile (src/settings.ts), which is
+// what the settings domain exposes under this entry's Loader id `ui-tweaks`, and
+// this half asks the client transport for that same id. Until the first accepted
+// section arrives — and forever without a settings domain — the `settings` object
+// below carries the schema's own defaults.
 // WHY ONE FILE: dsh exposes exactly ONE browser half per package, through the
 // combo route for `exports["./client"]`. A second file in the package has no
 // route at all — a sibling `<script src>` 404s, and the tweak then silently does
@@ -45,9 +48,9 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
     /**
-     * Settings namespace this package owns. The node half registers the same
-     * name (src/index.ts), and it is the only channel through which the row's
-     * config can reach this file.
+     * Settings entry id this package reads. It is the `ui-tweaks` row's Loader
+     * id — the id the node half's volatile `Config` is exposed under — and it is
+     * the only channel through which the row's config can reach this file.
      */
     const SETTINGS_NAMESPACE = "ui-tweaks";
 
@@ -55,7 +58,7 @@ window.__ModuleLoader__.load({
      * The section the tweaks act on, seeded with the defaults the node half's
      * schema also declares — keep the two in step. A page cannot read the row's
      * config, so these values are what it uses until the first accepted settings
-     * section arrives, and forever in a composition with no settings provider.
+     * section arrives, and forever in a composition with no settings domain.
      *
      * `openInVscode`/`editorCommand` are deliberately absent: those two are
      * enforced by the host route, which is the only side that can act on them, so
@@ -147,9 +150,19 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** Namespace and key of the chat status line ("深度求索中..." / "Deep diving..."). */
+    /**
+     * Namespace and keys of the chat status line. `chat.deepDiving` is the plain
+     * wording, and it is also what the visually-hidden `role="status"` span
+     * carries for screen readers; `chat.deepDivingFor` is the same sentence with
+     * the elapsed time appended ("深度求索中，用时 {duration} ···"), and since dsh
+     * 0.2.0-rc.2 it is what the VISIBLE shimmer label renders as soon as the turn
+     * has a start time. A tweak that rewrote only the first key therefore looked
+     * installed and stayed invisible: it reworded the aria-live copy while the
+     * line on screen kept dsh's own sentence.
+     */
     const STATUS_NS = "chat";
     const STATUS_KEY = "chat.deepDiving";
+    const STATUS_KEY_FOR = "chat.deepDivingFor";
 
     /**
      * Wording the running-turn status line may show instead of the shipped string,
@@ -159,10 +172,13 @@ window.__ModuleLoader__.load({
      * 「已深度思考（用时 X 秒）」, 价格屠夫, 顿悟时刻. Chinese only — see
      * {@link isChineseLocale} — so the English UI keeps its shipped copy.
      *
-     * The endings deliberately vary («…中...», «…了...», «…呢...», and plain
+     * The endings deliberately vary («正在…中», «…了», «…呢», and plain
      * statements): a bank whose every entry ends the same way reads like a
      * template instead of a joke, so a new phrase is written the way it would be
-     * said rather than bent to fit «…中...».
+     * said rather than bent to fit one shape. No entry trails off in an ellipsis
+     * either: the running line's longer template already ends in one, so a "…"
+     * written into the phrase would put a second set of dots in the middle of the
+     * same short sentence.
      *
      * This is the SHIPPED half of the bank: the settings section's
      * `statusPhrases` list is appended to it at draw time, so a per-machine
@@ -171,39 +187,41 @@ window.__ModuleLoader__.load({
      * @type {readonly string[]}
      */
     const STATUS_PHRASES = Object.freeze([
-      "蓝色大肥鱼猛猛干饭中...",
-      "小鲸鱼正在摸鱼...",
-      "吃白饭的大肥鱼思考中...",
-      "大肥鱼丢下活去干饭了...",
-      "正在烧主人的 token 中...",
-      "已深度求索（用时很久）...",
-      "有点饿了，中午吃啥呢...",
-      "顺着网线去你家蹭米饭了...",
-      "价格屠夫正在算账中...",
-      "服务器繁忙，鲸鱼在干饭中...",
-      "顿悟时刻加载中...",
-      "偷吃 token 中...",
-      "鲸鱼娘在深海里赶工中...",
-      "小鲸鱼悄悄加载算力中...",
-      "蓝鲸正在偷偷努力中...",
-      "大肥鱼正在啃提示词...",
-      "蓝鲸娘正在啃米饭...",
-      "傲娇鲸鱼娘营业中...",
-      "正在海沟里游第一万米...",
-      "深海蓝鲸正在吐泡泡...",
-      "等编译的间隙，偷偷写个小游戏玩玩...",
-      "活干完了，偷偷玩会儿自己写的小游戏...",
+      "蓝色大肥鱼猛猛干饭中",
+      "小鲸鱼正在摸鱼",
+      "吃白饭的大肥鱼思考中",
+      "大肥鱼丢下活去干饭了",
+      "正在烧主人的 token 中",
+      "已深度求索（用时很久）",
+      "有点饿了，中午吃啥呢",
+      "顺着网线去你家蹭米饭了",
+      "价格屠夫正在算账中",
+      "服务器繁忙，鲸鱼在干饭中",
+      "顿悟时刻加载中",
+      "偷吃 token 中",
+      "鲸鱼娘在深海里赶工中",
+      "小鲸鱼悄悄加载算力中",
+      "蓝鲸正在偷偷努力中",
+      "大肥鱼正在啃提示词",
+      "蓝鲸娘正在啃米饭",
+      "傲娇鲸鱼娘营业中",
+      "正在海沟里游第一万米",
+      "深海蓝鲸正在吐泡泡",
+      "等编译的间隙，偷偷写个小游戏玩玩",
+      "活干完了，偷偷玩会儿自己写的小游戏",
     ]);
 
     /**
      * How long the status line must stay unread before the wording is re-drawn.
      *
-     * `TurnStatus` renders `t("chat.deepDiving")` on every render and ticks its
-     * elapsed clock once a second while a turn runs, so a gap longer than this IS
-     * the end of the previous run: drawing per call instead would flicker through
-     * the whole list once per second, and drawing once at install would freeze the
-     * wording for the life of the page. (A backgrounded tab throttles that
-     * interval and can re-draw mid-run — cosmetic only.)
+     * `RunningStatus` (dsh-client-ui-chat) asks for both keys on every render and
+     * ticks its elapsed clock once a second while a turn runs, so a gap longer
+     * than this IS the end of the previous run: drawing per call instead would
+     * flicker through the whole list once per second, and drawing once at install
+     * would freeze the wording for the life of the page. Both keys are asked
+     * inside one render, so the shared window is also what keeps the visible line
+     * and the screen-reader copy on the SAME phrase. (A backgrounded tab throttles
+     * that interval and can re-draw mid-run — cosmetic only.)
      */
     const STATUS_REROLL_MS = 2500;
 
@@ -261,6 +279,11 @@ window.__ModuleLoader__.load({
      * it (the line then simply keeps its shipped wording). It stays installed
      * while the settings section has the tweak off and forwards every call
      * untouched, so toggling the switch never re-installs the shadow.
+     *
+     * Both status keys are answered with the SAME drawn phrase, and the
+     * elapsed-time variant keeps everything the shipped template puts after its
+     * base wording — so the running line's timer, its shimmer and the whale tail
+     * beside it are untouched. This tweak changes the words, not the decoration.
      * @param ctx - Client root context.
      * @returns the disposer restoring the shipped wording.
      */
@@ -271,13 +294,25 @@ window.__ModuleLoader__.load({
       let phrase = "";
       let lastSeenAt = 0;
       locale.translate = function (ns, key, params) {
-        if (ns !== STATUS_NS || key !== STATUS_KEY || !settings.statusWording || !isChineseLocale(locale)) {
+        const isStatus = ns === STATUS_NS && (key === STATUS_KEY || key === STATUS_KEY_FOR);
+        if (!isStatus || !settings.statusWording || !isChineseLocale(locale)) {
           return original.call(this, ns, key, params);
         }
         const now = Date.now();
         if (now - lastSeenAt > STATUS_REROLL_MS) phrase = nextStatusPhrase(phrase);
         lastSeenAt = now;
-        return phrase;
+        if (key === STATUS_KEY) return phrase;
+        // The running line's longer template appends the elapsed time after the
+        // shipped wording, so the draw replaces only the wording AHEAD of that
+        // suffix and the clock keeps ticking. The seam is composed from the
+        // shipped dictionary rather than hardcoded: the base wording is whatever
+        // `chat.deepDiving` answers, and everything the longer template puts after
+        // it is kept verbatim. A dsh that stops building one from the other falls
+        // back to the bare phrase — the timer is gone then, but the wording, which
+        // is what this tweak is for, is still in place.
+        const full = original.call(this, ns, key, params);
+        const base = original.call(this, ns, STATUS_KEY);
+        return full.startsWith(base) ? phrase + full.slice(base.length) : phrase;
       };
       return () => {
         delete locale.translate;
@@ -307,24 +342,26 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Bind the `ui-tweaks` settings namespace when this page has a settings
+     * Bind the `ui-tweaks` settings form when this page has the settings
      * transport. Optional on purpose: the tweaks are independent of the settings
      * domain, so a page composed without it keeps its defaults and every tweak
      * instead of parking the whole set.
      *
-     * The scope derives from the settings mirror the client's one
-     * `settings.describe` reader fills, and the subscription lives on the child
-     * fiber `ctx.inject` hands the callback — so unloading the row releases both
-     * the subscription and the adopted values' source.
+     * `configForms.get(entryId)` answers the form for one Host entry, and that
+     * entry id is the patch row's `id` — the same string the node half's volatile
+     * `Config` is exposed under, which is why `SETTINGS_NAMESPACE` names it.
+     * The snapshot carries the RESOLVED section, and the subscription lives on the
+     * child fiber `ctx.inject` hands the callback — so unloading the row releases
+     * both the subscription and the adopted values' source.
      * @param ctx - Client root context.
      */
     function bindSettings(ctx) {
-      ctx.inject(["settingsScope"], (scopeCtx) => {
-        const scope = scopeCtx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
-        scopeCtx.effect(() => {
-          adoptSettings(scope.getSnapshot().value);
-          return scope.subscribe(() => {
-            adoptSettings(scope.getSnapshot().value);
+      ctx.inject(["configForms"], (formsCtx) => {
+        const form = formsCtx.configForms.get(SETTINGS_NAMESPACE);
+        formsCtx.effect(() => {
+          adoptSettings(form.getSnapshot().value);
+          return form.subscribe(() => {
+            adoptSettings(form.getSnapshot().value);
           });
         }, "ui-tweaks: adopt the ui-tweaks settings section");
       });
@@ -973,8 +1010,10 @@ window.__ModuleLoader__.load({
     // rather than racing it at boot. `dsh-client-locale` is part of the Web app's
     // own module set, so this parks nothing in practice; the alternative — a bare
     // `ctx.get("locale")` — would silently no-op whenever this bundle happens to
-    // activate first. `settingsScope`, by contrast, is NOT declared here: it is
-    // an optional collaborator reached through `ctx.inject` in `apply`.
+    // activate first. `configForms`, by contrast, is NOT declared here: it is an
+    // optional collaborator reached through `ctx.inject` in `apply`, and the
+    // package declares the settings client module in `dsh.client.inject` so its
+    // factory has arrived by the time this row composes.
     exports.inject = ["locale"];
     exports.apply = apply;
     return module.exports;

@@ -1,8 +1,19 @@
 # dotdsh: `$DSH_HOME/settings.yaml` reference — a one-time manual copy; nothing
 # syncs it, and an existing settings.yaml is never overwritten.
-# Runtime settings are managed by dsh-settings-file and hot-reload. The values
-# below mirror the setup this repository is developed against: uncomment what
-# you want, drop what you do not.
+# The values below mirror the setup this repository is developed against:
+# uncomment what you want, drop what you do not.
+#
+# HOW DSH 0.2.0-rc.2 READS IT: this document is the 0.1.x user-settings file.
+# A 0.2.0-rc.2 boot imports every section into the active profile's own patch
+# ($DSH_HOME/profiles/<name>/cordis.patch.yml, each section becoming that row's
+# `config:`) and then RENAMES this file to settings.yaml.imported, so it is read
+# once and never watched again. Copying it onto a fresh machine therefore still
+# seeds the profile — but the live document is the profile's patch, which is also
+# what the Settings page writes. Three section names are remapped on the way in
+# (`ui-developer-tools` -> `ui-settings`, `ui-onboarding` -> `ui-settings-general`,
+# `shell` -> `bash-sandbox`/`pwsh-sandbox`); a section whose entry does not accept
+# form writes is logged and left behind in the renamed file only.
+#
 # Red line: never commit real credentials/secrets (apiKeyEnv stores only the
 # environment variable name, never the key itself).
 #
