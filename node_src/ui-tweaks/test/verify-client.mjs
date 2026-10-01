@@ -12,7 +12,7 @@
 // whose fake `window` captures `__ModuleLoader__.load`, calls the captured
 // `factory(require)` for the module exports, and then drives those exports' own
 // `apply(ctx)` with a fake client context (one fake `document`; a fake
-// `sessions`, `hostInfo` and settings scope; a fake `window.fetch`) and asserts
+// `sessions`, `hostInfo` and settings form; a fake `window.fetch`) and asserts
 // the three tweaks' decisions through the listeners that activation installs.
 // Because there is only one route, no second file is loaded anywhere: the
 // open-in-editor handler is proved reachable only through the module's own
@@ -26,7 +26,7 @@
 // `rev`. The Enter checks assert the shape of the synthetic event the tweak
 // re-emits, not that Lexical inserted a line break; the wording checks assert
 // what the locale wrapper returns, not that the page re-rendered the new text;
-// the settings checks publish a section into the fake scope directly, so they
+// the settings checks publish a section into the fake form directly, so they
 // prove what the page does with one, not that dsh resolved, delivered or
 // persisted it (that seam is the host half's own check, test/verify-host.mjs).
 // The open-in-editor checks dispatch hand-built click events at hand-built
@@ -59,6 +59,20 @@ check(
   [decl?.inject, decl?.external].every(
     (v) => v === undefined || (Array.isArray(v) && v.every((s) => typeof s === "string")),
   ),
+);
+// The browser half reads its section through the settings client's `configForms`
+// service. Nothing about that module is imported as a value (`require` stays
+// empty), but the boot graph needs the edge: `inject` is what makes that row's
+// factory arrive — and its service exist — before this one activates.
+check(
+  "declares the settings client module so configForms exists before this row composes",
+  Array.isArray(decl?.inject) && decl.inject.includes("@deepseek-ai/dsh-client-ui-settings"),
+  JSON.stringify(decl?.inject),
+);
+check(
+  "requests no external module value (one self-contained script)",
+  decl?.external === undefined || decl.external.length === 0,
+  JSON.stringify(decl?.external),
 );
 const clientField = pkg.exports?.["./client"];
 const clientRel =
@@ -234,19 +248,20 @@ FakeLocale.prototype.translate = function translate(ns, key) {
 const locale = new FakeLocale();
 const statusLine = () => locale.translate("chat", "chat.deepDiving");
 
-// The settings channel is an OPTIONAL cordis dependency, so the fake context
-// implements `inject(deps, callback)` beside `get`, and the scope stands in for
-// the mirror-backed per-namespace view: `value` is the resolved section the Host
-// would publish, and the listeners are what a committed change notifies.
-const scopeState = { value: undefined, listeners: [] };
-let scopeReleased = false;
-const boundNamespaces = [];
+// The settings transport is an OPTIONAL cordis dependency, so the fake context
+// implements `inject(deps, callback)` beside `get`, and the form stands in for
+// the per-entry view `configForms.get(entryId)` answers: `value` is the resolved
+// section the Host would publish, and the listeners are what a committed change
+// notifies.
+const formState = { value: undefined, listeners: [] };
+let formReleased = false;
+const requestedEntryIds = [];
 const injectedDeps = [];
 const effectLabels = [];
-const fakeScope = {
+const fakeForm = {
   getSnapshot: () => ({
-    status: scopeState.value === undefined ? "unavailable" : "ready",
-    value: scopeState.value,
+    status: formState.value === undefined ? "unavailable" : "ready",
+    value: formState.value,
     base: undefined,
     user: undefined,
     revision: 1,
@@ -254,33 +269,33 @@ const fakeScope = {
     mode: "memory",
   }),
   subscribe: (listener) => {
-    scopeState.listeners.push(listener);
+    formState.listeners.push(listener);
     return () => {
-      scopeState.listeners = scopeState.listeners.filter((entry) => entry !== listener);
-      scopeReleased = true;
+      formState.listeners = formState.listeners.filter((entry) => entry !== listener);
+      formReleased = true;
     };
   },
   set: () => Promise.resolve(),
   unset: () => Promise.resolve(),
   mutate: () => Promise.resolve(),
 };
-const settingsScope = {
-  bind: (spec) => {
-    boundNamespaces.push(spec.namespace);
-    return fakeScope;
+const configForms = {
+  get: (entryId) => {
+    requestedEntryIds.push(entryId);
+    return fakeForm;
   },
 };
-/** Publish one accepted section the way the mirror does: replace, then notify. */
+/** Publish one accepted section the way the transport does: replace, then notify. */
 const adopt = (value) => {
-  scopeState.value = value;
-  for (const listener of [...scopeState.listeners]) listener();
+  formState.value = value;
+  for (const listener of [...formState.listeners]) listener();
 };
 
 /**
  * The fake client context `apply` is driven with. `services` is what `ctx.get`
  * answers: the one `locale` service the tweaks need, plus the optional
  * `sessions`/`hostInfo` the open-in-editor handler reads. `inject` hands the
- * optional settings channel to its callback, and `effect` records every
+ * optional settings transport to its callback, and `effect` records every
  * disposer so teardown can be exercised.
  */
 const makeCtx = ({ sessions, hostInfo } = {}) => {
@@ -290,7 +305,7 @@ const makeCtx = ({ sessions, hostInfo } = {}) => {
     get: (name) => services[name],
     inject: (deps, callback) => {
       injectedDeps.push(deps);
-      callback({ get: ctx.get, effect: ctx.effect, settingsScope });
+      callback({ get: ctx.get, effect: ctx.effect, configForms });
     },
     effect: (callback, label) => {
       effectLabels.push(label);
@@ -353,11 +368,11 @@ check(
   effectLabels.includes("ui-tweaks: intercept Ctrl/Cmd+click to open a file in the editor"),
 );
 
-check("binds exactly one settings namespace", boundNamespaces.length === 1, `${boundNamespaces.length} bind(s)`);
-check("binds the ui-tweaks namespace", boundNamespaces[0] === "ui-tweaks", String(boundNamespaces[0]));
-check("reaches settings through ctx.inject, not a hard dependency", JSON.stringify(injectedDeps) === JSON.stringify([["settingsScope"]]), JSON.stringify(injectedDeps));
-check("settingsScope is not a hard inject dependency", !exportsObj.inject.includes("settingsScope"), JSON.stringify(exportsObj.inject));
-check("subscribes to the bound scope", scopeState.listeners.length === 1, `${scopeState.listeners.length} listener(s)`);
+check("asks the settings transport for exactly one entry", requestedEntryIds.length === 1, `${requestedEntryIds.length} request(s)`);
+check("asks for the ui-tweaks entry id", requestedEntryIds[0] === "ui-tweaks", String(requestedEntryIds[0]));
+check("reaches settings through ctx.inject, not a hard dependency", JSON.stringify(injectedDeps) === JSON.stringify([["configForms"]]), JSON.stringify(injectedDeps));
+check("configForms is not a hard inject dependency", !exportsObj.inject.includes("configForms"), JSON.stringify(exportsObj.inject));
+check("subscribes to the entry's form", formState.listeners.length === 1, `${formState.listeners.length} listener(s)`);
 //#endregion
 
 //#region status wording tweak (through the one locale service)
@@ -365,7 +380,7 @@ const first = statusLine();
 check("the running-turn line is reworded in a Chinese UI", typeof first === "string" && first.length > 0 && first !== shipped("chat", "chat.deepDiving"), first);
 // No section has been published yet: the reworded line above, and the Enter
 // interception the region below asserts, are the schema defaults at work.
-check("no accepted section yet, so the tweak set is on its schema defaults", scopeState.value === undefined, String(scopeState.value));
+check("no accepted section yet, so the tweak set is on its schema defaults", formState.value === undefined, String(formState.value));
 check("other chat copy passes through untouched", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
 check("other namespaces pass through untouched", locale.translate("common", "chat.deepDiving") === shipped("common", "chat.deepDiving"));
 check("the wording is stable within one run", statusLine() === first, `${statusLine()} vs ${first}`);
@@ -446,10 +461,10 @@ check("a non-Enter key is left alone", run(keydown({ key: "a", target: makeCompo
 check("an already-defaultPrevented Enter is left alone", run(keydown({ defaultPrevented: true, target: makeComposer(true) })).intercepted === false);
 //#endregion
 
-//#region settings-driven behaviour (the ui-tweaks namespace)
+//#region settings-driven behaviour (the ui-tweaks settings form)
 // The section shape is the one the node half's schema declares, and the host
 // check pins that the two halves name the same fields. What is checked here is
-// what the PAGE does with an adopted section: an edit arrives through the scope
+// what the PAGE does with an adopted section: an edit arrives through the form
 // subscription alone — no re-install, no reload — and each field switches only
 // its own tweak.
 adopt({ composerEnterNewline: false, statusWording: true, statusPhrases: [] });
@@ -482,7 +497,7 @@ check(
   shippedDraw,
 );
 
-// Blank and non-string entries are the shape a hand-edited settings.yaml really
+// Blank and non-string entries are the shape a hand-edited user layer really
 // produces; they must not enter the bank (a blank status line would read as a
 // broken page) and must not disable the tweak.
 adopt({ composerEnterNewline: true, statusWording: true, statusPhrases: ["", "   ", 42, null, "有效的一句"] });
@@ -491,7 +506,7 @@ randoms.push(0.999999);
 check("blank and non-string entries never reach the bank", statusLine() === "有效的一句", statusLine());
 
 // A section the page cannot read (an unanswered read, a hand-edit the schema
-// rejected, a namespace that went away) keeps the last accepted values.
+// rejected, an entry the Host stopped serving) keeps the last accepted values.
 adopt(undefined);
 check("an absent section keeps the Enter tweak on", run(keydown({ target: makeComposer(true) })).intercepted);
 check("an absent section keeps the wording tweak on", statusLine() !== shipped("chat", "chat.deepDiving"), statusLine());
@@ -750,7 +765,7 @@ for (const dispose of main.disposers) dispose();
 check("disposing removes the document keydown listener", listenerOn(documentRef, "keydown", true).length === 0, `${listenerOn(documentRef, "keydown", true).length} left`);
 check("disposing removes the document click listener", listenerOn(documentRef, "click", true).length === 0, `${listenerOn(documentRef, "click", true).length} left`);
 check("disposing aborts the launch signal", mainController.signal.aborted === true);
-check("disposing releases the settings subscription", scopeReleased && scopeState.listeners.length === 0, `${scopeState.listeners.length} left`);
+check("disposing releases the settings subscription", formReleased && formState.listeners.length === 0, `${formState.listeners.length} left`);
 check(
   "disposing restores the shipped wording",
   statusLine() === shipped("chat", "chat.deepDiving") && !Object.prototype.hasOwnProperty.call(locale, "translate"),

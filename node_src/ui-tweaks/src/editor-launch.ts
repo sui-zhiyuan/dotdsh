@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { delimiter, extname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { Config } from "./settings.js";
+import type { SettingsValues } from "./settings.js";
 
 /**
  * The part of `AbortSignal` this module uses, named locally because at runtime
@@ -42,7 +42,7 @@ function isAborted(signal: AbortSignalLike | undefined): boolean {
  * not read the ui-tweaks settings service itself: the route layer resolves the
  * settings once per request and passes what it read.
  */
-export interface EditorLaunchConfig extends Pick<Config, "openInVscode" | "editorCommand"> {}
+export interface EditorLaunchConfig extends Pick<SettingsValues, "openInVscode" | "editorCommand"> {}
 
 /**
  * Absolute canonical executable path of the editor command, or `undefined` when

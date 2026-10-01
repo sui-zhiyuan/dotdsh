@@ -6,8 +6,10 @@
 // this package's name, because the Web shell creates one cordis entry per
 // boot-graph id and resolves that entry through this registration. The factory
 // body is the module, `require` walks the client module graph (this tweak set
-// requires nothing, so the package declares no `dsh.client.inject`), and the
-// returned `exports` object is the cordis plugin the shell activates.
+// requires no module value, but it does declare the settings client module in
+// `dsh.client.inject` so that row composes — and its `configForms` service
+// exists — before this one activates), and the returned `exports` object is the
+// cordis plugin the shell activates.
 //
 // Why this file is hand-authored instead of bundled: it is plain JavaScript with
 // no imports and no JSX, so it needs no bundler — and unlike `lib/` (tsc output
@@ -18,19 +20,20 @@
 // restart: the client bundle is read once at boot.
 //
 // Three injection surfaces are in play, and they are easy to confuse: the
-// package's `dsh.client.inject` names the client MODULES this bundle `require`s
-// (still empty), `exports.inject` below is the CORDIS plugin's own HARD service
-// dependency (the wording tweak reads the locale service), and the
-// `ctx.inject(["settingsScope"], …)` inside `apply` is an OPTIONAL one — a page
+// package's `dsh.client.inject` names the client PACKAGE ROWS whose factories
+// must arrive first (the settings client, which provides `configForms`),
+// `exports.inject` below is the CORDIS plugin's own HARD service dependency (the
+// wording tweak reads the locale service), and the
+// `ctx.inject(["configForms"], …)` inside `apply` is an OPTIONAL one — a page
 // composed without the settings transport keeps every tweak on its defaults
 // instead of parking the whole set.
 //
-// Configuration reaches this half through a settings namespace and never through
-// the row: the node half registers `ui-tweaks` with the row's config as the
-// composition base layer (src/index.ts), this half binds a scope over that
-// namespace, and $DSH_HOME/settings.yaml is the user layer on top of it. Until
-// the first accepted section arrives — and forever without a settings provider —
-// the `settings` object below carries the schema's own defaults.
+// Configuration reaches this half through the settings form and never through the
+// row: the node half's `Config` schema is volatile (src/settings.ts), which is
+// what the settings domain exposes under this entry's Loader id `ui-tweaks`, and
+// this half asks the client transport for that same id. Until the first accepted
+// section arrives — and forever without a settings domain — the `settings` object
+// below carries the schema's own defaults.
 // WHY ONE FILE: dsh exposes exactly ONE browser half per package, through the
 // combo route for `exports["./client"]`. A second file in the package has no
 // route at all — a sibling `<script src>` 404s, and the tweak then silently does
@@ -45,9 +48,9 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
     /**
-     * Settings namespace this package owns. The node half registers the same
-     * name (src/index.ts), and it is the only channel through which the row's
-     * config can reach this file.
+     * Settings entry id this package reads. It is the `ui-tweaks` row's Loader
+     * id — the id the node half's volatile `Config` is exposed under — and it is
+     * the only channel through which the row's config can reach this file.
      */
     const SETTINGS_NAMESPACE = "ui-tweaks";
 
@@ -55,7 +58,7 @@ window.__ModuleLoader__.load({
      * The section the tweaks act on, seeded with the defaults the node half's
      * schema also declares — keep the two in step. A page cannot read the row's
      * config, so these values are what it uses until the first accepted settings
-     * section arrives, and forever in a composition with no settings provider.
+     * section arrives, and forever in a composition with no settings domain.
      *
      * `openInVscode`/`editorCommand` are deliberately absent: those two are
      * enforced by the host route, which is the only side that can act on them, so
@@ -307,24 +310,27 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Bind the `ui-tweaks` settings namespace when this page has a settings
+     * Bind the `ui-tweaks` settings form when this page has the settings
      * transport. Optional on purpose: the tweaks are independent of the settings
      * domain, so a page composed without it keeps its defaults and every tweak
      * instead of parking the whole set.
      *
-     * The scope derives from the settings mirror the client's one
-     * `settings.describe` reader fills, and the subscription lives on the child
-     * fiber `ctx.inject` hands the callback — so unloading the row releases both
-     * the subscription and the adopted values' source.
+     * `configForms` is the dsh 0.2.0-rc.2 client transport (`settingsScope` is
+     * gone): `get(entryId)` answers the form for one Host entry, and that entry
+     * id is the patch row's `id` — the same string the node half's volatile
+     * `Config` is exposed under, which is why `SETTINGS_NAMESPACE` still names it.
+     * The snapshot carries the RESOLVED section, and the subscription lives on the
+     * child fiber `ctx.inject` hands the callback — so unloading the row releases
+     * both the subscription and the adopted values' source.
      * @param ctx - Client root context.
      */
     function bindSettings(ctx) {
-      ctx.inject(["settingsScope"], (scopeCtx) => {
-        const scope = scopeCtx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE });
-        scopeCtx.effect(() => {
-          adoptSettings(scope.getSnapshot().value);
-          return scope.subscribe(() => {
-            adoptSettings(scope.getSnapshot().value);
+      ctx.inject(["configForms"], (formsCtx) => {
+        const form = formsCtx.configForms.get(SETTINGS_NAMESPACE);
+        formsCtx.effect(() => {
+          adoptSettings(form.getSnapshot().value);
+          return form.subscribe(() => {
+            adoptSettings(form.getSnapshot().value);
           });
         }, "ui-tweaks: adopt the ui-tweaks settings section");
       });
@@ -973,8 +979,10 @@ window.__ModuleLoader__.load({
     // rather than racing it at boot. `dsh-client-locale` is part of the Web app's
     // own module set, so this parks nothing in practice; the alternative — a bare
     // `ctx.get("locale")` — would silently no-op whenever this bundle happens to
-    // activate first. `settingsScope`, by contrast, is NOT declared here: it is
-    // an optional collaborator reached through `ctx.inject` in `apply`.
+    // activate first. `configForms`, by contrast, is NOT declared here: it is an
+    // optional collaborator reached through `ctx.inject` in `apply`, and the
+    // package declares the settings client module in `dsh.client.inject` so its
+    // factory has arrived by the time this row composes.
     exports.inject = ["locale"];
     exports.apply = apply;
     return module.exports;

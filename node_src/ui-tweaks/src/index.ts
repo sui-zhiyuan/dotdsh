@@ -9,27 +9,33 @@
 // cannot live in a page: opening a clicked file in a local editor. A browser half
 // cannot read its row's `config` (the boot graph carries id/url/rev/inject/
 // external/immediately and no config), so the two halves meet on the one channel
-// that does reach a page: a settings namespace. `apply` registers `ui-tweaks`
-// with the row's config as the composition `base` layer, the browser half binds a
-// scope over that namespace, and the RESOLVED section — that base under the user
-// layer of $DSH_HOME/settings.yaml — is what the tweaks read:
+// that does reach a page: the settings form. Every field of this row's `Config`
+// schema is `.volatile()`, which is what the settings domain reads to expose the
+// entry under its Loader id, and the browser half asks the client settings
+// transport for that same id. The RESOLVED section — schema default under this
+// row's `config` under the user layer — is what the tweaks read:
 //
-//   ui-tweaks:
-//     composerEnterNewline: true
-//     statusWording: true
-//     statusPhrases: ["自定义一句"]
-//     openInVscode: true
-//     editorCommand: code
+//   # $DSH_HOME/profiles/<name>/cordis.patch.yml, the user layer, written by the
+//   # Settings page (or by hand); the row's own `config` in the bundle patch is
+//   # the layer underneath it.
+//   - id: ui-tweaks
+//     config:
+//       composerEnterNewline: true
+//       statusWording: true
+//       statusPhrases: ["自定义一句"]
+//       openInVscode: true
+//       editorCommand: code
 //
-// The settings file provider watches its document, so such an edit reaches the
-// page without a restart. Without a provider nothing is registered and the
-// browser half keeps the same defaults this schema declares.
+// The settings domain hands this half one live reference per field, so an edit
+// reaches a page (and the routes below) without a restart. A composition with no
+// settings domain still mounts the row: the references then answer the schema
+// defaults, and the browser half keeps its own copy of the page-owned defaults.
 //
 // The open-in-editor routes are the exception to "the page owns its tweak": a
 // browser half cannot spawn a process, so this half serves two web routes and the
 // page asks them whether a Ctrl/Cmd+click is interceptable at all. Those routes
-// read the SAME settings namespace, so the switch and the command have exactly
-// one definition.
+// read the SAME live references, so the switch and the command have exactly one
+// definition.
 //
 // Layers, and which may import which: this file wires; `open-in-vscode.ts` owns
 // the wire contract, the security fence and the routes and imports
@@ -38,11 +44,8 @@
 // `settings.ts` is pure data. No lower layer may import a higher one.
 
 import type { Context } from "@deepseek-ai/cordis";
-// Type-only, and deliberately value-free: `@deepseek-ai/dsh-settings` is what
-// declares `Context.settings`, and the service itself arrives through `inject`.
-import type {} from "@deepseek-ai/dsh-settings";
 import { openInEditorRoutes } from "./open-in-vscode.js";
-import { Config, SETTINGS_NAMESPACE } from "./settings.js";
+import type { Config } from "./settings.js";
 
 // cordis plugin: the name follows dsh's convention (package name minus scope and
 // prefix: @dsh-external/dotdsh-ui-tweaks → ui-tweaks).
@@ -50,8 +53,9 @@ export const name = "ui-tweaks";
 
 // The route carrier and the trust fence, as hard dependencies: a composition that
 // cannot serve routes cannot serve this browser half's requests either, so
-// parking the row until they arrive is the honest outcome. The settings service,
-// by contrast, stays optional (see `apply`).
+// parking the row until they arrive is the honest outcome. The settings domain is
+// no longer a dependency at all — the form is this entry's own schema, read by
+// the domain, and the live field references arrive as `config`.
 export const inject = ["webServer", "connection"];
 
 export { Config, SETTINGS_NAMESPACE } from "./settings.js";
@@ -65,41 +69,19 @@ export type {
 } from "./open-in-vscode.js";
 
 /**
- * Register the `ui-tweaks` settings namespace and the open-in-editor routes.
+ * Register the open-in-editor routes.
  *
- * The namespace registration goes through `ctx.inject` rather than a plugin-level
- * `inject`: the settings service is optional here, and a composition without a
- * provider must still mount this row (the browser half then runs on its own
- * defaults, and the routes read the schema defaults for their two fields).
- * Registration is an effect of the calling fiber, so unloading the row withdraws
- * the namespace again.
+ * There is nothing else to wire: the settings form is this entry's own `Config`
+ * schema, which the settings domain reads straight off the Loader entry because
+ * every field is `.volatile()` (see `settings.ts`). No registration call, no
+ * optional settings dependency, and nothing here to fail when a user layer does
+ * not fit the schema — a value the schema rejects never reaches the plugin, and
+ * the field falls back to the layer below it.
  *
- * The guard around the registration is the reason the raw service call is still
- * here rather than inside a helper: a stored section the schema rejects makes
- * `register` throw, throttling the whole namespace if it is allowed to reach the
- * boot — this catches it, and the page's defaults are what a broken document
- * gets.
- * @param ctx - Host context whose optional settings service owns the namespace.
- * @param config - this row's config, resolved through {@link Config}.
+ * @param ctx - host context carrying `webServer` and `connection`.
+ * @param config - this row's config: one live reference per field.
  */
 export function apply(ctx: Context, config: Config): void {
-  ctx.inject(["settings"], (settingsCtx) => {
-    try {
-      settingsCtx.settings.register(SETTINGS_NAMESPACE, Config, { base: config });
-    } catch (error) {
-      // A stored section the schema rejects rejects the registration itself, and
-      // the namespace then stays unregistered for the whole boot: the browser
-      // half falls back to its defaults and nothing reaches the page to say why.
-      // Report it through the logger the settings service itself uses, so a typo
-      // in settings.yaml is at least diagnosable rather than looking like
-      // switches that do nothing.
-      settingsCtx.logger.warn(
-        `ui-tweaks: settings namespace "${SETTINGS_NAMESPACE}" was not registered (${
-          error instanceof Error ? error.message : String(error)
-        }); the browser half runs on its schema defaults until the document is fixed and dsh restarts`,
-      );
-    }
-  });
   ctx.effect(
     () => openInEditorRoutes(ctx, config),
     "ui-tweaks: register the open-in-editor routes",
