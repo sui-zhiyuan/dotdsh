@@ -44,9 +44,6 @@ importers:
       '@dsh-external/dotdsh-git-flow':
         specifier: workspace:*
         version: link:../git-flow
-      '@dsh-external/dotdsh-hello-world':
-        specifier: workspace:*
-        version: link:../hello-world
       '@dsh-external/dotdsh-lazy-ssh':
         specifier: workspace:*
         version: link:../lazy-ssh
@@ -81,22 +78,6 @@ importers:
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-
-  node_src/hello-world:
-    dependencies:
-      '@deepseek-ai/cordis':
-        specifier: ~4.0.4
-        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
-      '@deepseek-ai/dsh-tools':
-        specifier: 0.2.0-rc.2
-        version: 0.2.0-rc.2(c6e351a6a6cfd1c2a664558bffcd410d)
-      '@deepseek-ai/schemastery':
-        specifier: ~3.18.4
-        version: 3.18.4
-    devDependencies:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

@@ -8,7 +8,7 @@
 
 | Path | Role |
 |---|---|
-| `node_src/<id>/` | One plugin package per directory. Single-face: TypeScript `src/` built to gitignored `lib/` (`hello-world`). Dual-face (also declares `dsh.client`): the same node half plus a committed, hand-authored browser half at `client/index.js` (`ui-tweaks`) |
+| `node_src/<id>/` | One plugin package per directory. Single-face: TypeScript `src/` built to gitignored `lib/` (`lazy-ssh`). Dual-face (also declares `dsh.client`): the same node half plus a committed, hand-authored browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | The `@dsh-external/dotdsh` bundle: its `cordis.patch.yml` holds every plugin row, and its `dependencies` (`workspace:*`) name every plugin package |
 | `py_src/dev-apply/` | uv workspace member: the `dev_apply` CLI (`uv run python -m dev_apply`) |
 | `dsh_home/` | `settings.yaml` reference template (one-time manual copy; dsh 0.2.0-rc.2 imports it into the active profile's patch once and renames it — see the settings note under *ui-tweaks*) |
@@ -18,7 +18,6 @@
 
 | Package | Row id | What it does |
 |---|---|---|
-| `@dsh-external/dotdsh-hello-world` | `hello-world` | The example plugin: registers the `hello_world` tool, driven by its row's `config.greeting` |
 | `@dsh-external/dotdsh-ui-tweaks` | `ui-tweaks` | One home for small browser-side behaviour changes, so each tweak does not become its own package. Today: `composer-enter-newline` — bare <kbd>Enter</kbd> breaks the line in the composer, <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> sends; `llm-status-wording` — while a turn runs, the Chinese status line above the composer shows a randomly drawn DeepSeek-meme phrase; `open-in-editor` — <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+click on a file in the produced-files row or the sidebar tree opens it in the configured editor (VS Code by default, at the clicked line when the surface knows one). All are switchable per machine, and the phrase bank is extendable, through the `ui-tweaks` settings form — the Settings page, or a `config:` block on this row in the profile's own patch: `composerEnterNewline`, `statusWording`, `statusPhrases`, `openInVscode`, `editorCommand` |
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a guard that refuses an edit landing outside the tree the session's family claimed and puts a model's `git_complete` to the human for approval, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0) |
 | `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |

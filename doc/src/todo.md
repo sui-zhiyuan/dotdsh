@@ -44,11 +44,12 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   lives at most the timeout plus 30s, and a call in flight keeps its connection until that command
   ends — the keeper design that would close that window, and what it would cost, is recorded in
   the module
-- [ ] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation
-  bundle to de-fragment micro-features). Started: `ui-tweaks` is the first real plugin — and the
+- [x] Replace `hello-world` with real plugins (per the original goal: a tool-aggregation
+  bundle to de-fragment micro-features). `ui-tweaks` was the first real plugin — and the
   first dual-face one, so it also established the browser-half conventions in
-  [Design decisions](./design.md); `hello-world` now earns its place as the node-only example
-  until a real node-side plugin replaces it
+  [Design decisions](./design.md) — and `git-flow`, `lazy-ssh` and `copilot-auth` followed on the
+  node side. The example package has now been deleted outright, with its row and its
+  `workspace:*` edge, rather than kept as a museum piece
 - [x] Give a browser half a committed test. It ran from gitignored `target/node/`, so a clean
   checkout had nothing guarding `client/index.js` — and a browser half has no `tsc` pass to catch
   a mistake either. It now lives at `node_src/ui-tweaks/test/verify-client.mjs` (run by `pnpm test`),

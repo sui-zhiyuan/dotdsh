@@ -9,7 +9,6 @@
   "dependencies": {
     "@dsh-external/dotdsh-copilot-auth": "workspace:*",
     "@dsh-external/dotdsh-git-flow": "workspace:*",
-    "@dsh-external/dotdsh-hello-world": "workspace:*",
     "@dsh-external/dotdsh-lazy-ssh": "workspace:*",
     "@dsh-external/dotdsh-ui-tweaks": "workspace:*"
   },
