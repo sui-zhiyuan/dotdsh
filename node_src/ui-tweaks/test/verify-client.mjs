@@ -242,11 +242,22 @@ function FakeLocale() {}
 FakeLocale.prototype.getSnapshot = function getSnapshot() {
   return { active: localeState.active, locales: [], revision: 0 };
 };
-FakeLocale.prototype.translate = function translate(ns, key) {
+// The status line has TWO shipped templates, and this tweak's whole job is to sit
+// between them: `chat.deepDiving` is the bare wording (also the copy the
+// visually-hidden live region carries) and `chat.deepDivingFor` appends the
+// elapsed time. Modelling both is what makes the regression that broke this tweak
+// visible — dsh 0.2.0-rc.2 moved the VISIBLE label to the longer key, and a check
+// that only asked the bare one stayed green while the line on screen was dsh's.
+const SHIPPED_STATUS = "深度求索中";
+const shippedStatusFor = (duration) => `${SHIPPED_STATUS}，用时 ${duration} ···`;
+FakeLocale.prototype.translate = function translate(ns, key, params) {
+  if (ns === "chat" && key === "chat.deepDiving") return SHIPPED_STATUS;
+  if (ns === "chat" && key === "chat.deepDivingFor") return shippedStatusFor(params?.duration ?? "");
   return shipped(ns, key);
 };
 const locale = new FakeLocale();
 const statusLine = () => locale.translate("chat", "chat.deepDiving");
+const statusLabel = () => locale.translate("chat", "chat.deepDivingFor", { duration: "1 秒" });
 
 // The settings transport is an OPTIONAL cordis dependency, so the fake context
 // implements `inject(deps, callback)` beside `get`, and the form stands in for
@@ -377,24 +388,44 @@ check("subscribes to the entry's form", formState.listeners.length === 1, `${for
 
 //#region status wording tweak (through the one locale service)
 const first = statusLine();
-check("the running-turn line is reworded in a Chinese UI", typeof first === "string" && first.length > 0 && first !== shipped("chat", "chat.deepDiving"), first);
+check("the running-turn line is reworded in a Chinese UI", typeof first === "string" && first.length > 0 && first !== SHIPPED_STATUS, first);
 // No section has been published yet: the reworded line above, and the Enter
 // interception the region below asserts, are the schema defaults at work.
 check("no accepted section yet, so the tweak set is on its schema defaults", formState.value === undefined, String(formState.value));
 check("other chat copy passes through untouched", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
 check("other namespaces pass through untouched", locale.translate("common", "chat.deepDiving") === shipped("common", "chat.deepDiving"));
 check("the wording is stable within one run", statusLine() === first, `${statusLine()} vs ${first}`);
+// The line the user actually reads is the ELAPSED-TIME variant, and dsh moved it
+// to its own key. Both seats must carry the same drawn wording, with everything
+// the shipped template appends — the timer, its punctuation — kept verbatim.
+check(
+  "the visible elapsed-time line is reworded too",
+  statusLabel() !== shippedStatusFor("1 秒") && statusLabel().startsWith(first),
+  `${statusLabel()} vs ${shippedStatusFor("1 秒")}`,
+);
+check(
+  "the visible line keeps dsh's elapsed time after the drawn wording",
+  statusLabel().endsWith("，用时 1 秒 ···") && statusLabel() === `${first}，用时 1 秒 ···`,
+  statusLabel(),
+);
+check(
+  "both status seats are answered with the same phrase in one render",
+  statusLine() === first && statusLabel().startsWith(first),
+  `${statusLine()} / ${statusLabel()}`,
+);
 fakeNow += 3_000;
 randoms.push(0);
 const second = statusLine();
-check("a new run draws again", second !== shipped("chat", "chat.deepDiving") && second.length > 0, second);
+check("a new run draws again", second !== SHIPPED_STATUS && second.length > 0, second);
 check("a new run does not repeat the previous wording", second !== first, `${second} vs ${first}`);
 localeState.active = "en";
-check("an English UI keeps the shipped wording", statusLine() === shipped("chat", "chat.deepDiving"), statusLine());
+check("an English UI keeps the shipped wording", statusLine() === SHIPPED_STATUS, statusLine());
+check("an English UI keeps the shipped elapsed-time line", statusLabel() === shippedStatusFor("1 秒"), statusLabel());
 localeState.active = "zh-CN";
 fakeNow += 3_000;
 randoms.push(0);
-check("a regional Chinese locale is still reworded", statusLine() !== shipped("chat", "chat.deepDiving"));
+check("a regional Chinese locale is still reworded", statusLine() !== SHIPPED_STATUS);
+check("a regional Chinese locale rewords the visible line too", statusLabel() !== shippedStatusFor("1 秒"), statusLabel());
 localeState.active = "zh";
 //#endregion
 
@@ -472,7 +503,12 @@ check("composerEnterNewline: false leaves bare Enter to the shipped keymap", run
 check("composerEnterNewline: false still lets Ctrl+Enter through", run(keydown({ ctrlKey: true, target: makeComposer(true) })).intercepted === false);
 
 adopt({ composerEnterNewline: true, statusWording: false, statusPhrases: [] });
-check("statusWording: false restores the shipped running-turn copy", statusLine() === shipped("chat", "chat.deepDiving"), statusLine());
+check("statusWording: false restores the shipped running-turn copy", statusLine() === SHIPPED_STATUS, statusLine());
+check(
+  "statusWording: false restores the shipped elapsed-time line too",
+  statusLabel() === shippedStatusFor("1 秒"),
+  statusLabel(),
+);
 check("statusWording: false leaves other chat copy alone", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
 check("composerEnterNewline: true comes back without a re-install", run(keydown({ target: makeComposer(true) })).intercepted);
 check("the page still carries one keydown listener", listenerOn(documentRef, "keydown", true).length === 1, `${listenerOn(documentRef, "keydown", true).length} left`);
@@ -493,7 +529,7 @@ randoms.push(0);
 const shippedDraw = statusLine();
 check(
   "the shipped phrases are still in the bank",
-  shippedDraw !== "自定义乙" && shippedDraw !== shipped("chat", "chat.deepDiving") && shippedDraw.length > 0,
+  shippedDraw !== "自定义乙" && shippedDraw !== SHIPPED_STATUS && shippedDraw.length > 0,
   shippedDraw,
 );
 
@@ -509,7 +545,8 @@ check("blank and non-string entries never reach the bank", statusLine() === "有
 // rejected, an entry the Host stopped serving) keeps the last accepted values.
 adopt(undefined);
 check("an absent section keeps the Enter tweak on", run(keydown({ target: makeComposer(true) })).intercepted);
-check("an absent section keeps the wording tweak on", statusLine() !== shipped("chat", "chat.deepDiving"), statusLine());
+check("an absent section keeps the wording tweak on", statusLine() !== SHIPPED_STATUS, statusLine());
+check("an absent section keeps the visible line reworded", statusLabel() !== shippedStatusFor("1 秒"), statusLabel());
 adopt("not a section");
 check("a malformed section keeps the adopted values", run(keydown({ target: makeComposer(true) })).intercepted);
 //#endregion
@@ -768,8 +805,9 @@ check("disposing aborts the launch signal", mainController.signal.aborted === tr
 check("disposing releases the settings subscription", formReleased && formState.listeners.length === 0, `${formState.listeners.length} left`);
 check(
   "disposing restores the shipped wording",
-  statusLine() === shipped("chat", "chat.deepDiving") && !Object.prototype.hasOwnProperty.call(locale, "translate"),
-  statusLine(),
+  statusLine() === SHIPPED_STATUS && statusLabel() === shippedStatusFor("1 秒") &&
+    !Object.prototype.hasOwnProperty.call(locale, "translate"),
+  `${statusLine()} / ${statusLabel()}`,
 );
 //#endregion
 

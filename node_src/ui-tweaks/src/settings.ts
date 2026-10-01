@@ -54,8 +54,11 @@ export interface SettingsValues {
   composerEnterNewline: boolean;
   /**
    * While a turn runs, the Chinese chat status line shows a randomly drawn
-   * phrase instead of the shipped "深度求索中...". The shipped bank is Chinese,
-   * so an English UI keeps its own copy either way.
+   * phrase instead of the shipped "深度求索中...". A running line that appends the
+   * elapsed time keeps that part ("…，用时 3 秒 ···"), so only the wording ahead of
+   * it changes and the timer, the shimmer and the whale tail stay as dsh ships
+   * them. The shipped bank is Chinese, so an English UI keeps its own copy either
+   * way.
    */
   statusWording: boolean;
   /**

@@ -150,9 +150,19 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** Namespace and key of the chat status line ("深度求索中..." / "Deep diving..."). */
+    /**
+     * Namespace and keys of the chat status line. `chat.deepDiving` is the plain
+     * wording, and it is also what the visually-hidden `role="status"` span
+     * carries for screen readers; `chat.deepDivingFor` is the same sentence with
+     * the elapsed time appended ("深度求索中，用时 {duration} ···"), and since dsh
+     * 0.2.0-rc.2 it is what the VISIBLE shimmer label renders as soon as the turn
+     * has a start time. A tweak that rewrote only the first key therefore looked
+     * installed and stayed invisible: it reworded the aria-live copy while the
+     * line on screen kept dsh's own sentence.
+     */
     const STATUS_NS = "chat";
     const STATUS_KEY = "chat.deepDiving";
+    const STATUS_KEY_FOR = "chat.deepDivingFor";
 
     /**
      * Wording the running-turn status line may show instead of the shipped string,
@@ -201,12 +211,14 @@ window.__ModuleLoader__.load({
     /**
      * How long the status line must stay unread before the wording is re-drawn.
      *
-     * `TurnStatus` renders `t("chat.deepDiving")` on every render and ticks its
-     * elapsed clock once a second while a turn runs, so a gap longer than this IS
-     * the end of the previous run: drawing per call instead would flicker through
-     * the whole list once per second, and drawing once at install would freeze the
-     * wording for the life of the page. (A backgrounded tab throttles that
-     * interval and can re-draw mid-run — cosmetic only.)
+     * `RunningStatus` (dsh-client-ui-chat) asks for both keys on every render and
+     * ticks its elapsed clock once a second while a turn runs, so a gap longer
+     * than this IS the end of the previous run: drawing per call instead would
+     * flicker through the whole list once per second, and drawing once at install
+     * would freeze the wording for the life of the page. Both keys are asked
+     * inside one render, so the shared window is also what keeps the visible line
+     * and the screen-reader copy on the SAME phrase. (A backgrounded tab throttles
+     * that interval and can re-draw mid-run — cosmetic only.)
      */
     const STATUS_REROLL_MS = 2500;
 
@@ -264,6 +276,11 @@ window.__ModuleLoader__.load({
      * it (the line then simply keeps its shipped wording). It stays installed
      * while the settings section has the tweak off and forwards every call
      * untouched, so toggling the switch never re-installs the shadow.
+     *
+     * Both status keys are answered with the SAME drawn phrase, and the
+     * elapsed-time variant keeps everything the shipped template puts after its
+     * base wording — so the running line's timer, its shimmer and the whale tail
+     * beside it are untouched. This tweak changes the words, not the decoration.
      * @param ctx - Client root context.
      * @returns the disposer restoring the shipped wording.
      */
@@ -274,13 +291,25 @@ window.__ModuleLoader__.load({
       let phrase = "";
       let lastSeenAt = 0;
       locale.translate = function (ns, key, params) {
-        if (ns !== STATUS_NS || key !== STATUS_KEY || !settings.statusWording || !isChineseLocale(locale)) {
+        const isStatus = ns === STATUS_NS && (key === STATUS_KEY || key === STATUS_KEY_FOR);
+        if (!isStatus || !settings.statusWording || !isChineseLocale(locale)) {
           return original.call(this, ns, key, params);
         }
         const now = Date.now();
         if (now - lastSeenAt > STATUS_REROLL_MS) phrase = nextStatusPhrase(phrase);
         lastSeenAt = now;
-        return phrase;
+        if (key === STATUS_KEY) return phrase;
+        // The running line's longer template appends the elapsed time after the
+        // shipped wording, so the draw replaces only the wording AHEAD of that
+        // suffix and the clock keeps ticking. The seam is composed from the
+        // shipped dictionary rather than hardcoded: the base wording is whatever
+        // `chat.deepDiving` answers, and everything the longer template puts after
+        // it is kept verbatim. A dsh that stops building one from the other falls
+        // back to the bare phrase — the timer is gone then, but the wording, which
+        // is what this tweak is for, is still in place.
+        const full = original.call(this, ns, key, params);
+        const base = original.call(this, ns, STATUS_KEY);
+        return full.startsWith(base) ? phrase + full.slice(base.length) : phrase;
       };
       return () => {
         delete locale.translate;
