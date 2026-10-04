@@ -29,3 +29,26 @@ dsh_home/.env.*
 dsh_home/cordis.yml
 dsh_home/node_modules/
 dsh_home/sessions/
+
+# JetBrains IDEs (PyCharm): ignore .idea by default and version only what
+# describes the project rather than this machine. Left out on purpose are
+# workspace.xml, the local history and caches, the .iml/modules.xml pair the
+# Python plugin rebuilds from pyproject.toml, and misc.xml / runConfigurations/
+# (a uv-managed interpreter regenerates the name those hold).
+#
+# `.idea/*`, not `.idea/`: git cannot re-include a path below an excluded
+# directory, so the directory stays traversable and each allow-list entry
+# re-opens a file or directory that the IDE may write later.
+.idea/*
+!.idea/vcs.xml
+!.idea/encodings.xml
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
+!.idea/fileTemplates/
+!.idea/copyright/
+!.idea/scopes/
+!.idea/externalDependencies.xml
+
+# Legacy file-based project format; `.iws` is per-user by definition.
+*.iws
+*.ipr
