@@ -1,28 +1,22 @@
 # Build artifacts: all project output goes into target/<language>/
 target/
 
-# Dependencies and runtime artifacts
+# Dependencies and build output: the pnpm project-local store, and each package's
+# lib/ compiled from src/*.ts (rebuilt by dev_apply / prepublishOnly).
 node_modules/
 __pycache__/
 .venv/
-# pnpm project-local store (created by `dsh plugin install` runs)
 .pnpm-store/
-# Package build output (compiled from src/*.ts; rebuilt by `dev_apply` / prepublishOnly)
 node_src/**/lib/
 *.log
 .DS_Store
 
-# Where the git-flow plugin keeps its state in a repository: the claim file that
-# records which working tree a session writes in, and the linked worktrees of the
-# families that had to move out of the main checkout. Absolute paths on this
-# machine, never repository content. The plugin deliberately adds no rule of its
-# own (see README, "`.dsh.local`"), so this is the one-time addition per
-# repository that note leaves to whoever runs it.
+# git-flow state in this repository: the claim file and the linked worktrees,
+# all machine-local absolute paths (see README, "`.dsh.local`").
 .dsh.local/
 
-# dsh_home/ carries the settings.yaml reference template and nothing else:
-# credentials, runtime state, and the generated boot file must never land here
-# (AGENTS.md red lines), so ignore them even if something writes them.
+# dsh_home/ holds only the settings.yaml template; credentials, sessions and the
+# generated cordis.yml must never be committed (AGENTS.md red lines).
 dsh_home/.credentials.yaml
 dsh_home/.env
 dsh_home/.env.*
