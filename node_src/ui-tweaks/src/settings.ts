@@ -1,11 +1,10 @@
 // The ui-tweaks settings contract: the row schema whose volatile fields the
 // settings domain exposes as the `ui-tweaks` form, and the plain value shape the
-// route layer reads out of it.
+// browser half's accepted section mirrors.
 //
 // Layer: pure data. It imports the schema library and the cordis `Volatile`
-// reference type and nothing else, so the route layer, the launcher and the
-// plugin wiring can all describe their required configuration in terms of
-// {@link Config} without depending on each other.
+// reference type and nothing else, so any module can describe the configuration
+// it reads in terms of {@link Config} without depending on the plugin wiring.
 //
 // ## Where a plugin's settings come from
 //
@@ -37,10 +36,8 @@ export const SETTINGS_NAMESPACE = "ui-tweaks";
  * The resolved values the tweak set acts on: what a volatile reference's `get()`
  * answers, and the shape the browser half validates an accepted section against.
  *
- * `openInVscode` and `editorCommand` are deliberately not mirrored by the page's
- * own settings seed: they are enforced by the host routes, which are the only
- * side that can act on them, so a page copy could only disagree with the
- * authority. `test/verify-host.mjs` pins which fields each side reads.
+ * Every field is read by the page, so the browser half's own settings seed
+ * mirrors all three. `test/verify-host.mjs` pins which fields each side reads.
  */
 export interface SettingsValues {
   /**
@@ -62,19 +59,6 @@ export interface SettingsValues {
    * as the built-ins. Blank entries are dropped by the page that reads them.
    */
   statusPhrases: string[];
-  /**
-   * Ctrl/Cmd+click on a workspace file opens it in the configured editor instead
-   * of in dsh's own preview. Off leaves every click to dsh.
-   */
-  openInVscode: boolean;
-  /**
-   * The editor's command: ONE bare name resolved on the host's PATH (`code`) or
-   * ONE absolute executable path. Not a command line — arguments are this
-   * package's business, and accepting spaces would turn a typo into a silently
-   * truncated path. The WSL launcher that ships with VS Code (`.../bin/code`) is
-   * a shell script, so a bare name is the normal setting, not a limitation.
-   */
-  editorCommand: string;
 }
 
 /**
@@ -82,15 +66,13 @@ export interface SettingsValues {
  *
  * The references are stable for the life of the row — the settings domain
  * updates them in place rather than re-applying the plugin — so a handler that
- * needs the current value calls `get()` where it needs it (per request, per
- * click) instead of capturing a value at registration time.
+ * needs the current value calls `get()` where it needs it (per call) instead of
+ * capturing a value at registration time.
  */
 export interface Config {
   composerEnterNewline: Volatile<boolean>;
   statusWording: Volatile<boolean>;
   statusPhrases: Volatile<string[]>;
-  openInVscode: Volatile<boolean>;
-  editorCommand: Volatile<string>;
 }
 
 /**
@@ -102,13 +84,11 @@ export interface Config {
  * Every field is `.volatile()`, which is what puts it on the settings form and
  * what makes the value the plugin reads follow an edit without a restart. Its
  * serialized form is also the wire envelope the browser half's section is
- * validated against, which is why the browser half's seed mirrors the three
- * page-owned defaults below (see the note on {@link SettingsValues}).
+ * validated against, which is why the browser half's seed mirrors the defaults
+ * below (see the note on {@link SettingsValues}).
  */
 export const Config = z.object({
   composerEnterNewline: z.boolean().default(true).volatile(),
   statusWording: z.boolean().default(true).volatile(),
   statusPhrases: z.array(z.string()).default([]).volatile(),
-  openInVscode: z.boolean().default(true).volatile(),
-  editorCommand: z.string().default("code").volatile(),
 });

@@ -5,8 +5,7 @@
 // makes dsh's client-modules scan pick the package up among the active Loader
 // entries and add its browser half to the boot graph.
 //
-// What this half owns is the tweak set's configuration and the one tweak that
-// cannot live in a page: opening a clicked file in a local editor. A browser half
+// This half owns exactly one thing: the tweak set's configuration. A browser half
 // cannot read its row's `config` (the boot graph carries id/url/rev/inject/
 // external/immediately and no config), so the two halves meet on the one channel
 // that does reach a page: the settings form. Every field of this row's `Config`
@@ -23,55 +22,29 @@
 //       composerEnterNewline: true
 //       statusWording: true
 //       statusPhrases: ["自定义一句"]
-//       openInVscode: true
-//       editorCommand: code
 //
 // The settings domain hands this half one live reference per field, so an edit
-// reaches a page (and the routes below) without a restart. A composition with no
-// settings domain still mounts the row: the references then answer the schema
-// defaults, and the browser half keeps its own copy of the page-owned defaults.
+// reaches a page without a restart. A composition with no settings domain still
+// mounts the row: the references then answer the schema defaults, and the
+// browser half keeps its own copy of the page-owned defaults.
 //
-// The open-in-editor routes are the exception to "the page owns its tweak": a
-// browser half cannot spawn a process, so this half serves two web routes and the
-// page asks them whether a Ctrl/Cmd+click is interceptable at all. Those routes
-// read the SAME live references, so the switch and the command have exactly one
-// definition.
-//
-// Layers, and which may import which: this file wires; `open-in-vscode.ts` owns
-// the wire contract, the security fence and the routes and imports
-// `editor-launch.ts` and `settings.ts`; `editor-launch.ts` owns the
-// filesystem/process work and imports only the configuration type;
-// `settings.ts` is pure data. No lower layer may import a higher one.
+// Layers: this file wires; `settings.ts` is pure data. No lower layer may import
+// a higher one.
 
 import type { Context } from "@deepseek-ai/cordis";
-import { openInEditorRoutes } from "./open-in-vscode.js";
 import type { Config } from "./settings.js";
 
 // cordis plugin: the name follows dsh's convention (package name minus scope and
 // prefix: @dsh-external/dotdsh-ui-tweaks → ui-tweaks).
 export const name = "ui-tweaks";
 
-// The route carrier and the trust fence, as hard dependencies: a composition that
-// cannot serve routes cannot serve this browser half's requests either, so
-// parking the row until they arrive is the honest outcome. The settings domain is
-// no longer a dependency at all — the form is this entry's own schema, read by
-// the domain, and the live field references arrive as `config`.
-export const inject = ["webServer", "connection"];
-
 export { Config, SETTINGS_NAMESPACE } from "./settings.js";
 export type { Config as UiTweaksConfig } from "./settings.js";
-export type { EditorLaunchFailure, EditorLaunchResult } from "./editor-launch.js";
-export type {
-  OpenInEditorFailureResp,
-  OpenInEditorLaunchReq,
-  OpenInEditorLaunchedResp,
-  OpenInEditorStatusResp,
-} from "./open-in-vscode.js";
 
 /**
- * Register the open-in-editor routes.
+ * Mount the row.
  *
- * There is nothing else to wire: the settings form is this entry's own `Config`
+ * There is nothing to wire: the settings form is this entry's own `Config`
  * schema, which the settings domain reads straight off the Loader entry because
  * every field is `.volatile()` (see `settings.ts`). Nothing here has to cope with
  * a user layer that does not fit it either — a value the schema rejects never
@@ -79,12 +52,7 @@ export type {
  * fails this row at boot with the field named rather than leaving a switch that
  * looks set.
  *
- * @param ctx - host context carrying `webServer` and `connection`.
- * @param config - this row's config: one live reference per field.
+ * @param _ctx - host context; unused, because this half needs no host service.
+ * @param _config - this row's config: one live reference per field.
  */
-export function apply(ctx: Context, config: Config): void {
-  ctx.effect(
-    () => openInEditorRoutes(ctx, config),
-    "ui-tweaks: register the open-in-editor routes",
-  );
-}
+export function apply(_ctx: Context, _config: Config): void {}

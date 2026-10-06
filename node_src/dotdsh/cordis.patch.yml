@@ -26,15 +26,9 @@
   #       composerEnterNewline: true    # bare Enter breaks the line, Ctrl/Cmd+Enter sends
   #       statusWording: true           # random DeepSeek meme in the running-turn status line
   #       statusPhrases: ["自定义一句"]   # extra phrasing appended to the shipped bank
-  #       openInVscode: true            # Ctrl/Cmd+click a file in the produced-files row
-  #                                     # or the sidebar tree opens it in the editor below
-  #       editorCommand: code           # ONE bare PATH name or ONE absolute executable;
-  #                                     # not a command line (arguments are the package's)
-  # The last two are the only switches the PAGE does not read: opening an editor
-  # needs a process, so this row also serves two web routes under
-  # `/ui-tweaks/open-in-vscode/` and the page asks them. Those routes read the
-  # same live settings references per request, which is why an edit takes effect on
-  # the next page load or click rather than at the next dsh start.
+  # Every switch is read by the PAGE: the browser half keeps its own copy of the
+  # defaults and adopts a committed section through the settings transport, so an
+  # edit takes effect on the next page load rather than at the next dsh start.
   # A composition with no settings domain hands the plugin references that answer
   # the schema defaults, so the browser half keeps its own defaults too.
   # Disable the whole tweak set per profile with
