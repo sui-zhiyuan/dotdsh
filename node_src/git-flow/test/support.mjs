@@ -153,13 +153,18 @@ export async function commitFile(git, cwd, name, message) {
  * The `subprocess` service, as `shared.ts` uses it.
  *
  * `argv` is executed directly — never through a shell — and the collected output
- * stays readable after exit, which is how the adapter reads it.
+ * stays readable after exit, which is how the adapter reads it. When a caller
+ * passes `spawns`, every argv is also recorded there: a check that a refusal
+ * started no git child needs to see the spawns, not only their absence from the
+ * filesystem.
  *
+ * @param spawns - an optional list every spawned argv is appended to.
  * @returns a service whose `spawn` returns a handle shaped like the harness's.
  */
-function subprocessService() {
+function subprocessService(spawns = undefined) {
   return {
     spawn(spec) {
+      spawns?.push([...spec.argv]);
       const child = spawn(spec.argv[0], spec.argv.slice(1), {
         cwd: spec.cwd,
         stdio: ["ignore", "pipe", "pipe"],
@@ -206,23 +211,26 @@ function sessionsService(records) {
 }
 
 /**
- * A calling agent with the two services mounted, plus the messages it was told.
+ * A calling agent with the two services mounted, plus the messages it was told
+ * and the argv of every git child it started.
  *
  * @param sessionId - the session the agent is running.
  * @param cwd - the session's working directory.
  * @param records - the resident sessions; defaults to this session alone.
- * @returns the agent, the session store, and the list `followup` fills.
+ * @returns the agent, the session store, the list `followup` fills, and the
+ *   spawns the subprocess service recorded.
  */
 export function makeAgent(sessionId, cwd, records = [{ id: sessionId, header: { cwd } }]) {
   const sessions = sessionsService(records);
   const injected = [];
-  const subprocess = subprocessService();
+  const spawns = [];
+  const subprocess = subprocessService(spawns);
   const agent = {
     session: sessions.get(sessionId),
     ctx: { get: (name) => (name === "subprocess" ? subprocess : name === "sessions" ? sessions : undefined) },
     followup: (message) => injected.push(message),
   };
-  return { agent, sessions, injected };
+  return { agent, sessions, injected, spawns };
 }
 
 /** A caller-owned cancellation that never fires. */

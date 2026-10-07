@@ -36,6 +36,13 @@
  * `snake_case`, the harness's own convention for tool names (`write`,
  * `ask_user_question`), while the commands keep their `kebab-case` slash names.
  *
+ * ## Who may call
+ *
+ * The workflow is the Lead's: a delegated teammate's call to any of the three is
+ * refused by `team.leadOnlyRefusal` before the facts, the git child or the claim,
+ * and the refusal is the tool's answer rather than a thrown error. The command
+ * door applies the same rule, so neither door is a way around the other.
+ *
  * ## Layer
  *
  * The boundary: dsh calls in here, and this is the only layer that talks to it.
@@ -56,6 +63,7 @@ import {
   sessionAgentOf,
   withBranchPrefix,
 } from "./shared.js";
+import { leadOnlyRefusal } from "./team.js";
 
 /**
  * One tool this file defines: what the model is shown, and what runs the call.
@@ -166,6 +174,11 @@ async function gitStartTool(
   settings: FlowSettings,
 ): Promise<string> {
   const agent = sessionAgentOf(execution.agent);
+  // Before the facts, the git child and the claim: a teammate is refused here,
+  // where the call has had no effect yet. The refusal is the answer, not a
+  // thrown error — a tool call's return value is the model's only channel.
+  const refusal = leadOnlyRefusal(agent.session, "start");
+  if (refusal !== undefined) return refusal;
   const facts = await factsFor(agent, settings, execution.signal);
   const branch = withBranchPrefix(args.branchName, settings);
 
@@ -223,7 +236,10 @@ async function gitCompleteTool(
   settings: FlowSettings,
 ): Promise<string> {
   const integration = settings.integrationBranch;
-  const facts = await factsFor(sessionAgentOf(execution.agent), settings, execution.signal);
+  const agent = sessionAgentOf(execution.agent);
+  const refusal = leadOnlyRefusal(agent.session, "complete");
+  if (refusal !== undefined) return refusal;
+  const facts = await factsFor(agent, settings, execution.signal);
   const result = await gitComplete(facts.flow, facts.sessionId, args.mergeMessage, execution.signal);
 
   switch (result.kind) {
@@ -272,6 +288,8 @@ async function gitCleanupTool(
   // One view, built once: the facts carry the runner and the repository, while
   // the sweep scope is only reachable through the session store on the agent.
   const agent = sessionAgentOf(execution.agent);
+  const refusal = leadOnlyRefusal(agent.session, "cleanup");
+  if (refusal !== undefined) return refusal;
   const facts = await factsFor(agent, settings, execution.signal);
   await gitClean(facts.flow, resumableSessionIds(agent.getSessions()), execution.signal);
 

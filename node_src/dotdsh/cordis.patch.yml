@@ -37,7 +37,8 @@
   # `/git-start`, `/git-complete` and `/git-cleanup` commands with their
   # `git_start`, `git_complete` and `git_cleanup` tools, the bundled `git-flow` and
   # `git-master` skills, and the pre-write guard on the harness's
-  # `tools/pre-execute` waterfall.
+  # `tools/pre-execute` waterfall. Inside a Team it is Lead-only: a teammate's
+  # call is refused before any git runs, and told to ask the Lead.
   #
   # Configuration is optional: every key has a default, and the plugin validates what
   # it is given when it mounts — a `branchPrefix` git would refuse, or a

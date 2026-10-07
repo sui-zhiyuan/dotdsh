@@ -40,6 +40,14 @@
  * operation, which can be called again. A handler that started guessing here
  * would be guessing exactly where a model is available and a human is watching.
  *
+ * ## Who may run a command
+ *
+ * A delegated teammate may run none of them. `team.leadOnlyRefusal` is the first
+ * thing every handler does — before the input is read, before a message is
+ * injected, before the facts are gathered — and answers with the `send_message`
+ * that asks the Lead to do it instead. The tool door applies the same rule, so
+ * neither door is a way around the other.
+ *
  * ## What this file does not own
  *
  * The session walk, the argument checks and the branch prefix are in `shared`,
@@ -68,6 +76,7 @@ import {
   withBranchPrefix,
 } from "./shared.js";
 import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
+import { leadOnlyRefusal } from "./team.js";
 
 /** One command this file defines: what the composer shows, and what runs it. */
 interface GitFlowCommand {
@@ -193,6 +202,13 @@ async function gitStartHandler(
   invocation: CommandInvocation,
   settings: FlowSettings,
 ): Promise<CommandResult> {
+  const agent = sessionAgentOf(invocation.agent);
+  // The Lead-only gate comes before even the bare path: naming the feature is
+  // still the Lead's call, and a teammate must not get a notice that suggests it
+  // is theirs to make.
+  const refusal = leadOnlyRefusal(agent.session, "start");
+  if (refusal !== undefined) return { kind: "error", text: refusal };
+
   // `rawInput` keeps the separator whitespace the parser split on, so the name is
   // what is left after trimming it.
   const requested = invocation.rawInput.trim();
@@ -210,7 +226,6 @@ async function gitStartHandler(
     };
   }
 
-  const agent = sessionAgentOf(invocation.agent);
   const facts = await factsFor(agent, settings, invocation.signal);
   const branch = withBranchPrefix(requested, settings);
   if (!(await isValidBranchName(facts.flow, branch))) {
@@ -274,6 +289,12 @@ async function gitCompleteHandler(
   invocation: CommandInvocation,
   settings: FlowSettings,
 ): Promise<CommandResult> {
+  const agent = sessionAgentOf(invocation.agent);
+  // The Lead-only gate precedes the bare path too: composing the merge message
+  // for the Lead is still the Lead's workflow, and a teammate gets no notice.
+  const refusal = leadOnlyRefusal(agent.session, "complete");
+  if (refusal !== undefined) return { kind: "error", text: refusal };
+
   // Same separator whitespace as `/git-start`; a message is what is left of the
   // raw input once it is gone.
   const message = invocation.rawInput.trim();
@@ -289,7 +310,7 @@ async function gitCompleteHandler(
   }
 
   const integration = settings.integrationBranch;
-  const facts = await factsFor(sessionAgentOf(invocation.agent), settings, invocation.signal);
+  const facts = await factsFor(agent, settings, invocation.signal);
   const result = await gitComplete(facts.flow, facts.sessionId, message, invocation.signal);
 
   switch (result.kind) {
@@ -346,6 +367,8 @@ async function gitCleanupHandler(
   // One view, read twice: the sweep scope and the facts both come from the agent
   // dsh handed over. Nothing is injected — cleanup is not work the model does.
   const view = sessionAgentOf(invocation.agent);
+  const refusal = leadOnlyRefusal(view.session, "cleanup");
+  if (refusal !== undefined) return { kind: "error", text: refusal };
   const resumable = resumableSessionIds(view.getSessions());
   const facts = await factsFor(view, settings, invocation.signal);
   await gitClean(facts.flow, resumable, invocation.signal);
