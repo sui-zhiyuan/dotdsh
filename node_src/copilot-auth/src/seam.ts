@@ -82,10 +82,11 @@ export class CopilotSignInError extends Error {
  * names that row rather than the seam: the user cannot register a flow by hand.
  */
 export const NO_FLOW_TEXT =
-  "dsh 没有为 llm-pi-ai/github-copilot 注册授权流——llm-pi-ai 行是否挂载？";
+  "dsh registers no authorization flow for llm-pi-ai/github-copilot — is the llm-pi-ai row mounted?";
 
 /** The notice shown while the enterprise prompt is answered with github.com. */
-export const ENTERPRISE_UNSUPPORTED_TEXT = "Enterprise 不支持，本包固定 github.com";
+export const ENTERPRISE_UNSUPPORTED_TEXT =
+  "GitHub Enterprise is not supported: this package signs in to github.com only.";
 
 /**
  * The one prompt pi-ai's Copilot login asks before it starts: a GitHub
@@ -149,13 +150,13 @@ function mapBeginFailure(error: unknown): unknown {
     if (error.code === "NO_FLOW") return new CopilotSignInError(NO_FLOW_TEXT, "NO_FLOW");
     if (error.code === "ALREADY_IN_FLIGHT") {
       return new CopilotSignInError(
-        "已有一个 GitHub Copilot 登录正在进行；请先完成它，或运行 /copilot-status 查看进度。",
+        "A GitHub Copilot sign-in is already in progress; finish it in the browser, or run /copilot-status to check on it.",
         "ALREADY_IN_FLIGHT",
       );
     }
     if (error.code === "UNKNOWN_METHOD") {
       return new CopilotSignInError(
-        "dsh 的 GitHub Copilot 授权流没有提供 oauth 方法，无法发起登录。",
+        "dsh's GitHub Copilot flow offers no oauth method, so the sign-in cannot be started.",
         "UNKNOWN_METHOD",
       );
     }
@@ -200,7 +201,7 @@ export async function beginCopilotSignIn(
   }
   if (outcome.status === "cancelled") {
     throw new CopilotSignInError(
-      "GitHub Copilot 登录已取消：授权问题的回答被拒绝，或调用方撤销了本次登录。",
+      "GitHub Copilot sign-in was cancelled: the authorization prompt was declined, or the caller withdrew the attempt.",
       "CANCELLED",
     );
   }
