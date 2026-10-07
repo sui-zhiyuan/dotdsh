@@ -122,6 +122,10 @@ let menuOpen = false;
 // global and the listener bookkeeping all describe one page.
 const documentRef = makeDocument();
 let registration;
+// What the client bundle writes to the page console. Worklist X5 is that this
+// tweak's failure is otherwise invisible, so the checks below assert the warnings
+// it now emits when the seat it shadows is gone or has changed shape.
+const warnings = [];
 const sandbox = {
   window: {
     __ModuleLoader__: {
@@ -135,7 +139,9 @@ const sandbox = {
   console: {
     error: () => {},
     log: () => {},
-    warn: () => {},
+    warn: (message) => {
+      warnings.push(String(message));
+    },
   },
   KeyboardEvent: class KeyboardEvent {
     constructor(type, init = {}) {
@@ -202,6 +208,12 @@ const localeState = { active: "zh" };
 // `translate` must live on the PROTOTYPE, exactly as LocaleRuntime defines it:
 // the tweak shadows it with an own property and restores it by `delete`, which
 // only puts the shipped method back when the original was inherited.
+//
+// This fake mirrors the shape dsh 0.2.0-rc.2 exposes, so it pins OUR assumption
+// rather than dsh's contract: a dsh that renames `translate`, or stops rendering
+// this line through the dictionary, keeps every check in this file green. That is
+// why the tweak now warns when the seat is missing or has changed shape (worklist
+// X5), and why those warnings are asserted below rather than left to production.
 function FakeLocale() {}
 FakeLocale.prototype.getSnapshot = function getSnapshot() {
   return { active: localeState.active, locales: [], revision: 0 };
@@ -214,9 +226,18 @@ FakeLocale.prototype.getSnapshot = function getSnapshot() {
 // that only asked the bare one stayed green while the line on screen was dsh's.
 const SHIPPED_STATUS = "深度求索中";
 const shippedStatusFor = (duration) => `${SHIPPED_STATUS}，用时 ${duration} ···`;
+// Flipped by the degradation region below to model a dsh that no longer builds the
+// elapsed-time line from the bare wording — the one divergence the tweak can
+// detect from inside, and the one it must announce instead of silently dropping
+// the clock.
+let templateDiverges = false;
 FakeLocale.prototype.translate = function translate(ns, key, params) {
   if (ns === "chat" && key === "chat.deepDiving") return SHIPPED_STATUS;
-  if (ns === "chat" && key === "chat.deepDivingFor") return shippedStatusFor(params?.duration ?? "");
+  if (ns === "chat" && key === "chat.deepDivingFor") {
+    return templateDiverges
+      ? `用时 ${params?.duration ?? ""} ···`
+      : shippedStatusFor(params?.duration ?? "");
+  }
   return shipped(ns, key);
 };
 const locale = new FakeLocale();
@@ -272,9 +293,9 @@ const adopt = (value) => {
  * settings transport to its callback, and `effect` records every disposer so
  * teardown can be exercised.
  */
-const makeCtx = () => {
+const makeCtx = (overrides = {}) => {
   const disposers = [];
-  const services = { locale };
+  const services = { locale, ...overrides };
   const ctx = {
     get: (name) => services[name],
     inject: (deps, callback) => {
@@ -367,6 +388,32 @@ randoms.push(0);
 check("a regional Chinese locale is still reworded", statusLine() !== SHIPPED_STATUS);
 check("a regional Chinese locale rewords the visible line too", statusLabel() !== shippedStatusFor("1 秒"), statusLabel());
 localeState.active = "zh";
+
+// The one divergence the tweak can see from inside: dsh stops building the
+// elapsed-time line from the bare wording. The drawn wording must survive — that
+// is the tweak's job — and the loss of the clock must be announced exactly once,
+// not repeated on every render and not swallowed (worklist X5).
+templateDiverges = true;
+const warningsBeforeDivergence = warnings.length;
+const diverged = statusLabel();
+check(
+  "a changed elapsed-time template keeps the drawn wording",
+  diverged === statusLine(),
+  `${diverged} vs ${statusLine()}`,
+);
+check(
+  "a changed elapsed-time template warns exactly once",
+  warnings.length === warningsBeforeDivergence + 1 &&
+    /elapsed-time/.test(warnings[warnings.length - 1] ?? ""),
+  warnings.slice(warningsBeforeDivergence).join(" | "),
+);
+statusLabel();
+check(
+  "the divergence warning is not repeated on later renders",
+  warnings.length === warningsBeforeDivergence + 1,
+  `${warnings.length - warningsBeforeDivergence} warning(s)`,
+);
+templateDiverges = false;
 //#endregion
 
 //#region Enter tweak behaviour against the same fake document
@@ -497,6 +544,38 @@ check(
   statusLine() === SHIPPED_STATUS && statusLabel() === shippedStatusFor("1 秒") &&
     !Object.prototype.hasOwnProperty.call(locale, "translate"),
   `${statusLine()} / ${statusLabel()}`,
+);
+//#endregion
+
+//#region degradation is visible: a locale service without the seat (worklist X5)
+// The tweak shadows a method dsh does not publish, so "there is no translate()" is
+// its most likely silent death. It must announce that and install nothing, while
+// the other tweaks keep working — which is why this is its own activation rather
+// than a variant of the one above.
+const bareLocale = { getSnapshot: () => ({ active: "zh", locales: [], revision: 0 }) };
+const noSeat = makeCtx({ locale: bareLocale });
+const warningsBeforeBare = warnings.length;
+if (typeof exportsObj?.apply === "function") exportsObj.apply(noSeat.ctx);
+check(
+  "a locale service without translate() warns exactly once",
+  warnings.length === warningsBeforeBare + 1 &&
+    /locale service exposes no translate/.test(warnings[warnings.length - 1] ?? ""),
+  warnings.slice(warningsBeforeBare).join(" | "),
+);
+check(
+  "a locale service without translate() is left unshadowed",
+  !Object.prototype.hasOwnProperty.call(bareLocale, "translate"),
+);
+check(
+  "the rest of the tweak set still installs in that composition",
+  listenerOn(documentRef, "keydown", true).length === 1,
+  `${listenerOn(documentRef, "keydown", true).length} listener(s)`,
+);
+for (const dispose of noSeat.disposers) dispose();
+check(
+  "that activation tears down cleanly",
+  listenerOn(documentRef, "keydown", true).length === 0 && formState.listeners.length === 0,
+  `${listenerOn(documentRef, "keydown", true).length} listener(s), ${formState.listeners.length} subscription(s)`,
 );
 //#endregion
 

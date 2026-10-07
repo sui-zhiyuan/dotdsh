@@ -282,10 +282,22 @@ window.__ModuleLoader__.load({
      */
     function installLlmStatusWording(ctx) {
       const locale = ctx.get("locale");
-      if (locale === undefined || typeof locale.translate !== "function") return () => {};
+      if (locale === undefined || typeof locale.translate !== "function") {
+        // Being invisible is this tweak's one real failure mode: it rewrites the
+        // status line by shadowing a method dsh does not publish, so a dsh that
+        // renames or moves `translate` would otherwise just leave the shipped
+        // wording in place with nothing to explain why. Say it once, so the
+        // degradation is diagnosable from the page console, and install nothing.
+        console.warn(
+          "ui-tweaks: the running-turn status wording is inactive — the locale service exposes no translate() to shadow (dsh may have renamed the method, or moved the status line off the locale dictionary)",
+        );
+        return () => {};
+      }
       const original = locale.translate;
       let phrase = "";
       let lastSeenAt = 0;
+      /** One warning per activation: the divergence below is a per-render test. */
+      let templateWarned = false;
       locale.translate = function (ns, key, params) {
         const isStatus = ns === STATUS_NS && (key === STATUS_KEY || key === STATUS_KEY_FOR);
         if (!isStatus || !settings.statusWording || !isChineseLocale(locale)) {
@@ -302,10 +314,22 @@ window.__ModuleLoader__.load({
         // `chat.deepDiving` answers, and everything the longer template puts after
         // it is kept verbatim. A dsh that stops building one from the other falls
         // back to the bare phrase — the timer is gone then, but the wording, which
-        // is what this tweak is for, is still in place.
+        // is what this tweak is for, is still in place. That half-degradation is
+        // announced once, for the same reason the missing `translate` above is:
+        // losing the clock is otherwise indistinguishable from dsh changing its
+        // copy.
         const full = original.call(this, ns, key, params);
         const base = original.call(this, ns, STATUS_KEY);
-        return full.startsWith(base) ? phrase + full.slice(base.length) : phrase;
+        if (!full.startsWith(base)) {
+          if (!templateWarned) {
+            templateWarned = true;
+            console.warn(
+              "ui-tweaks: the running-turn status wording replaced the base wording only — this dsh no longer builds the elapsed-time line from `chat.deepDiving`, so that line lost its timer",
+            );
+          }
+          return phrase;
+        }
+        return phrase + full.slice(base.length);
       };
       return () => {
         delete locale.translate;
