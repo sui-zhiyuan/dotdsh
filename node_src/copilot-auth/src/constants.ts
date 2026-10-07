@@ -8,8 +8,9 @@ import { credentialKey, type CredentialKey } from "@deepseek-ai/dsh-credentials"
  * `llm-pi-ai:` provider profiles the user's `settings.yaml` (or the Models
  * page) declares. A second adapter for the same key would only make the route
  * set ambiguous, and the profile would fail rather than serve. What dsh does
- * not ship is a way to *obtain* the subscription grant — and that, plus the
- * honest reporting around it, is the whole of this package.
+ * not ship is a *surface that starts* its own authorization flow — and that,
+ * plus the validation and honest reporting around the record, is the whole of
+ * this package.
  */
 export const COPILOT_PROVIDER_ID = "github-copilot";
 

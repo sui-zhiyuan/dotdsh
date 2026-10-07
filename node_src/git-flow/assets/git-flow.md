@@ -1,5 +1,19 @@
 # The git-flow workflow
 
+## In a Team
+
+- **The Team Lead owns this workflow.** Only a top-level session may call
+  `git_start`, `git_complete` and `git_cleanup`, or their `/git-*` commands. A
+  delegated teammate is refused before anything runs, on either door, and the
+  refusal is the only answer it gets.
+- If you are a teammate, do not try to open or finish the branch yourself. Ask the
+  Lead:
+  `send_message({ target: "lead", message: "please run /git-start <feature-name>" })`
+  — use `/git-complete <merge message>` to finish the branch, or `/git-cleanup` to
+  sweep — then work inside the tree the Lead answers with.
+- This rule is about the branch workflow only: ordinary `git` through `bash`
+  (`status`, `diff`, `add`, `commit`) still works for a teammate.
+
 ## Where you may write
 
 - This session has a working tree of its own, and `git_start` answers with it: the

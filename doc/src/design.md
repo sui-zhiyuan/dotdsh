@@ -84,7 +84,7 @@ Three consequences shape `node_src/ui-tweaks`:
    follows it, so its switches are per machine and live rather than baked into the repository: the
    node half reads `config.<field>.get()`, the row's `config` in the bundle patch is the layer
    underneath, and the user layer is the profile's own `cordis.patch.yml`, which dsh reloads — so an
-   edit reaches the page and the routes without a restart. Both halves still carry the same defaults
+   edit reaches the page without a restart. Both halves still carry the same defaults
    — the node half's schema declares them and the browser half seeds its `settings` object with them
    — which is what a page runs on until the first accepted section arrives. Two deliberate choices
    follow from the tweak set being independent of the settings domain: the browser half reaches the

@@ -11,17 +11,14 @@
 // check therefore runs `client/index.js` once in a single `node:vm` context
 // whose fake `window` captures `__ModuleLoader__.load`, calls the captured
 // `factory(require)` for the module exports, and then drives those exports' own
-// `apply(ctx)` with a fake client context (one fake `document`; a fake
-// `sessions`, `hostInfo` and settings form; a fake `window.fetch`) and asserts
-// the three tweaks' decisions through the listeners that activation installs.
-// Because there is only one route, no second file is loaded anywhere: the
-// open-in-editor handler is proved reachable only through the module's own
-// activation on that same document. `node --check` and this file together are
-// what guard these bytes.
+// `apply(ctx)` with a fake client context (one fake `document` and a fake
+// settings form) and asserts the two tweaks' decisions through the listeners
+// that activation installs. `node --check` and this file together are what guard
+// these bytes.
 //
 // What a green run does NOT mean: there is no real dsh, no browser, no React, no
-// Lexical, no locale service, no settings transport, no network and no editor.
-// The registration checks prove the boot protocol's shape, not that dsh resolved
+// Lexical, no locale service, no settings transport and no network. The
+// registration checks prove the boot protocol's shape, not that dsh resolved
 // `exports["./client"]`, served this file or added it to the boot graph with a
 // `rev`. The Enter checks assert the shape of the synthetic event the tweak
 // re-emits, not that Lexical inserted a line break; the wording checks assert
@@ -29,11 +26,7 @@
 // the settings checks publish a section into the fake form directly, so they
 // prove what the page does with one, not that dsh resolved, delivered or
 // persisted it (that seam is the host half's own check, test/verify-host.mjs).
-// The open-in-editor checks dispatch hand-built click events at hand-built
-// element objects, so they prove which attributes and gestures the handler
-// selects, what it posts and that it claims the event, not that a real DOM
-// produced those elements, that the host route answered, or that an editor
-// opened. Whether any tweak works end to end is settled by loading the page once.
+// Whether either tweak works end to end is settled by loading the page once.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,30 +117,15 @@ const makeDocument = () => {
 };
 let menuOpen = false;
 
-// Every fetch the page makes goes through here, so one recording fake serves
-// both the availability probe and the launch POST. `probeImpl` and
-// `launchAnswer` are the knobs the scenarios below turn.
-const fetchCalls = [];
-let probeImpl = () =>
-  Promise.resolve({ ok: true, json: async () => ({ available: true }) });
-let launchAnswer = () => Promise.resolve({ ok: true, status: 200 });
-const fakeFetch = (url, init = {}) => {
-  const method = init.method ?? "GET";
-  fetchCalls.push({ url, method, init });
-  if (method === "GET") return probeImpl(url, init);
-  return launchAnswer(url, init);
-};
-
-const consoleErrors = [];
-const abortControllers = [];
-
-// The document the module listens on. `sandbox.document` is the classic-script
-// page global the composer tweak reads; `window.document` is what the
-// open-in-editor handler reads. They are the SAME object, and both listeners
-// must land in its one `listeners` array — that single array is the property
-// this check exists to prove.
+// The document the module listens on: the classic-script page global the tweaks
+// read. `window.document` is the SAME object, so the registration, the page
+// global and the listener bookkeeping all describe one page.
 const documentRef = makeDocument();
 let registration;
+// What the client bundle writes to the page console. Worklist X5 is that this
+// tweak's failure is otherwise invisible, so the checks below assert the warnings
+// it now emits when the seat it shadows is gone or has changed shape.
+const warnings = [];
 const sandbox = {
   window: {
     __ModuleLoader__: {
@@ -156,27 +134,19 @@ const sandbox = {
       },
     },
     document: documentRef,
-    fetch: fakeFetch,
   },
   document: documentRef,
   console: {
-    error: (...args) => consoleErrors.push(args),
+    error: () => {},
     log: () => {},
-    warn: () => {},
+    warn: (message) => {
+      warnings.push(String(message));
+    },
   },
   KeyboardEvent: class KeyboardEvent {
     constructor(type, init = {}) {
       Object.assign(this, init);
       this.type = type;
-    }
-  },
-  AbortController: class AbortController {
-    constructor() {
-      this.signal = { aborted: false };
-      abortControllers.push(this);
-    }
-    abort() {
-      this.signal.aborted = true;
     }
   },
   Object,
@@ -238,6 +208,12 @@ const localeState = { active: "zh" };
 // `translate` must live on the PROTOTYPE, exactly as LocaleRuntime defines it:
 // the tweak shadows it with an own property and restores it by `delete`, which
 // only puts the shipped method back when the original was inherited.
+//
+// This fake mirrors the shape dsh 0.2.0-rc.2 exposes, so it pins OUR assumption
+// rather than dsh's contract: a dsh that renames `translate`, or stops rendering
+// this line through the dictionary, keeps every check in this file green. That is
+// why the tweak now warns when the seat is missing or has changed shape (worklist
+// X5), and why those warnings are asserted below rather than left to production.
 function FakeLocale() {}
 FakeLocale.prototype.getSnapshot = function getSnapshot() {
   return { active: localeState.active, locales: [], revision: 0 };
@@ -250,9 +226,18 @@ FakeLocale.prototype.getSnapshot = function getSnapshot() {
 // that only asked the bare one stayed green while the line on screen was dsh's.
 const SHIPPED_STATUS = "深度求索中";
 const shippedStatusFor = (duration) => `${SHIPPED_STATUS}，用时 ${duration} ···`;
+// Flipped by the degradation region below to model a dsh that no longer builds the
+// elapsed-time line from the bare wording — the one divergence the tweak can
+// detect from inside, and the one it must announce instead of silently dropping
+// the clock.
+let templateDiverges = false;
 FakeLocale.prototype.translate = function translate(ns, key, params) {
   if (ns === "chat" && key === "chat.deepDiving") return SHIPPED_STATUS;
-  if (ns === "chat" && key === "chat.deepDivingFor") return shippedStatusFor(params?.duration ?? "");
+  if (ns === "chat" && key === "chat.deepDivingFor") {
+    return templateDiverges
+      ? `用时 ${params?.duration ?? ""} ···`
+      : shippedStatusFor(params?.duration ?? "");
+  }
   return shipped(ns, key);
 };
 const locale = new FakeLocale();
@@ -304,14 +289,13 @@ const adopt = (value) => {
 
 /**
  * The fake client context `apply` is driven with. `services` is what `ctx.get`
- * answers: the one `locale` service the tweaks need, plus the optional
- * `sessions`/`hostInfo` the open-in-editor handler reads. `inject` hands the
- * optional settings transport to its callback, and `effect` records every
- * disposer so teardown can be exercised.
+ * answers: the one `locale` service the tweaks need. `inject` hands the optional
+ * settings transport to its callback, and `effect` records every disposer so
+ * teardown can be exercised.
  */
-const makeCtx = ({ sessions, hostInfo } = {}) => {
+const makeCtx = (overrides = {}) => {
   const disposers = [];
-  const services = { locale, sessions, hostInfo };
+  const services = { locale, ...overrides };
   const ctx = {
     get: (name) => services[name],
     inject: (deps, callback) => {
@@ -328,44 +312,25 @@ const makeCtx = ({ sessions, hostInfo } = {}) => {
   return { ctx, disposers };
 };
 
-// The session store shape the client `sessions` service publishes: the handler
-// reads `list.getSnapshot()` for the current id and its summary's `cwd`.
-const sessionsStore = {
-  list: {
-    getSnapshot: () => ({
-      current: "sess-1",
-      byId: { "sess-1": { cwd: "/abs/root" } },
-    }),
-  },
-};
-// `hostInfo` is the optional host facts the handler reads for `~` expansion.
-const hostInfo = { getSnapshot: () => ({ home: "/home/me" }) };
-
-const flush = () => new Promise((resolve) => setImmediate(resolve));
 const listenerOn = (doc, type, capture) =>
   doc.listeners.filter((entry) => entry.type === type && entry.capture === capture);
 
-const main = makeCtx({ sessions: sessionsStore, hostInfo });
+const main = makeCtx();
 if (typeof exportsObj?.apply === "function") exportsObj.apply(main.ctx);
-// The availability probe is fire-and-forget by contract, so let its microtasks
-// settle before asserting the click listener it installs.
-await flush();
-const mainController = abortControllers.at(-1);
 
 const keydownListeners = listenerOn(documentRef, "keydown", true);
-const clickListeners = listenerOn(documentRef, "click", true);
 check(
   "the module's own apply installs exactly one capture-phase keydown listener",
   keydownListeners.length === 1,
   `${keydownListeners.length} listener(s)`,
 );
 check(
-  "the module's own apply installs exactly one capture-phase click listener",
-  clickListeners.length === 1,
-  `${clickListeners.length} listener(s)`,
+  "the module's own apply installs no click listener",
+  listenerOn(documentRef, "click", true).length === 0,
+  `${listenerOn(documentRef, "click", true).length} listener(s)`,
 );
 check(
-  "both listeners land on the SAME document — the one context's window.document",
+  "the listener lands on the page global the module and the sandbox share",
   documentRef === sandbox.window.document && documentRef === sandbox.document,
 );
 check(
@@ -373,10 +338,6 @@ check(
   effectLabels.length > 0 &&
     effectLabels.every((label) => typeof label === "string" && label !== ""),
   JSON.stringify(effectLabels),
-);
-check(
-  "the click handler owns its own labelled effect",
-  effectLabels.includes("ui-tweaks: intercept Ctrl/Cmd+click to open a file in the editor"),
 );
 
 check("asks the settings transport for exactly one entry", requestedEntryIds.length === 1, `${requestedEntryIds.length} request(s)`);
@@ -427,6 +388,32 @@ randoms.push(0);
 check("a regional Chinese locale is still reworded", statusLine() !== SHIPPED_STATUS);
 check("a regional Chinese locale rewords the visible line too", statusLabel() !== shippedStatusFor("1 秒"), statusLabel());
 localeState.active = "zh";
+
+// The one divergence the tweak can see from inside: dsh stops building the
+// elapsed-time line from the bare wording. The drawn wording must survive — that
+// is the tweak's job — and the loss of the clock must be announced exactly once,
+// not repeated on every render and not swallowed (worklist X5).
+templateDiverges = true;
+const warningsBeforeDivergence = warnings.length;
+const diverged = statusLabel();
+check(
+  "a changed elapsed-time template keeps the drawn wording",
+  diverged === statusLine(),
+  `${diverged} vs ${statusLine()}`,
+);
+check(
+  "a changed elapsed-time template warns exactly once",
+  warnings.length === warningsBeforeDivergence + 1 &&
+    /elapsed-time/.test(warnings[warnings.length - 1] ?? ""),
+  warnings.slice(warningsBeforeDivergence).join(" | "),
+);
+statusLabel();
+check(
+  "the divergence warning is not repeated on later renders",
+  warnings.length === warningsBeforeDivergence + 1,
+  `${warnings.length - warningsBeforeDivergence} warning(s)`,
+);
+templateDiverges = false;
 //#endregion
 
 //#region Enter tweak behaviour against the same fake document
@@ -512,11 +499,7 @@ check(
 check("statusWording: false leaves other chat copy alone", locale.translate("chat", "chat.loadOlder") === shipped("chat", "chat.loadOlder"));
 check("composerEnterNewline: true comes back without a re-install", run(keydown({ target: makeComposer(true) })).intercepted);
 check("the page still carries one keydown listener", listenerOn(documentRef, "keydown", true).length === 1, `${listenerOn(documentRef, "keydown", true).length} left`);
-check(
-  "no settings field re-installs or removes the click handler's listener",
-  listenerOn(documentRef, "click", true).length === 1,
-  `${listenerOn(documentRef, "click", true).length} left`,
-);
+check("a settings edit installs no extra document listener", listenerOn(documentRef, "click", true).length === 0, `${listenerOn(documentRef, "click", true).length} left`);
 
 // The extension list JOINS the shipped bank, and the dice are pinned to the last
 // index of the effective bank, so the draw lands on the extension's last entry.
@@ -551,257 +534,10 @@ adopt("not a section");
 check("a malformed section keeps the adopted values", run(keydown({ target: makeComposer(true) })).intercepted);
 //#endregion
 
-//#region open-in-editor: reached only through the module's own activation
-//
-// The handler is internal to the factory now (`applyOpenInEditor`), so there is
-// no exported function to unit-test: every decision below is observed by
-// dispatching a hand-built click at the capturing listener that `apply` itself
-// installed on the fake document, and reading the one fake `window.fetch`.
-//
-// THIS IS THE REGRESSION. Under the former two-file design the factory looked
-// for `window.__dshDotdshOpenInEditor`, which only the injected sibling script
-// could set; that sibling has no route in a one-script sandbox (a real page
-// 404s it), so this `clickListeners.length === 1` assertion found ZERO listeners
-// and failed. Nothing here ever loads a second file.
-const STATUS_ROUTE = "/ui-tweaks/open-in-vscode/status";
-const LAUNCH_ROUTE = "/ui-tweaks/open-in-vscode/launch";
-
-const clickHandler = clickListeners[0]?.fn;
-check("the module's own apply exposes a callable click handler", typeof clickHandler === "function");
-
-/** A minimal element whose `closest` walks the fake parent chain by attribute. */
-const makeElement = (tag, attrs = {}, parent = null) => {
-  const node = {
-    tagName: tag,
-    parentElement: parent,
-    getAttribute(name) {
-      return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
-    },
-    matches(selector) {
-      if (selector === "button[title]") return tag === "button" && node.getAttribute("title") !== null;
-      if (selector === 'li[data-files-entry="file"][data-files-path]') {
-        return tag === "li" && node.getAttribute("data-files-entry") === "file" && node.getAttribute("data-files-path") !== null;
-      }
-      return false;
-    },
-    closest(selector) {
-      let current = node;
-      while (current !== null && current !== undefined) {
-        if (typeof current.matches === "function" && current.matches(selector)) return current;
-        current = current.parentElement;
-      }
-      return null;
-    },
-  };
-  return node;
-};
-
-const postCalls = () => fetchCalls.filter((call) => call.method === "POST");
-const lastPostBody = () => {
-  const call = postCalls().at(-1);
-  if (call === undefined) return {};
-  try {
-    return JSON.parse(call.init.body);
-  } catch {
-    return {};
-  }
-};
-const clickEventFor = (target, init = {}) => ({
-  button: 0,
-  ctrlKey: false,
-  metaKey: false,
-  shiftKey: false,
-  altKey: false,
-  target,
-  defaultPrevented: false,
-  immediateStopped: false,
-  preventDefault() {
-    this.defaultPrevented = true;
-  },
-  stopImmediatePropagation() {
-    this.immediateStopped = true;
-  },
-  ...init,
-});
-const dispatchClick = (target, init) => {
-  fetchCalls.length = 0;
-  const event = clickEventFor(target, init);
-  if (typeof clickHandler === "function") clickHandler(event);
-  return event;
-};
-const claimed = (event) => event.defaultPrevented === true && event.immediateStopped === true;
-
-// The produced-files card: `div[data-presented-file]` CONTAINING the preview
-// `button[title="/abs/path"]`. The card's split button and a titled button
-// outside any card name nothing.
-const card = makeElement("div", { "data-presented-file": "" });
-const previewButton = makeElement("button", { title: "/abs/path/to/file.ts" }, card);
-
-const ctrlCard = dispatchClick(previewButton, { ctrlKey: true });
-check("a Ctrl+click on a produced-files card is claimed with preventDefault", ctrlCard.defaultPrevented === true);
-check(
-  "a Ctrl+click on a produced-files card is claimed with stopImmediatePropagation, not only stopPropagation",
-  ctrlCard.immediateStopped === true,
-);
-const ctrlPost = postCalls()[0];
-check(
-  "the claimed click POSTs the launch route with the card's path and the session id ctx.get('sessions') supplied",
-  ctrlPost !== undefined &&
-    ctrlPost.url === LAUNCH_ROUTE &&
-    ctrlPost.init.method === "POST" &&
-    ctrlPost.init.headers?.["content-type"] === "application/json" &&
-    lastPostBody().path === "/abs/path/to/file.ts" &&
-    lastPostBody().sessionId === "sess-1",
-  JSON.stringify(ctrlPost),
-);
-check(
-  "the launch is tied to the plugin lifetime's abort signal",
-  ctrlPost?.init.signal === mainController.signal && mainController.signal.aborted === false,
-);
-
-const cmdCard = dispatchClick(previewButton, { metaKey: true });
-check("a Cmd+click on a produced-files card is claimed too", claimed(cmdCard));
-check("the Cmd+click POSTs the same launch route", postCalls()[0]?.url === LAUNCH_ROUTE);
-
-const plainCard = dispatchClick(previewButton);
-check("a plain click on the same card is left to dsh (not claimed)", plainCard.defaultPrevented === false && plainCard.immediateStopped === false);
-check("a plain click POSTs nothing", postCalls().length === 0);
-
-// The gesture matrix: Ctrl or Cmd with the primary button, nothing else.
-for (const [label, init, expected] of [
-  ["Ctrl + primary button", { ctrlKey: true }, true],
-  ["Cmd + primary button", { metaKey: true }, true],
-  ["a plain click", {}, false],
-  ["a middle click", { button: 1, ctrlKey: true }, false],
-  ["a right click", { button: 2, ctrlKey: true }, false],
-  ["shift-only", { shiftKey: true }, false],
-  ["alt-only", { altKey: true }, false],
-]) {
-  const event = dispatchClick(previewButton, init);
-  check(
-    `the gesture is ${expected ? "claimed" : "left to dsh"} for ${label}`,
-    claimed(event) === expected && (postCalls().length > 0) === expected,
-    JSON.stringify(init),
-  );
-}
-
-// The card's split button (no title), a titled button outside any card, and the
-// header breadcrumb all name nothing and must be left to dsh.
-const splitButton = makeElement("button", {}, card);
-const splitEvent = dispatchClick(splitButton, { ctrlKey: true });
-check("a click on the card's split button (no title) is left to dsh", !claimed(splitEvent) && postCalls().length === 0);
-
-const looseButton = makeElement("button", { title: "/abs/loose.ts" });
-const looseEvent = dispatchClick(looseButton, { ctrlKey: true });
-check("a titled button that is not inside a card is left to dsh", !claimed(looseEvent) && postCalls().length === 0);
-
-// The sidebar row: `li[data-files-entry="file"][data-files-path]` under a
-// `div[data-files-root]`; the header breadcrumb has the path attribute but no
-// entry kind, and a non-element has no `closest` at all.
-const treeRoot = makeElement("div", { "data-files-root": "/abs/root" });
-const fileRow = makeElement("li", { "data-files-entry": "file", "data-files-path": "src/app.ts" }, treeRoot);
-const rowEvent = dispatchClick(fileRow, { ctrlKey: true });
-check(
-  "a Ctrl+click on the sidebar file row joins its root and its relative path",
-  claimed(rowEvent) && lastPostBody().path === "/abs/root/src/app.ts",
-  JSON.stringify(lastPostBody()),
-);
-const absoluteRow = makeElement("li", { "data-files-entry": "file", "data-files-path": "/already/abs.ts" }, treeRoot);
-dispatchClick(absoluteRow, { ctrlKey: true });
-check("an already-absolute sidebar path is sent unchanged", lastPostBody().path === "/already/abs.ts", String(lastPostBody().path));
-const breadcrumb = makeElement("div", { "data-files-path": "src/app.ts" }, treeRoot);
-const breadcrumbEvent = dispatchClick(breadcrumb, { ctrlKey: true });
-check("the header breadcrumb (no entry kind) is left to dsh", !claimed(breadcrumbEvent) && postCalls().length === 0);
-for (const [label, target] of [
-  ["a plain object", {}],
-  ["a null", null],
-  ["an undefined", undefined],
-]) {
-  const event = dispatchClick(target, { ctrlKey: true });
-  check(`${label} click target is left to dsh`, !claimed(event) && postCalls().length === 0);
-}
-
-// The PRODUCED-FILES ROW ("本轮文件改动"): a lane whose file buttons carry the
-// absolute path in their own `title`, with NO `data-presented-file` ancestor.
-// This shape is why the tweak silently did nothing there for two rounds: an
-// implementation that demanded the delivered-file CARD could never match it, and
-// no check covered it. Its markup, verbatim from a live page:
-//   <div data-produced-files-row="true">
-//     <button class="P4kPIW_file" title="/abs/x.ts"><svg/><span>x.ts</span></button>
-//   </div>
-const producedRow = makeElement("div", { "data-produced-files-row": "" });
-const producedFile = makeElement("button", { title: "/abs/produced.ts" }, producedRow);
-const producedEvent = dispatchClick(producedFile, { ctrlKey: true });
-check(
-  "a Ctrl+click on the produced-files row is claimed and sends its title",
-  claimed(producedEvent) && lastPostBody().path === "/abs/produced.ts",
-  JSON.stringify(lastPostBody()),
-);
-check("a plain click on the produced-files row is left to dsh", !claimed(dispatchClick(producedFile, {})));
-
-// ... and the SAME button inside message prose is deliberately NOT claimed. Its
-// only container is the whole message body, so claiming it would take ordinary
-// text selection away from the user; the row and the card are the file surfaces,
-// prose is not. Markup, again verbatim:
-//   <div class="_markdown_…"><p>…<code><button class="_fileMention_…" title="/abs/x.ts">…</button></code></p></div>
-const messageBody = makeElement("div", { class: "_markdown_kcgor_5" });
-const paragraph = makeElement("p", {}, messageBody);
-const codeEl = makeElement("code", {}, paragraph);
-const mention = makeElement("button", { class: "_fileMention_kcgor_304", title: "/abs/mentioned.ts" }, codeEl);
-const mentionEvent = dispatchClick(mention, { ctrlKey: true });
-check(
-  "a file mention in message prose is left to dsh (no over-reach into text)",
-  !claimed(mentionEvent) && postCalls().length === 0,
-);
-// A titled control inside the row that is not a file is still not a file: the
-// path test guards the buttons WITHIN the surface, so a labelled button stays.
-const labelled = makeElement("button", { title: "刷新" }, producedRow);
-const labelledEvent = dispatchClick(labelled, { ctrlKey: true });
-check("a non-path titled button inside the row is left to dsh", !claimed(labelledEvent) && postCalls().length === 0);
-
-// Path resolution, observed through the POST body: the spellings dsh accepts
-// pass through, `~` is expanded against the host home, and a relative path joins
-// the session cwd.
-for (const [label, target, expected] of [
-  ["a POSIX absolute card title", makeElement("button", { title: "/a/b" }, card), "/a/b"],
-  ["a Windows drive card title", makeElement("button", { title: "C:\\a\\b" }, card), "C:\\a\\b"],
-  ["a Windows drive card title with forward slashes", makeElement("button", { title: "C:/a" }, card), "C:/a"],
-  ["a UNC card title", makeElement("button", { title: "\\\\srv\\share\\x" }, card), "\\\\srv\\share\\x"],
-  ["a ~ sidebar path", makeElement("li", { "data-files-entry": "file", "data-files-path": "~/x" }), "/home/me/x"],
-  ["a rootless relative sidebar path", makeElement("li", { "data-files-entry": "file", "data-files-path": "sub/f" }), "/abs/root/sub/f"],
-]) {
-  dispatchClick(target, { ctrlKey: true });
-  check(`${label} resolves to ${expected}`, lastPostBody().path === expected, String(lastPostBody().path));
-}
-
-// Launch failures are reported, never thrown, and never un-claim the click.
-consoleErrors.length = 0;
-launchAnswer = () => Promise.reject(new Error("boom"));
-const failedLaunch = dispatchClick(previewButton, { ctrlKey: true });
-check("a failed launch keeps the click claimed", claimed(failedLaunch));
-await flush();
-check(
-  "a rejected launch reports exactly one console line and does not throw",
-  consoleErrors.length === 1 && String(consoleErrors[0][0]).includes("launch request failed"),
-  JSON.stringify(consoleErrors),
-);
-consoleErrors.length = 0;
-launchAnswer = () => Promise.resolve({ ok: false, status: 500 });
-dispatchClick(previewButton, { ctrlKey: true });
-await flush();
-check(
-  "a non-2xx launch reports the status",
-  consoleErrors.length === 1 && consoleErrors[0][1] === 500,
-  JSON.stringify(consoleErrors),
-);
-launchAnswer = () => Promise.resolve({ ok: true, status: 200 });
-//#endregion
-
 //#region teardown of the one activation
 for (const dispose of main.disposers) dispose();
 check("disposing removes the document keydown listener", listenerOn(documentRef, "keydown", true).length === 0, `${listenerOn(documentRef, "keydown", true).length} left`);
-check("disposing removes the document click listener", listenerOn(documentRef, "click", true).length === 0, `${listenerOn(documentRef, "click", true).length} left`);
-check("disposing aborts the launch signal", mainController.signal.aborted === true);
+check("disposing leaves no other document listener", listenerOn(documentRef, "click", true).length === 0, `${listenerOn(documentRef, "click", true).length} left`);
 check("disposing releases the settings subscription", formReleased && formState.listeners.length === 0, `${formState.listeners.length} left`);
 check(
   "disposing restores the shipped wording",
@@ -811,82 +547,36 @@ check(
 );
 //#endregion
 
-//#region every answer but a 200 {available:true} parks only the click handler
-//
-// The host route alone decides availability, so a probe that cannot answer must
-// leave the other tweaks mounted and install no click listener at all: dsh's own
-// preview then keeps every click, exactly as before the tweak existed.
-for (const [label, impl] of [
-  ["a non-2xx response", () => Promise.resolve({ ok: false, status: 503, json: async () => ({ available: true }) })],
-  ["a rejecting fetch", () => Promise.reject(new Error("network down"))],
-  ["a synchronously throwing fetch", () => { throw new Error("sync throw"); }],
-  ["a body that is not JSON", () => Promise.resolve({ ok: true, json: async () => { throw new Error("bad json"); } })],
-  ["a response without json()", () => Promise.resolve({ ok: true })],
-  ["a non-object body", () => Promise.resolve({ ok: true, json: async () => 42 })],
-  ["an array body", () => Promise.resolve({ ok: true, json: async () => [] })],
-  ["available as a string", () => Promise.resolve({ ok: true, json: async () => ({ available: "yes" }) })],
-  ["available as a number", () => Promise.resolve({ ok: true, json: async () => ({ available: 1 }) })],
-  ["available: false", () => Promise.resolve({ ok: true, json: async () => ({ available: false, reason: "disabled" }) })],
-]) {
-  probeImpl = impl;
-  const doc = makeDocument();
-  sandbox.document = doc;
-  sandbox.window.document = doc;
-  const scenario = makeCtx({ sessions: sessionsStore, hostInfo });
-  exportsObj.apply(scenario.ctx);
-  await flush();
-  check(
-    `the probe installs no click listener for ${label} (the other tweaks still mount)`,
-    listenerOn(doc, "click", true).length === 0 && listenerOn(doc, "keydown", true).length === 1,
-    `${listenerOn(doc, "click", true).length} click, ${listenerOn(doc, "keydown", true).length} keydown`,
-  );
-  for (const dispose of scenario.disposers) dispose();
-}
-
-// No fetch at all is the same degradation.
-probeImpl = () => Promise.resolve({ ok: true, json: async () => ({ available: true }) });
-sandbox.window.fetch = undefined;
-const noFetchDoc = makeDocument();
-sandbox.document = noFetchDoc;
-sandbox.window.document = noFetchDoc;
-const noFetch = makeCtx({ sessions: sessionsStore, hostInfo });
-exportsObj.apply(noFetch.ctx);
-await flush();
+//#region degradation is visible: a locale service without the seat (worklist X5)
+// The tweak shadows a method dsh does not publish, so "there is no translate()" is
+// its most likely silent death. It must announce that and install nothing, while
+// the other tweaks keep working — which is why this is its own activation rather
+// than a variant of the one above.
+const bareLocale = { getSnapshot: () => ({ active: "zh", locales: [], revision: 0 }) };
+const noSeat = makeCtx({ locale: bareLocale });
+const warningsBeforeBare = warnings.length;
+if (typeof exportsObj?.apply === "function") exportsObj.apply(noSeat.ctx);
 check(
-  "no window.fetch means no click listener, and the other tweaks still mount",
-  listenerOn(noFetchDoc, "click", true).length === 0 && listenerOn(noFetchDoc, "keydown", true).length === 1,
+  "a locale service without translate() warns exactly once",
+  warnings.length === warningsBeforeBare + 1 &&
+    /locale service exposes no translate/.test(warnings[warnings.length - 1] ?? ""),
+  warnings.slice(warningsBeforeBare).join(" | "),
 );
-for (const dispose of noFetch.disposers) dispose();
-sandbox.window.fetch = fakeFetch;
-
-// A page that knows neither a session cwd nor a home sends the path as rendered.
-const bareDoc = makeDocument();
-sandbox.document = bareDoc;
-sandbox.window.document = bareDoc;
-const noFacts = makeCtx();
-exportsObj.apply(noFacts.ctx);
-await flush();
-const bareClick = listenerOn(bareDoc, "click", true)[0]?.fn;
-check("a context without sessions still installs the click listener", typeof bareClick === "function");
-const bareDispatch = (target) => {
-  fetchCalls.length = 0;
-  const event = clickEventFor(target, { ctrlKey: true });
-  if (typeof bareClick === "function") bareClick(event);
-  return event;
-};
-const bareRelative = bareDispatch(makeElement("li", { "data-files-entry": "file", "data-files-path": "sub/f" }));
 check(
-  "with neither a home nor a cwd the relative path is sent as rendered (the host rejects it)",
-  claimed(bareRelative) && lastPostBody().path === "sub/f" && lastPostBody().sessionId === undefined,
-  JSON.stringify(lastPostBody()),
+  "a locale service without translate() is left unshadowed",
+  !Object.prototype.hasOwnProperty.call(bareLocale, "translate"),
 );
-const bareHome = bareDispatch(makeElement("li", { "data-files-entry": "file", "data-files-path": "~/x" }));
 check(
-  "an unknown home leaves a ~ path abbreviated",
-  claimed(bareHome) && lastPostBody().path === "~/x",
-  String(lastPostBody().path),
+  "the rest of the tweak set still installs in that composition",
+  listenerOn(documentRef, "keydown", true).length === 1,
+  `${listenerOn(documentRef, "keydown", true).length} listener(s)`,
 );
-for (const dispose of noFacts.disposers) dispose();
+for (const dispose of noSeat.disposers) dispose();
+check(
+  "that activation tears down cleanly",
+  listenerOn(documentRef, "keydown", true).length === 0 && formState.listeners.length === 0,
+  `${listenerOn(documentRef, "keydown", true).length} listener(s), ${formState.listeners.length} subscription(s)`,
+);
 //#endregion
 
 console.log(

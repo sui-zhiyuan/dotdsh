@@ -1,8 +1,8 @@
 /**
  * The committed check for the CLI boundary: the argument grammar, the exit
- * codes, and the round trip that matters — a grant seeded through dsh's own
- * credential provider is reported by `status`, refused by validation when it is
- * forged, and removed by `logout`.
+ * codes, the login pointer, and the round trip that matters — a record seeded
+ * through dsh's own credential provider is reported by `status`, refused by
+ * validation when it is forged, and removed by `logout`.
  * Run: pnpm test
  *
  * The CLI is spawned as a child process, so what is exercised is the real entry
@@ -12,14 +12,18 @@
  * check proves the two halves agree about the document — a format this CLI never
  * parses itself.
  *
+ * `login` is checked as what it now is: a pointer at `/copilot-login` inside a
+ * booted dsh, not a second implementation of the flow. The protocol lives in
+ * dsh's authorization seam and cannot run in this process at all.
+ *
  * Every run uses a fresh `mktemp -d` home, and `--dsh-home` is exercised against
  * a second one, so nothing here can read or write a real `~/.dsh`.
  *
- * What a green run does NOT prove: that a real sign-in completes (no network
- * here — `verify-login.mjs` drives that state machine against a scripted
- * transport), that a running dsh picks the record up mid-flight (the store's
- * cross-process lock is dsh's own code path, exercised by the provider, not by
- * this check), or that the Copilot route then serves a request.
+ * What a green run does NOT prove: that a running dsh picks the record up
+ * mid-flight (the store's cross-process lock is dsh's own code path, exercised
+ * by the provider, not by this check), that `/copilot-login` completes a real
+ * sign-in (`verify-seam.mjs` drives the seam contract), or that the Copilot
+ * route then serves a request.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -80,13 +84,20 @@ try {
   assert.equal(badCommand.code, 2, "an unknown command is a usage error, not a silent no-op");
   assert.match(badCommand.err, /unknown command bogus/);
 
+  // The protocol's flag went with the protocol.
   const badTimeout = run(["login", "--timeout", "abc"], makeHome());
   assert.equal(badTimeout.code, 2);
-  assert.match(badTimeout.err, /--timeout must be a positive integer/);
+  assert.match(badTimeout.err, /unknown option --timeout/);
 
   const unknownOption = run(["status", "--dshhome", "/tmp/x"], makeHome());
   assert.equal(unknownOption.code, 2, "a mistyped option must not silently fall back to the default home");
   assert.match(unknownOption.err, /unknown option --dshhome/);
+
+  // ------------------------------------------------------- login is a pointer
+  const login = run(["login"], makeHome());
+  assert.equal(login.code, 1, "login cannot run the flow here, so it exits non-zero");
+  assert.match(login.err, /\/copilot-login/, "it names the command to run inside dsh");
+  assert.match(login.err, /booted harness/, "and says why this process cannot run it");
 
   // ------------------------------------------------------------- signed out
   const emptyHome = makeHome();

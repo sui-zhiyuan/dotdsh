@@ -1,8 +1,7 @@
 import type { CommandDefinition, CommandInvocation, CommandResult } from "@deepseek-ai/dsh-commands";
-import type { CopilotGrant } from "./grant.js";
-import type { LoginNotice, LoginRequest } from "./login.js";
-import { clearGrant, readStoredGrant, storeGrant, type CredentialRecords } from "./record.js";
+import { clearGrant, readStoredGrant, type CredentialRecords } from "./record.js";
 import { safeMessage } from "./redact.js";
+import type { CopilotSignInRequest, LoginNotice } from "./seam.js";
 import { grantSummaryLines } from "./summary.js";
 
 /** The one command a human runs to sign in. */
@@ -17,9 +16,9 @@ export const COPILOT_COMMAND_NAMES = [LOGIN, STATUS, LOGOUT] as const;
 
 /**
  * How long the sign-in has to produce its device code before the attempt is
- * called off. The flow's first act is one HTTPS POST to github.com, so this is
- * a network-failure window, not a human-speed one: the code is on screen in
- * about a second on a working connection.
+ * called off. The flow's first act is one HTTPS POST to GitHub, so this is a
+ * network-failure window, not a human-speed one: the code is on screen in about
+ * a second on a working connection.
  */
 const NOTICE_WINDOW_MS = 20_000;
 
@@ -35,8 +34,12 @@ export interface CommandRegistry {
 export interface CopilotCommandOptions {
   /** The harness credential store. */
   readonly credentials: CredentialRecords;
-  /** The sign-in runner, injectable so the committed checks drive every branch. */
-  readonly login: (request: LoginRequest) => Promise<CopilotGrant>;
+  /**
+   * The seam runner, injectable so the committed checks drive every branch.
+   * It resolves once dsh's authorization flow has committed the record; this
+   * package never writes it.
+   */
+  readonly login: (request: CopilotSignInRequest) => Promise<void>;
   /** How long one attempt may take before it aborts itself. */
   readonly loginWindowMs: number;
   /**
@@ -45,6 +48,13 @@ export interface CopilotCommandOptions {
    * case the status output simply omits the line.
    */
   readonly routeConfigured?: () => boolean;
+  /**
+   * Whether dsh currently registers an authorization flow for this record —
+   * `authorization.describe(key) !== undefined`. Absent when this composition
+   * has no authorization service to ask, in which case the status output omits
+   * the line rather than claiming the flow is missing.
+   */
+  readonly flowRegistered?: () => boolean;
   /** Where a background failure goes — the attempt's own result has no surface. */
   readonly warn?: (message: string, error: unknown) => void;
 }
@@ -57,8 +67,8 @@ interface Attempt {
   readonly controller: AbortController;
   /** Resolves with the first device code, or with undefined once the flow settles without one. */
   readonly notice: Promise<DeviceCodeNotice | undefined>;
-  /** Settles when the flow does: the grant, or the failure. */
-  readonly settled: Promise<CopilotGrant>;
+  /** Settles when the flow does; resolving means the record is committed. */
+  readonly settled: Promise<void>;
 }
 
 /** The provider-profile snippet a signed-in user still has to add, when nothing serves the route. */
@@ -74,17 +84,19 @@ const ROUTE_HINT = [
  * These are slash commands, not tools, and that is the whole security design:
  * a command is typed by a human and executed without the model, so no prompt
  * injection reaching any model can start a device-code authorization, read a
- * token, or drop a grant. Nothing this package registers is model-callable.
+ * record, or drop one. Nothing this package registers is model-callable.
  *
  * `/copilot-login` returns as soon as the flow has a device code to show —
  * that code *is* the answer, and there is no channel for a later message to
  * reach the same human, so the attempt continues in the background and the
  * confirmation is a second call: run `/copilot-login` again, or
  * `/copilot-status`. A second call never starts a second attempt; it reports on
- * the one already running.
+ * the one already running. The record is written by dsh's flow, never here: on
+ * success the store is re-read, and a freshly committed record that fails this
+ * package's validation is reported rather than silently accepted.
  *
  * @param registry - the command registry to register into.
- * @param options - the store, the flow, and the reporting knobs.
+ * @param options - the store, the seam runner, and the reporting knobs.
  * @returns a disposer that unregisters the commands and aborts any attempt still running.
  */
 export function registerCopilotCommands(registry: CommandRegistry, options: CopilotCommandOptions): () => void {
@@ -124,6 +136,45 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
     ];
   };
 
+  /**
+   * The line that says whether `/copilot-login` can run at all. dsh registers
+   * the flow for every catalog provider when `llm-pi-ai` mounts, but a
+   * composition can omit that row, and then `begin()` answers `NO_FLOW`; saying
+   * so on the status command is cheaper than making the human discover it by
+   * running the login.
+   */
+  const flowLines = (): string[] => {
+    const registered = options.flowRegistered;
+    if (registered === undefined) return [];
+    if (registered()) {
+      return ["Authorization flow: dsh registers one for llm-pi-ai/github-copilot, so /copilot-login can run it."];
+    }
+    return ["Authorization flow: NOT registered, so /copilot-login cannot run; is the llm-pi-ai row mounted?"];
+  };
+
+  /**
+   * Report a sign-in that just finished, from the record dsh's flow committed.
+   *
+   * The write is the flow's, so this re-reads the store instead of receiving the
+   * grant. A record that fails validation is named explicitly: it is the one
+   * case where the flow reported success and this package still refuses to use
+   * what was written, and hiding it behind a bare "signed in" would leave the
+   * user with a record nothing authenticates against.
+   */
+  const signedInLines = async (): Promise<string[]> => {
+    const stored = await readStoredGrant(options.credentials);
+    if (stored.rejected) {
+      return [
+        "The sign-in finished, but the record dsh wrote did not pass validation, so nothing is using it.",
+        "Run /copilot-logout and then /copilot-login to replace it.",
+      ];
+    }
+    if (stored.grant === undefined) {
+      return ["The sign-in finished, but no GitHub Copilot record is stored; dsh's flow did not commit one."];
+    }
+    return ["Signed in to GitHub Copilot.", ...grantSummaryLines(stored.grant)];
+  };
+
   /** Report on an attempt that is already in flight, without starting another. */
   const rejoin = async (current: Attempt): Promise<CommandResult> => {
     const outcome = await Promise.race([
@@ -148,13 +199,13 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
         return { kind: "error", text: `GitHub Copilot sign-in failed: ${safeMessage(error)}` };
       }
     }
-    const grant = await current.settled;
-    return { kind: "success", text: ["Signed in to GitHub Copilot.", ...grantSummaryLines(grant)].join("\n") };
+    await current.settled;
+    return { kind: "success", text: (await signedInLines()).join("\n") };
   };
 
   const login: CommandDefinition = {
     name: LOGIN,
-    description: "Sign in to GitHub Copilot with a device code, and store the grant the stock github-copilot route reads",
+    description: "Start dsh's GitHub Copilot authorization flow, show its device code, and let the flow store the record",
     handler: async (invocation: CommandInvocation): Promise<CommandResult> => {
       if (invocation.rawInput.trim().length > 0) {
         return { kind: "error", text: "Usage: /copilot-login (no arguments)" };
@@ -171,13 +222,7 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
       const current = start();
       attempt = current;
       current.settled.then(
-        async (grant) => {
-          try {
-            await storeGrant(options.credentials, grant);
-          } catch (error) {
-            options.warn?.("copilot-auth: the sign-in succeeded but its grant could not be stored", error);
-          }
-        },
+        () => undefined,
         (error: unknown) => {
           options.warn?.("copilot-auth: the sign-in attempt did not finish", error);
         },
@@ -192,18 +237,21 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
         }),
       ]);
       if (first === undefined) {
+        // The flow settled before it reported a device code. `settled`
+        // resolving means it committed the record, so this is a completed
+        // sign-in, not a silent failure: report what was written.
         try {
           await current.settled;
         } catch (error) {
           return { kind: "error", text: `GitHub Copilot sign-in failed: ${safeMessage(error)}` };
         }
-        return { kind: "error", text: "The sign-in finished without asking for a device code; nothing was stored." };
+        return { kind: "success", text: (await signedInLines()).join("\n") };
       }
       if (first === "timeout") {
         current.controller.abort();
         return {
           kind: "error",
-          text: `The sign-in produced no device code within ${Math.round(NOTICE_WINDOW_MS / 1000)}s and was called off. Check this machine's network access to github.com and try again.`,
+          text: `The sign-in produced no device code within ${Math.round(NOTICE_WINDOW_MS / 1000)}s and was called off. Check this machine's network access to GitHub and try again.`,
         };
       }
       const minutes = first.expiresInSeconds === undefined ? undefined : Math.round(first.expiresInSeconds / 60);
@@ -214,7 +262,7 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
           `  ${first.verificationUri}`,
           `  code: ${first.userCode}`,
           ...(minutes === undefined ? [] : [`The code is valid for about ${minutes} minutes.`]),
-          "When the browser says it is done, run /copilot-status to confirm the grant was stored.",
+          "When the browser says it is done, run /copilot-status to confirm the record was stored.",
         ].join("\n"),
       };
     },
@@ -222,7 +270,7 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
 
   const status: CommandDefinition = {
     name: STATUS,
-    description: "Report the stored GitHub Copilot sign-in, its expiry, and whether the github-copilot route is registered",
+    description: "Report the stored GitHub Copilot sign-in, its expiry, and whether the route and the authorization flow are registered",
     handler: async (): Promise<CommandResult> => {
       if (attempt !== undefined) {
         return await rejoin(attempt);
@@ -238,11 +286,14 @@ export function registerCopilotCommands(registry: CommandRegistry, options: Copi
         };
       }
       if (stored.grant === undefined) {
-        return { kind: "success", text: ["GitHub Copilot is not signed in. Run /copilot-login.", ...routeLines()].join("\n") };
+        return {
+          kind: "success",
+          text: ["GitHub Copilot is not signed in. Run /copilot-login.", ...routeLines(), ...flowLines()].join("\n"),
+        };
       }
       return {
         kind: "success",
-        text: ["GitHub Copilot is signed in.", ...grantSummaryLines(stored.grant), ...routeLines()].join("\n"),
+        text: ["GitHub Copilot is signed in.", ...grantSummaryLines(stored.grant), ...routeLines(), ...flowLines()].join("\n"),
       };
     },
   };
