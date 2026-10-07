@@ -80,7 +80,7 @@ visibility, so the branch that actually happens is indistinguishable from the ou
 the same session is resumed by whichever profile boots next. The session this page was written
 from is the proof: its own request headers read `DIRTY -> CLEAN -> DIRTY`, at timestamps that
 match each profile's `cordis.yml` mtime (the file dsh rewrites on every boot), and the profile's
-`patchReload: live` user layer is not involved.
+own layer (`cordis.patch.yml`, the file dsh hot-reloads) is not involved.
 
 Two consequences:
 
