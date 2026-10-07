@@ -203,6 +203,21 @@ ssh's business — and `BatchMode` is on by default, which makes a host whose ke
 fail with ssh's own message instead of waiting on a prompt a tool call cannot answer; connect to a new
 host once by hand to accept its key, or turn `batchMode` off for the row.
 
+### What dsh itself provides
+
+Nothing remote. dsh ships no ssh client, no host registry and no connection reuse: its `bash` tool
+runs a fresh local `bash -c` per call, and the persistent-shell variant is mounted only by the
+`minimal` agent preset, so an installation that carries it does not have it in a default
+composition. A model can still reach a host by shelling out `ssh host cmd` through `bash`, but that
+path has no destination check, no per-command deadline that separates the handshake from the
+command, no output contract beyond `bash`'s generic caps, and no connection reuse.
+`@deepseek-ai/dsh-api-remotes` is not an alternative: it projects Host methods to the browser and
+says nothing about remote hosts.
+
+So the alternatives to this package are shelling out through `bash` (above), or mounting an ssh MCP
+server yourself — `@deepseek-ai/dsh-mcp-client` is installed but inert until a composition names a
+server. Neither reuses an authenticated connection, which is what `ssh_run` exists for.
+
 ### Configuration
 
 All eight keys are optional, and a value that cannot work fails the row while it mounts:
