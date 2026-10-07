@@ -63,8 +63,9 @@
  * 6. a `git_complete` call by a family that holds a claim is `ask`, and its reason
  *    names the family's branch, the integration branch and the merge message — the
  *    three facts the human is being asked about. A call for a family with no claim,
- *    or one that carries no agent, is `next()`: there is nothing to finish, or
- *    nobody the question belongs to.
+ *    one that carries no agent, or one from a delegated teammate is `next()`: there
+ *    is nothing to finish, nobody the question belongs to, or a caller the tool
+ *    body refuses anyway because the workflow is the Lead's.
  *
  * Rule 6 runs before the file-writer lookup rather than after it, and both halves
  * of that matter: a rule 6 that ran for every call would be a rule that asks a
@@ -90,6 +91,7 @@ import { ensureWorkspace } from "../core/core.js";
 import type { FlowSettings } from "../platform/settings.js";
 import { GIT_FLOW_SKILL_NAMES } from "./skill.js";
 import { factsFor, sessionAgentOf } from "./shared.js";
+import { isTopLevelSession } from "./team.js";
 
 /**
  * The tools that can change a file, and the argument each declares its target
@@ -172,6 +174,9 @@ function isInside(parent: string, child: string): boolean {
  *   the answer the write rules give it too, and one the harness's own ask
  *   resolution would refuse anyway. So is a session with **no working directory**:
  *   there is no repository in which to resolve a branch;
+ * - a call from a **delegated teammate** is `next()`: the branch workflow is the
+ *   Lead's (`team.ts`), and the tool body refuses the call before it does
+ *   anything, so there is no merge here for a human to decide;
  * - a family that holds **no claim** has nothing to finish. `core.gitComplete`
  *   reports `nothing-to-do` for that call, and a no-op is not worth a human's
  *   attention: a prompt that asks about nothing is a prompt that teaches its
@@ -200,6 +205,13 @@ async function askBeforeComplete(
   if (rawAgent === undefined) return next();
 
   const agent = sessionAgentOf(rawAgent);
+  // A delegated teammate can never finish a family: git-flow is Lead-only inside a
+  // Team, and the tool body refuses the call itself (`team.leadOnlyRefusal`).
+  // Passing through here is what makes that refusal *direct*: resolving the
+  // workspace below would start git children and, for a family that holds a claim,
+  // put a merge to a human that the tool body would then decline.
+  if (!isTopLevelSession(agent.session)) return next();
+
   const cwd = agent.session.header.cwd;
   if (cwd === undefined) return next();
 

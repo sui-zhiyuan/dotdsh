@@ -13,6 +13,12 @@
  * - nothing happened: no git child was spawned, no claim file was written, the
  *   checkout never moved, and a command injected no context.
  *
+ * It also drives the pre-dispatch guard directly, because a tool call passes
+ * through it before the executor runs: a member's `git_complete` must be waved
+ * through there (no workspace resolution, no approval ask) so the tool body's
+ * refusal is what answers, while a Lead's still reaches the guard's `ask`. The
+ * file-write fence is checked for a member too, and is unchanged.
+ *
  * What a green run does NOT prove: that dsh's Agent Teams feature really marks a
  * delegated session with `header.parentSession` (that is dsh's session model, and
  * `resumableSessionIds` already relies on the same field), nor that a real Team's
@@ -27,6 +33,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { GIT_FLOW_COMMANDS } from "../lib/boundary/commands.js";
+import { GIT_FLOW_INTERCEPTOR } from "../lib/boundary/guard.js";
+import { GIT_FLOW_SKILL_NAMES } from "../lib/boundary/skill.js";
 import { leadOnlyRefusal } from "../lib/boundary/team.js";
 import { GIT_FLOW_TOOLS } from "../lib/boundary/tools.js";
 import { check, makeAgent, report, scratchRepo, settings, signal } from "./support.mjs";
@@ -53,6 +61,27 @@ const invocation = (agent, rawInput, commandId) => ({ commandId, agent, rawInput
 
 /** What the tool registry hands an executor. */
 const execution = (agent) => ({ agent, signal });
+
+/**
+ * Drive the pre-dispatch guard once, exactly as dsh's waterfall would.
+ *
+ * Returns the decision and whether the continuation ran, so "the guard asked a
+ * human" (`kind === "ask"`, continuation not reached) and "the guard passed the
+ * call through" are both observed directly rather than inferred from a tool
+ * answer.
+ *
+ * @param call - the fabricated pending call.
+ * @returns the decision and the pass-through flag.
+ */
+async function guardDecide(call) {
+  let passed = false;
+  const next = () => {
+    passed = true;
+    return Promise.resolve({ kind: "allow" });
+  };
+  const decision = await GIT_FLOW_INTERCEPTOR.handle(call, next, SETTINGS);
+  return { decision, passed };
+}
 
 /** The refusal text one action must produce, spelled out here rather than imported. */
 const refusalFor = (commandText) =>
@@ -189,6 +218,97 @@ await check("a member's three commands are refused, with no git, no claim and no
     assert.equal(existsSync(join(repo.root, ".dsh.local")), false, "a refused command wrote no claim");
     assert.equal(await repo.git.text(["--no-pager", "branch", "--list", "--format=%(refname:short)"]), "master");
     assert.equal(await repo.git.text(["rev-parse", "--abbrev-ref", "HEAD"]), "master");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+// ------------------------ the guard's approval path is skipped for a member
+await check("a member's git_complete is refused before the guard asks a human", async () => {
+  const repo = await scratchRepo();
+  try {
+    const lead = { id: "team-lead-gate", header: { cwd: repo.root } };
+    const member = { id: "team-member-gate", header: { cwd: repo.root, parentSession: lead.id } };
+
+    // The Lead opens the family's branch first, so the family really holds a claim:
+    // without the member gate this is exactly the state the guard asks a human
+    // about, having already resolved the workspace with git children.
+    const leadAgent = makeAgent(lead.id, repo.root, [lead, member]);
+    await tool("git_start").execute({ branchName: "team-gate" }, execution(leadAgent.agent), SETTINGS);
+
+    const { agent, spawns } = makeAgent(member.id, repo.root, [lead, member]);
+    const call = { name: "git_complete", arguments: { mergeMessage: "feat: member work" }, agent, signal };
+
+    // (a) the guard passes the call through: no ask, and nothing resolved on the way.
+    const { decision, passed } = await guardDecide(call);
+    assert.equal(passed, true, "a member's completion must pass the guard, not be put to a human");
+    assert.equal(decision.kind, "allow");
+    assert.equal(spawns.length, 0, "the guard resolved no workspace for a member");
+
+    // (b) the tool body is what answers, with the refusal...
+    const text = await tool("git_complete").execute({ mergeMessage: "feat: member work" }, execution(agent), SETTINGS);
+    assert.equal(text, refusalFor("/git-complete <merge message>"));
+
+    // ...(c) still having started no git child and put nothing to anyone.
+    assert.equal(spawns.length, 0, "the refusal started no git child");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+await check("a Lead's git_complete still reaches the guard's ask", async () => {
+  const repo = await scratchRepo();
+  try {
+    const { agent, spawns } = makeAgent("team-lead-gate-ask", repo.root);
+    await tool("git_start").execute({ branchName: "team-ask" }, execution(agent), SETTINGS);
+
+    const { decision, passed } = await guardDecide({
+      name: "git_complete",
+      arguments: { mergeMessage: "feat: lead work" },
+      agent,
+      signal,
+    });
+    assert.equal(passed, false, "the Lead's completion must not dispatch unasked");
+    assert.equal(decision.kind, "ask");
+    assert.ok(spawns.length > 0, "the Lead's ask still resolves the family's workspace with git");
+  } finally {
+    await repo.cleanup();
+  }
+});
+
+// ------------------------------- the file-write fence is unchanged for a member
+await check("the file-write fence is unchanged for a member", async () => {
+  const repo = await scratchRepo();
+  try {
+    const lead = { id: "team-lead-fence", header: { cwd: repo.root } };
+    const member = { id: "team-member-fence", header: { cwd: repo.root, parentSession: lead.id } };
+    const { agent } = makeAgent(member.id, repo.root, [lead, member]);
+
+    // No claim yet: a member is refused exactly like any session without a branch,
+    // with the write fence's own words — it knows nothing about Teams.
+    const denied = await guardDecide({
+      name: "write",
+      arguments: { file_path: join(repo.root, "note.txt") },
+      agent,
+      signal,
+    });
+    assert.equal(denied.passed, false);
+    assert.equal(denied.decision.kind, "deny");
+    assert.ok(denied.decision.reason.includes(GIT_FLOW_SKILL_NAMES.workflow), denied.decision.reason);
+    assert.ok(denied.decision.reason.includes("git_start"), denied.decision.reason);
+
+    // The Lead opens the family's branch; the member then writes inside the tree
+    // the family holds, which the fence allows.
+    const leadAgent = makeAgent(lead.id, repo.root, [lead, member]);
+    await tool("git_start").execute({ branchName: "team-fence" }, execution(leadAgent.agent), SETTINGS);
+    const allowed = await guardDecide({
+      name: "write",
+      arguments: { file_path: join(repo.root, "note.txt") },
+      agent,
+      signal,
+    });
+    assert.equal(allowed.passed, true, "a member's write inside the family's tree is allowed");
+    assert.equal(allowed.decision.kind, "allow");
   } finally {
     await repo.cleanup();
   }
