@@ -58,9 +58,9 @@ export function proxyHostOf(access: string): string | undefined {
  *   refresh endpoint from it while sending the refresh token as a bearer
  *   credential. A payload combining an official `proxy-ep` with an attacker
  *   `enterpriseUrl` would pass a check that trusted either field alone, so an
- *   `enterpriseUrl` is refused outright. This package never produces one: its
- *   flow answers pi-ai's enterprise prompt with the empty string, keeping every
- *   sign-in on github.com.
+ *   `enterpriseUrl` is refused outright. This package never produces one: the
+ *   interaction it supplies to dsh's flow answers pi-ai's enterprise prompt with
+ *   the empty string, keeping every sign-in on github.com.
  *
  * Everything else here is shape: an empty token or a missing expiry would fail
  * later, inside a request, where the reason is far harder to see.

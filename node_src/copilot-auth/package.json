@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dotdsh-copilot-auth",
   "version": "0.1.0",
-  "description": "dotdsh copilot-auth: the human-initiated GitHub Copilot sign-in dsh does not ship — a /copilot-login|status|logout command set and a dotdsh-copilot-auth CLI that store the llm-pi-ai/github-copilot grant through the harness credential seam, so the stock llm-pi-ai route can serve the subscription",
+  "description": "dotdsh copilot-auth: the human-facing sign-in surface for GitHub Copilot — a /copilot-login|status|logout command set that starts dsh's own llm-pi-ai authorization flow, plus a dotdsh-copilot-auth CLI, and the validation/status/logout around the llm-pi-ai/github-copilot record that flow commits",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -20,12 +20,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm build && node test/verify-grant.mjs && node test/verify-redact.mjs && node test/verify-login.mjs && node test/verify-commands.mjs && node test/verify-cli.mjs",
+    "test": "pnpm build && node test/verify-grant.mjs && node test/verify-redact.mjs && node test/verify-seam.mjs && node test/verify-commands.mjs && node test/verify-cli.mjs",
     "prepublishOnly": "pnpm build"
   },
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-authorization": "0.2.0-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2"
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-authorization": "0.2.0-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
