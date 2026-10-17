@@ -1,6 +1,6 @@
 ---
 name: multi-subagent
-description: 多模型子代理协作：主代理只做下发、汇总与监控，每次下发先经用户确认，优先复用可续期通道，分块原样展示返回；首次建通道时执行工具冒烟测试。
+description: 多模型子代理协作：主代理只做下发、汇总与监控，每次下发先经用户确认，建通道前先由用户选定要创建哪些模型的子代理，优先复用可续期通道，分块原样展示返回；首次建通道时执行工具冒烟测试。
 whenToUse: 用户要求将任务交给多个模型分别处理、持续复用子代理协作，或首次建立协作通道并验证工具执行能力时使用。
 ---
 
@@ -62,7 +62,7 @@ whenToUse: 用户要求将任务交给多个模型分别处理、持续复用子
 
 先用`list_agents`查看已有可续期通道；可用则用`send_message`复用，不因更换具体任务而默认新建。
 
-需要首次建立通道时，按用户指定的provider/model选择路由，并使用`list_subagent_models`查看可用信息。无法使用指定路由时，如实报告，不擅自换成其他模型。
+需要首次建立通道时，先按下一节确认用户要创建哪些模型的子代理，不得按模型清单默认全建；再按用户指定的provider/model选择路由，并使用`list_subagent_models`查看可用信息。无法使用指定路由时，如实报告，不擅自换成其他模型。
 
 相互独立且已获用户确认的下发，在同一条助手消息内并行执行；业务通道采用后台子代理，不为等待返回而重复启动同一任务。
 
@@ -70,21 +70,39 @@ whenToUse: 用户要求将任务交给多个模型分别处理、持续复用子
 
 冒烟测试并入本技能，建立新通道时执行；已有可用通道直接复用，不为重复测试另建通道。
 
-| # | provider | model |
-|---|---|---|
-| 1 | `opencode-gpt` | `gpt-6.1-sol` |
-| 2 | `deepseek-official` | `deepseek-v4-pro` |
+### 先确认要建哪些模型
+
+下表是**可选清单，不是默认全建清单**。建通道前先把整张表展示给用户，逐个询问要创建哪些 module 的子代理（可多选，也可一个都不选）；只对用户明确选中的 module 建通道并跑冒烟测试。
+
+- 用户未点名、也未回答时，**一个通道都不建**，继续等待确认。
+- 用户只选中其中一部分时，只建这部分；未选中的 module 保持未建，不预先创建备用通道。
+- 用户点名清单外的 provider/model 时，先用`list_subagent_models`核对该路由与其推理档位，再并入本次确认。
+
+| # | provider | model | reasoning_effort |
+|---|---|---|---|
+| 1 | `opencode-gpt` | `gpt-6.1-sol` | 可选 |
+| 2 | `deepseek-official` | `deepseek-v4-pro` | 可选 |
+| 3 | `opencode` | `claude-opus-5-5` | **必填**，建议`high` |
+
+### `claude-opus-5-5` 必须显式指定推理档位
+
+`opencode/claude-opus-5-5`是只接受自适应思考的模型，**每次`subagent`调用都必须显式传入`reasoning_effort`**（`low`、`medium`、`high`、`xhigh`、`max`之一），不得省略：
+
+- 省略档位时，pi-ai 会发送`thinking:{"type":"disabled"}`，上游 opencode Zen 直接返回 400：`"thinking.type.disabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort"`。
+- 现象是子代理零 token 就失败、重试同样失败；这不是网络或鉴权问题，补上档位即可恢复。
+- 档位随通道保存：`send_message`复用已有通道时沿用创建时的档位，不需重传；新建通道必须重新指定。
+- 冒烟测试同样适用：向用户展示的拟建通道必须写明`reasoning_effort`的取值。
 
 ### 首轮：工具执行
 
-向用户展示拟创建通道的provider/model、`模型｜角色`显示名及以下测试任务，获得确认后再创建后台子代理：
+向用户展示拟创建通道的provider/model、`reasoning_effort`（`claude-opus-5-5`必填）、`模型｜角色`显示名及以下测试任务，获得确认后再创建后台子代理：
 
 > 这是一次工具执行冒烟测试，只做以下事项：
 > 1. 用bash执行`echo hello-world`。
 > 2. 只回复一行`TOOL-OK: hello-world`。
 > 不要创建、修改、删除任何文件，不要执行其他命令。
 
-需要创建多个独立通道时，在用户确认后并行创建。留意工具返回，收到结果后检查是否完成指定命令及回复。
+需要创建多个独立通道时，仅在用户已选中的 module 范围内、取得确认后并行创建。留意工具返回，收到结果后检查是否完成指定命令及回复。
 
 ## 事实等级与证据性质
 
