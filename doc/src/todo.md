@@ -124,6 +124,17 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   `git rebase --onto` command to run, and the caller replays it. A branch cut *from* another feature
   is detected by nothing today: after its parent merges its branch point is stale, so the next
   `/git-complete` asks for a replay — but nothing tells the caller that a second feature is why
+- [ ] Allow `git_start` to name the base the branch is cut from. Today the base is the configured
+  `integrationBranch` and only that: `core.materializeWorkspace` passes it to `switch -c` and
+  `worktree add -b`, never HEAD, because the first family leaves the main tree standing on its own
+  branch, so a second family cut from HEAD would be branched off the first family's work. A `base`
+  would make a stacked feature expressible through the tool instead of by hand, which is the
+  instrument the item above needs; it does not settle that item by itself, because `git_complete`
+  still merges into the integration branch and still answers `not-descendant` for a branch whose
+  base has since been merged. Decide with it: the argument's name and whether it takes any ref or
+  only a branch; a shape for `/git-start`, whose whole input is one free-text feature name today;
+  whether the ref is validated at the boundary like `branchName` or resolved after a fetch; and
+  whether the claim record keeps it, so a later completion can say what the branch was cut from
 - [ ] Reconsider a `commit-msg` hook alongside the skill. The skill shapes the message before it is
   written, which is the right instrument for a convention; a hook is the right one for a rule a
   human must not be able to talk past (a missing `Refs:` on a repo that requires one). Adding it
