@@ -10,7 +10,7 @@ Conventions for AI agents working in this repository. Human-facing documentation
 | `node_src/<id>/` | pnpm (root `package.json` + `pnpm-workspace.yaml`) | One plugin package per directory (TypeScript `src/*.ts` → gitignored `lib/`); it contributes no patch layer of its own. A **dual-face** package additionally declares `dsh.client` and commits its browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | pnpm (same workspace) | The `@dsh-external/dotdsh` **bundle**: its `cordis.patch.yml` holds every plugin row and its `dependencies` (`workspace:*`) name every plugin package — dsh composes the patch as one layer |
 | `py_src/dev-apply/` | uv workspace (root `pyproject.toml` + `uv.lock`) | The `dev_apply` CLI, run with `uv run python -m dev_apply`: build + link-install + restart reminder |
-| `dsh_home/` | — | `settings.yaml` reference template only (one-time manual copy; nothing syncs it automatically. Under dsh 0.2.0-rc.2 the harness imports it into the active profile's patch once and renames it `settings.yaml.imported`) |
+| `dsh_home/` | — | `settings.yaml` reference template only (one-time manual copy; nothing syncs it automatically. Under dsh 0.2.1-rc.2 the harness imports it into the active profile's patch once and renames it `settings.yaml.imported`) |
 | `target/` | build tools | All build artifacts (gitignored) |
 
 ## Naming conventions (Python tooling)
@@ -88,7 +88,7 @@ mdbook build                             # build the docs
 
 ## Adding a plugin
 
-1. Create the package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`). Give it its harness `peerDependencies` at the **exact runtime version** dsh is installed at (0.2.0-rc.2 today), so pnpm records a lockfile importer for it and the boot-time peer gate does not disable the row. For a browser half, additionally add `"exports": {"./client": …}` → a committed `client/index.js` and the `"dsh": {"client": {"platform": "web", "inject": [...]}}` declaration, where `inject` names the client package rows whose services the half reads; prefer extending an existing dual-face package (one `tweaks` registry, one row) over adding a new tiny package.
+1. Create the package under `node_src/<id>/` (package.json + `src/index.ts` + `tsconfig.json`; sources are TypeScript, built to `lib/`). Give it its harness `peerDependencies` at the **exact runtime version** dsh is installed at (0.2.1-rc.2 today) so pnpm records a lockfile importer and the build sees that runtime's types, and declare `"engines": { "dsh": ">=0.2.1-rc.2 <0.3.0" }` — the compatibility range, which deliberately does not reach back to 0.2.0. Since dsh 0.2.1 the boot-time compatibility gate evaluates `engines.dsh` alone and ignores the harness peers when that key is present; without it, every `@deepseek-ai/dsh*` peer must match the runtime, so any version bump disables the row. For a browser half, additionally add `"exports": {"./client": …}` → a committed `client/index.js` and the `"dsh": {"client": {"platform": "web", "inject": [...]}}` declaration, where `inject` names the client package rows whose services the half reads; prefer extending an existing dual-face package (one `tweaks` registry, one row) over adding a new tiny package.
 2. Add its row (`id`, `name`, `config`) to `node_src/dotdsh/cordis.patch.yml`.
 3. Add it to the bundle's `dependencies` as `"workspace:*"`, then `pnpm install` — that is the edge a published install of the bundle needs (pnpm rewrites `workspace:*` to a real version at pack time).
 4. `uv run python -m dev_apply` — builds the packages, links them into the profile, prints the restart reminder.
@@ -98,7 +98,7 @@ mdbook build                             # build the docs
 
 - Plugin rows are edited **only** in `node_src/dotdsh/cordis.patch.yml`.
 - The profile's `cordis.patch.yml` belongs to the user: nothing in this repository writes it. Per-profile overrides and disables go there; machine-wide ones go in `$DSH_HOME/cordis.patch.yml`.
-- `dsh_home/` holds only controlled `$DSH_HOME` files; **credentials (`.credentials.yaml`/`.env`), node_modules, sessions, and `cordis.yml` must never be committed** (`.gitignore` also guards those paths); the `settings.yaml` template contains only commented examples (dsh imports it into the profile patch and renames it on the first 0.2.0-rc.2 boot).
+- `dsh_home/` holds only controlled `$DSH_HOME` files; **credentials (`.credentials.yaml`/`.env`), node_modules, sessions, and `cordis.yml` must never be committed** (`.gitignore` also guards those paths); the `settings.yaml` template contains only commented examples (dsh imports it into the profile patch and renames it on the first 0.2.1-rc.2 boot).
 - Verify sync/boot only under a temporary `DSH_HOME` (`mktemp -d`); **never touch the user's real `~/.dsh`** without the user explicitly asking to run `dev_apply` against it.
 - `dev_apply` writes only into the profile directory; it never writes into this repository.
 - **No absolute paths in committed files.** Machine-local paths — the `link:` specs in the profile manifest, an HMR `root` — live in `$DSH_HOME` layers, and `dev_apply` computes them at run time; `workspace:*` is how the repository refers to its own packages.

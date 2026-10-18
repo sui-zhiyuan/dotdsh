@@ -3,8 +3,8 @@
 # The values below mirror the setup this repository is developed against:
 # uncomment what you want, drop what you do not.
 #
-# HOW DSH 0.2.0-rc.2 READS IT: this document is the 0.1.x user-settings file.
-# A 0.2.0-rc.2 boot imports every section into the active profile's own patch
+# HOW DSH 0.2.1-rc.2 READS IT: this document is the 0.1.x user-settings file.
+# A 0.2.1-rc.2 boot imports every section into the active profile's own patch
 # ($DSH_HOME/profiles/<name>/cordis.patch.yml, each section becoming that row's
 # `config:`) and then RENAMES this file to settings.yaml.imported, so it is read
 # once and never watched again. Copying it onto a fresh machine therefore still

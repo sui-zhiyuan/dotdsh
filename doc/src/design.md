@@ -327,7 +327,7 @@ to be committed.
   need a dsh restart. A config experiment that must be live belongs in the user layer — for a
   browser-facing switch that means a `config:` block on its row in the profile's patch, which the
   settings transport also writes: the `ui-tweaks` switches are that path's worked example.
-  (`$DSH_HOME/settings.yaml` is the 0.1.x document; a 0.2.0-rc.2 boot imports it into the active
+  (`$DSH_HOME/settings.yaml` is the 0.1.x document; a 0.2.1-rc.2 boot imports it into the active
   profile once and renames it `settings.yaml.imported`.)
 - **Repository files never contain absolute paths.** Machine-local paths — the `link:` specs
   in the profile manifest, an HMR `root` — live in `$DSH_HOME` layers only, and `dev_apply`

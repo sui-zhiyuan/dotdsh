@@ -2,7 +2,7 @@
 // flow and translate the conversation with the human into this package's
 // notice vocabulary.
 //
-// dsh 0.2.0-rc.2 ships the protocol and the write, not the caller. Placed in
+// dsh 0.2.1-rc.2 ships the protocol and the write, not the caller. Placed in
 // context by `@deepseek-ai/dsh-llm-pi-ai`, `ctx.authorization` holds one flow
 // per catalog provider — the `github-copilot` one is keyed by the credential
 // record `llm-pi-ai/github-copilot` and runs pi-ai's device-code login, token
