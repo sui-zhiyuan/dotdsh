@@ -28,61 +28,51 @@ provider_policy:
 
 tasks:
   - code: design
-    name: 设计
     provider: github-copilot
     model: claude-opus-5.5
     reasoning_effort: high
 
   - code: modify
-    name: 修改
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: high
 
   - code: defect
-    name: 缺陷
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: high
 
   - code: test
-    name: 测试
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: high
 
   - code: review
-    name: 审查
     provider: github-copilot
     model: gpt-6.1-sol
     reasoning_effort: high
 
   - code: doc
-    name: 文档编写
     provider: github-copilot
     model: gpt-6-luna
     reasoning_effort: low
 
   - code: search
-    name: 信息检索
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: low
 
   - code: clarify
-    name: 需求澄清
     provider: github-copilot
     model: gpt-6-luna
     reasoning_effort: high
 
   - code: env
-    name: 环境管理
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: high
 
   - code: default
-    name: 默认
     provider: deepseek-official
     model: deepseek-flash
     reasoning_effort: high
