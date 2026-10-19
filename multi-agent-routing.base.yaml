@@ -11,6 +11,8 @@
 #   若要严格使用 V4 Flash（仅 opencode 提供），将该条 provider 改为 opencode、model 改为 deepseek-v4-flash。
 #
 # 档位说明：
+#   `deepseek-flash` 仅支持 low / high / max（`minimal`、`medium`、`xhigh` 在 thinkingLevelMap 中为 null）。
+#   因此 list 中的 test 用 high、search 用 low；其余 deepseek 条目均落在 high。
 #   `claude-opus-5-5` 在 opencode 目录的档位列只列 xhigh/max；`high` 已在本会话用该型号实测可用。
 #
 # 系统提示词：见 multi-agent-design.md 中相同 code 的类型定义。
@@ -47,7 +49,7 @@ tasks:
     name: 测试
     provider: deepseek-official
     model: deepseek-flash
-    reasoning_effort: medium
+    reasoning_effort: high
 
   - code: review
     name: 审查
@@ -65,7 +67,7 @@ tasks:
     name: 信息检索
     provider: deepseek-official
     model: deepseek-flash
-    reasoning_effort: medium
+    reasoning_effort: low
 
   - code: clarify
     name: 需求澄清
