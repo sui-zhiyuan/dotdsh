@@ -22,6 +22,26 @@
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a guard that refuses an edit landing outside the tree the session's family claimed and puts a model's `git_complete` to the human for approval, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0). Inside a Team it is **Lead-only**: a delegated member's call to any of the three tools or commands is refused before any git runs, with the exact `send_message` that asks the Lead to do it |
 | `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |
 | `@dsh-external/dotdsh-copilot-auth` | `copilot-auth` | The human-facing sign-in surface for GitHub Copilot: dsh's own `llm-pi-ai` authorization flow runs the protocol and commits the `llm-pi-ai/github-copilot` record, and this package is the only surface that starts it. `/copilot-login` drives `ctx.authorization.begin(...)`, answers with the verification URL and code, and leaves the write to the flow; `/copilot-status` reports the stored record, its expiry, the account's model list, whether the `github-copilot` route is registered and whether dsh has a flow for the record at all; `/copilot-logout` removes it. The terminal `dotdsh-copilot-auth` binary reports and removes a stored record through dsh's own credential provider — its `login` subcommand only points at `/copilot-login`, because the flow needs a booted harness. It registers no route (the stock `llm-pi-ai` adapter serves `github-copilot` from that row's config in the profile's patch) and no tool, and it validates every record it reads — official `proxy-ep` endpoint only, `enterpriseUrl` refused |
+| `@dsh-external/dotdsh-agent-prompt` | `agent-prompt` | One paragraph added to every agent's system prompt, at the subagent tool's own slot: a delegated subagent's settlement wakes an **idle** session with a new turn, so holding the turn open with `sleep`, background timers or repeated `list_agents` checks buys nothing; one bounded timer survives only as a watchdog for a stuck child, followed by `interrupt_agent`. The text is `config.text`, so a profile can reword it or empty it (no section) in its own patch |
+
+## The global prompt addendum
+
+The harness's own tool descriptions already promise a completion notice and forbid status polling. What
+they leave out is the fact a model actually needs when it decides how to wait: a settlement that arrives
+while the session is **idle** starts a new turn. Without that promise a model keeps the turn open the
+only way a turn can be kept open — a `bash` sleep — and a background sleep is itself a job whose
+completion notice wakes the session, so it builds alarm clocks that fire after the child already answered.
+
+The evidence is a CubeSandbox session where this pattern spent 10 of its 24 turns on timer notices —
+none of which the user or a subagent had asked for — plus three further turns that fired after the
+subagent's answer had already been delivered. The addendum names the fact and the anti-pattern on every
+turn, which is why it is a prompt section and not a documentation page: a skill or README is only read
+when something points at it.
+
+`agent-prompt` is the one place for such text. It registers a single section named
+`dotdsh:agent-prompt` at the subagent order, so a deployment that rewords it changes `config.text` in
+the profile's patch, and a deployment that wants it gone sets `text: ""` — an empty section is dropped
+at render, so the row can stay mounted.
 
 ## The git-flow workflow
 
