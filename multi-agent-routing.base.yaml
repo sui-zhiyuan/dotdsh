@@ -1,0 +1,78 @@
+# Multi-Agent 路由配置：base 档
+#
+# 订阅规则：
+#   - deepseek 开头的模型 → deepseek-official
+#   - 其余模型优先 → opencode
+#   - opencode 不支持的模型 → github-copilot
+#
+# 型号映射说明：
+#   用户清单中的 `deepseek-v4-flash` 在 deepseek-official 订阅上不存在；
+#   官方订阅对应的是 V4.1 Flash（id: `deepseek-flash`），故按「deepseek 开头 → 官方」规则映射为该 id。
+#   若要严格使用 V4 Flash（仅 opencode 提供），将该条 provider 改为 opencode、model 改为 deepseek-v4-flash。
+#
+# 档位说明：
+#   `deepseek-flash` 仅支持 low / high / max（`minimal`、`medium`、`xhigh` 在 thinkingLevelMap 中为 null）。
+#   因此 list 中的 test 用 high、search 用 low；其余 deepseek 条目均落在 high。
+#   `claude-opus-5-5` 在 opencode 目录的档位列只列 xhigh/max；`high` 已在本会话用该型号实测可用。
+#
+# 系统提示词：见 multi-agent-design.md 中相同 code 的类型定义。
+# 未匹配任何类型的任务回退到 default。
+
+version: 1
+profile: base
+
+provider_policy:
+  deepseek_prefix: deepseek-official
+  primary: opencode
+  fallback: github-copilot
+
+tasks:
+  - code: design
+    provider: opencode
+    model: claude-opus-5-5
+    reasoning_effort: high
+
+  - code: modify
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: high
+
+  - code: defect
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: high
+
+  - code: test
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: high
+
+  - code: review
+    provider: opencode
+    model: gpt-6.1-sol
+    reasoning_effort: high
+
+  - code: doc
+    provider: opencode
+    model: gpt-6-luna
+    reasoning_effort: low
+
+  - code: search
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: low
+
+  - code: clarify
+    provider: opencode
+    model: gpt-6-luna
+    reasoning_effort: high
+
+  - code: env
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: high
+
+  - code: default
+    provider: deepseek-official
+    model: deepseek-flash
+    reasoning_effort: high
