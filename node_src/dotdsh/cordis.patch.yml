@@ -75,6 +75,19 @@
   # such process per machine, or give the second its own `controlDir`.
   - id: lazy-ssh
     name: '@dsh-external/dotdsh-lazy-ssh'
+  # Global prompt addendum: one paragraph in every agent's system prompt, at the
+  # subagent tool's own slot. It states the one fact the shipped tool descriptions
+  # leave out — a settled subagent reaches an *idle* session as a new turn — and
+  # names what that makes pointless: holding the turn open with `sleep`,
+  # background timers, or repeated `list_agents` checks. A single bounded timer
+  # survives only as a watchdog for a child that looks stuck, followed by
+  # `interrupt_agent`.
+  #
+  # The text is `config.text` (default in the package's `src/index.ts`; empty text
+  # contributes no section), so a profile can reword or neutralise this row in its
+  # own patch instead of forking the package.
+  - id: agent-prompt
+    name: '@dsh-external/dotdsh-agent-prompt'
   # Copilot sign-in: dsh 0.2.1-rc.2 ships the authorization *flow* for a GitHub
   # Copilot subscription but no surface that starts it. The stock
   # `@deepseek-ai/dsh-llm-pi-ai` adapter serves the `github-copilot` route for any
