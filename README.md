@@ -11,7 +11,7 @@
 | `node_src/<id>/` | One plugin package per directory. Single-face: TypeScript `src/` built to gitignored `lib/` (`lazy-ssh`). Dual-face (also declares `dsh.client`): the same node half plus a committed, hand-authored browser half at `client/index.js` (`ui-tweaks`) |
 | `node_src/dotdsh/` | The `@dsh-external/dotdsh` bundle: its `cordis.patch.yml` holds every plugin row, and its `dependencies` (`workspace:*`) name every plugin package |
 | `py_src/dev-apply/` | uv workspace member: the `dev_apply` CLI (`uv run python -m dev_apply`) |
-| `dsh_home/` | `settings.yaml` reference template (one-time manual copy; dsh 0.2.0-rc.2 imports it into the active profile's patch once and renames it — see the settings note under *ui-tweaks*) |
+| `dsh_home/` | `settings.yaml` reference template (one-time manual copy; dsh 0.2.1-rc.2 imports it into the active profile's patch once and renames it — see the settings note under *ui-tweaks*) |
 | `doc/src/` | mdbook documentation |
 
 ## Plugins

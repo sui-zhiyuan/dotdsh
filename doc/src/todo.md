@@ -153,7 +153,7 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
 
 - [x] `dsh_home/settings.yaml` mirrors the setup this repository is developed against
   (commented examples only; nothing syncs it, and copying it to `$DSH_HOME` stays a one-time
-  manual step). A 0.2.0-rc.2 boot imports it into the active profile's patch and renames it
+  manual step). A 0.2.1-rc.2 boot imports it into the active profile's patch and renames it
   `settings.yaml.imported`, so it now seeds a fresh machine once instead of staying live; the
   reference file's header says which sections are remapped on the way in
 - [ ] Optional: enable module HMR for the plugin packages by overriding the `hmr` row in the
