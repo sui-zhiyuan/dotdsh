@@ -22,9 +22,9 @@
 | `@dsh-external/dotdsh-git-flow` | `git-flow` | The feature-branch workflow for git work: the `/git-start`, `/git-complete` and `/git-cleanup` commands and the matching `git_start`, `git_complete` and `git_cleanup` tools, a guard that refuses an edit landing outside the tree the session's family claimed and puts a model's `git_complete` to the human for approval, a per-family **claim** recording which working tree a session writes in, and two bundled skills — `git-flow` (where a session may write) and `git-master` (Conventional Commits 1.0.0). Inside a Team it is **Lead-only**: a delegated member's call to any of the three tools or commands is refused before any git runs, with the exact `send_message` that asks the Lead to do it |
 | `@dsh-external/dotdsh-lazy-ssh` | `lazy-ssh` | Remote commands through one `ssh_run` tool, over OpenSSH's own multiplexing: one connection per server is kept open until it has been idle long enough to be worth closing, so a burst of calls pays the TCP handshake and the key exchange once. Authentication stays entirely in `~/.ssh`; the plugin reads, writes and passes no credential |
 | `@dsh-external/dotdsh-copilot-auth` | `copilot-auth` | The human-facing sign-in surface for GitHub Copilot: dsh's own `llm-pi-ai` authorization flow runs the protocol and commits the `llm-pi-ai/github-copilot` record, and this package is the only surface that starts it. `/copilot-login` drives `ctx.authorization.begin(...)`, answers with the verification URL and code, and leaves the write to the flow; `/copilot-status` reports the stored record, its expiry, the account's model list, whether the `github-copilot` route is registered and whether dsh has a flow for the record at all; `/copilot-logout` removes it. The terminal `dotdsh-copilot-auth` binary reports and removes a stored record through dsh's own credential provider — its `login` subcommand only points at `/copilot-login`, because the flow needs a booted harness. It registers no route (the stock `llm-pi-ai` adapter serves `github-copilot` from that row's config in the profile's patch) and no tool, and it validates every record it reads — official `proxy-ep` endpoint only, `enterpriseUrl` refused |
-| `@dsh-external/dotdsh-agent-prompt` | `agent-prompt` | One paragraph added to every agent's system prompt, at the subagent tool's own slot: a delegated subagent's settlement wakes an **idle** session with a new turn, so holding the turn open with `sleep`, background timers or repeated `list_agents` checks buys nothing; one bounded timer survives only as a watchdog for a stuck child, followed by `interrupt_agent`. The text is `config.text`, so a profile can reword it or empty it (no section) in its own patch |
+| `@dsh-external/dotdsh-agent-prompt` | `agent-prompt` | Two paragraphs added to every agent's system prompt, one section each. **Waiting**, at the subagent tool's slot: a delegated subagent's settlement wakes an **idle** session with a new turn, so holding the turn open with `sleep`, background timers or repeated `list_agents` checks buys nothing, and one bounded timer survives only as a watchdog for a stuck child, followed by `interrupt_agent`. **Writing**, at the write tool's slot: headings carry a document's structure, no sentence may preview it, and the text leaves no trace of the report or conversation it came from. Each has its own knob (`config.text`, `config.writingText`), so a profile can reword or empty one and keep the other |
 
-## The global prompt addendum
+## The global prompt addenda
 
 The harness's own tool descriptions already promise a completion notice and forbid status polling. What
 they leave out is the fact a model actually needs when it decides how to wait: a settlement that arrives
@@ -34,14 +34,39 @@ completion notice wakes the session, so it builds alarm clocks that fire after t
 
 The evidence is a CubeSandbox session where this pattern spent 10 of its 24 turns on timer notices —
 none of which the user or a subagent had asked for — plus three further turns that fired after the
-subagent's answer had already been delivered. The addendum names the fact and the anti-pattern on every
+subagent's answer had already been delivered. That paragraph names the fact and the anti-pattern on every
 turn, which is why it is a prompt section and not a documentation page: a skill or README is only read
 when something points at it.
 
-`agent-prompt` is the one place for such text. It registers a single section named
-`dotdsh:agent-prompt` at the subagent order, so a deployment that rewords it changes `config.text` in
-the profile's patch, and a deployment that wants it gone sets `text: ""` — an empty section is dropped
-at render, so the row can stay mounted.
+`agent-prompt` is the one place for such text, and it carries the two paragraphs as **two sections** —
+never one longer paragraph. The split is not tidiness. Each paragraph answers a different question and is
+worth its own number of tokens, each can be reworded or emptied on its own, and a section that argues two
+unrelated things cannot honestly be held to any length at all: the one time the writing rule was appended
+to the waiting paragraph, the package's own budget check failed, which is the budget doing its job.
+
+| Section | Anchor | Knob |
+|---|---|---|
+| `dotdsh:agent-prompt` | the subagent tool's slot (`TOOL_SUBAGENT`) | `text` |
+| `dotdsh:agent-prompt-writing` | the write tool's slot (`TOOL_WRITE`) | `writingText` |
+
+One row mounts the package once and registers both sections; a second row would mount it twice and register
+both names twice. Emptying one knob drops just that section at render — the row stays mounted and the other
+paragraph stays in the prompt.
+
+### The writing paragraph
+
+The case is a troubleshooting note whose introduction opened by previewing its own organization — "下文按「原因 → 分析过程 → 缓解方案」三段组织" ("the following is organized in three parts: cause → analysis → remedies") — in a file that had *already* lost the sentence naming the session it came from, removed on the same human's request one turn earlier. Both are one defect: the text described the report that produced it instead of the subject it documents. Structure a reader can see in the headings does not need a sentence, and a preview is stale from the moment a section moves.
+
+The rule is therefore a deletion test rather than a ban on a category of sentence. An orientation line that
+carries scope or a prerequisite ("this assumes a pnpm 12 store") survives it, because removing it loses
+something the headings do not give; "下文按……三段组织" never does. That is also why the sentence travels as a
+prompt paragraph and not as a documentation page: a skill is read only when something points at it, and this
+has to apply to the documents a session writes unprompted.
+
+Its evidence is one episode rather than a measured count like the waiting paragraph's, so the committed
+check pins the claims and each paragraph's own budget — headings carry structure, the deletion test, no
+provenance, and neither paragraph drifting into the other's subject — and deliberately leaves the wording
+free.
 
 ## The git-flow workflow
 
