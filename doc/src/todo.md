@@ -149,6 +149,10 @@ dotdsh is still a skeleton; this file tracks the concrete next steps.
   counterpart for the sessions that never finished; it sweeps a claim
   only when its session is not resumable **and** the claim is older than 24 hours
 
+- [ ] Refactor `agent-prompt`: keep the two paragraphs as system-prompt sections, add a skill-mode
+  counterpart (a bundled skill with its body in `assets/`, per `git-flow`), move both paragraphs' text out of
+  `src/index.ts` into assets, and drop the `text` / `writingText` config.
+
 ## Home config
 
 - [x] `dsh_home/settings.yaml` mirrors the setup this repository is developed against
