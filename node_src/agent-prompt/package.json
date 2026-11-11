@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dotdsh-agent-prompt",
   "version": "0.1.0",
-  "description": "dotdsh agent-prompt: one global system-prompt section telling every agent how to wait for a delegated subagent — the settlement wakes an idle session with a new turn, so no sleep timers or repeated status checks",
+  "description": "dotdsh agent-prompt: two global system-prompt sections, one per concern — how to wait for a delegated subagent (the settlement wakes an idle session with a new turn, so no sleep timers or repeated status checks) and how to write a delivered document (headings carry the structure, the prose does not announce it, and nothing of the report or conversation it came from survives)",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
